@@ -177,7 +177,7 @@ export function TopBar() {
             className="inline-flex items-center gap-1.5 rounded-md bg-rose-500 px-2 py-0.5 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-40"
             onClick={beginRecording}
             disabled={!supported || working}
-            title={supported ? 'Graba el lienzo limpio (sin interfaz) con voz y efectos; sin clips graba 3 s de escena estática' : 'Este navegador no admite la grabación del lienzo'}
+            title={supported ? 'Graba el lienzo limpio (sin interfaz) con voz y efectos en WebM (VP9/VP8); duración mínima 3 s' : 'Este navegador no admite la grabación del lienzo'}
           >
             <Video size={14} /> Grabar video
           </button>
