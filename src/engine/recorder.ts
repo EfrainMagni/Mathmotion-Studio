@@ -215,13 +215,24 @@ async function run(
       setRec({ phase: 'idle', message: null, captureSize: null, lastFile: { url: urlObj, name, size: blob.size, mime: blob.type } });
       actions.notify('info', `Grabación lista: ${name}`);
     };
-    if (recorder && recorder.state !== 'inactive') {
-      recorder.onstop = finish;
+    const rec = recorder;
+    if (rec && rec.state !== 'inactive') {
+      // Último fotograma síncrono + volcado explícito del buffer antes de detener.
       try {
-        recorder.stop();
+        paintOut();
+        (stream?.getVideoTracks()[0] as (MediaStreamTrack & { requestFrame?: () => void }) | undefined)?.requestFrame?.();
+        if (rec.state === 'recording') rec.requestData();
       } catch {
-        finish();
+        /* se detiene igualmente */
       }
+      window.setTimeout(() => {
+        rec.onstop = finish;
+        try {
+          rec.stop();
+        } catch {
+          finish();
+        }
+      }, 150);
     } else finish();
   };
 
@@ -284,7 +295,7 @@ async function run(
   pump();
 
   // 3) Grabar la duración real de la línea de tiempo (máx. de clips, voz y MIN_SECONDS), en tiempo real
-  recorder.start(500);
+  recorder.start(250);
   startedRecording = true;
   setRec({ phase: 'recording', message: 'Grabando…', captureSize: { w: W, h: H } });
   const startedAt = performance.now();
