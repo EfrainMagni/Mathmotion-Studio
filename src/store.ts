@@ -1,3 +1,6 @@
+import { History } from './engine/history';
+import { prepareSvg } from './engine/svgImport';
+import { VECTOR_LABEL, vectorSvg } from './engine/vector';
 import { useSyncExternalStore } from 'react';
 import {
   STAGE_SIZES,
@@ -15,6 +18,8 @@ import {
   type StageBackground,
   type StageFormat,
   type VoiceMeta,
+  type VectorGeometry,
+  type VectorTool,
   SHAPE3D_LABEL,
 } from './types';
 
@@ -34,6 +39,8 @@ export interface UIState {
   playing: boolean;
   speed: 0.5 | 1 | 1.5;
   cameraMode: boolean;
+  vectorTool: VectorTool | null;
+  vectorText: string;
   showGuides: boolean;
   recordQuality: 'light' | 'standard';
   recording: RecordingState;
@@ -70,6 +77,8 @@ function defaultUI(): UIState {
     playing: false,
     speed: 1,
     cameraMode: false,
+    vectorTool: null,
+    vectorText: 'Texto',
     showGuides: true,
     recordQuality: 'light',
     recording: { phase: 'idle', message: null, captureSize: null, lastFile: null },
@@ -84,6 +93,23 @@ let state: State = { project: defaultProject(), ui: defaultUI() };
 const listeners = new Set<() => void>();
 
 let projectGeneration = 0;
+let objectSerial = 0;
+let history = new History<Project>();
+
+function restoreHistory(direction: 'undo' | 'redo') {
+  const project = history[direction](state.project);
+  if (!project) return;
+  const { selection, selectedClip } = state.ui;
+  state = {
+    project,
+    ui: {
+      ...state.ui,
+      selection: project.objects.some((object) => object.id === selection?.split('.')[0]) ? selection : null,
+      selectedClip: project.clips.some((clip) => clip.id === selectedClip) ? selectedClip : null,
+    },
+  };
+  listeners.forEach((listener) => listener());
+}
 
 export const store = {
   projectGeneration: () => projectGeneration,
@@ -94,9 +120,12 @@ export const store = {
       listeners.delete(fn);
     };
   },
-  setProject(fn: (p: Project) => Project) {
+  undo: () => restoreHistory('undo'),
+  redo: () => restoreHistory('redo'),
+  setProject(fn: (p: Project) => Project, group?: symbol) {
     const next = fn(state.project);
     if (next === state.project) return;
+    history.record(state.project, group);
     state = { ...state, project: next };
     listeners.forEach((l) => l());
   },
@@ -115,12 +144,14 @@ export const store = {
   /** Sustituye el proyecto y limpia la selección y los controles de reproducción. */
   replaceProject(p: Project) {
     projectGeneration++;
+    history = new History<Project>();
+    objectSerial = p.counters.obj;
     state = {
       ...state,
       project: p,
       ui: {
         ...state.ui, selection: null, selectedClip: null, time: 0,
-        playing: false, cameraMode: false, notice: null,
+        playing: false, cameraMode: false, vectorTool: null, notice: null,
       },
     };
     listeners.forEach((l) => l());
@@ -164,12 +195,8 @@ export function defaultClipParams(type: ClipType): ClipParams {
 
 export const actions = {
   reserveObjectId(): string {
-    let id = '';
-    store.setProject((p) => {
-      id = `o${p.counters.obj + 1}`;
-      return { ...p, counters: { ...p.counters, obj: p.counters.obj + 1 } };
-    });
-    return id;
+    objectSerial = Math.max(objectSerial, state.project.counters.obj) + 1;
+    return `o${objectSerial}`;
   },
 
   setFormat(format: StageFormat) {
@@ -189,23 +216,24 @@ export const actions = {
     store.setProject((p) => (p.background === background ? p : { ...p, background }));
   },
 
-  addObject2D(o: Omit<Obj2D, 'x' | 'y' | 'scale' | 'rotation'> & { fit: number }) {
+  addObject2D(o: Omit<Obj2D, 'x' | 'y' | 'scale' | 'rotation'> & { fit: number; position?: { x: number; y: number } }) {
     store.setProject((p) => {
       const { w, h } = STAGE_SIZES[p.format];
-      const { fit, ...rest } = o;
-      const obj: Obj2D = { ...rest, x: w / 2, y: h / 2, scale: fit, rotation: 0 };
-      return { ...p, objects: [...p.objects, obj] };
+      const { fit, position, ...rest } = o;
+      const obj: Obj2D = { ...rest, x: position?.x ?? w / 2, y: position?.y ?? h / 2, scale: fit, rotation: 0 };
+      return { ...p, objects: [...p.objects, obj], counters: { ...p.counters, obj: Math.max(p.counters.obj, Number(o.id.slice(1))) } };
     });
-    store.setUi({ selection: o.id });
+    actions.select(o.id);
   },
 
   add3D(shape: Shape3D) {
     const id = actions.reserveObjectId();
     store.setProject((p) => ({
       ...p,
+      counters: { ...p.counters, obj: Number(id.slice(1)) },
       objects: [...p.objects, { id, kind: 'shape3d', name: SHAPE3D_LABEL[shape], shape, scale: 1, rotation: 0 }],
     }));
-    store.setUi({ selection: id });
+    actions.select(id);
   },
 
   removeObject(id: string) {
@@ -224,17 +252,69 @@ export const actions = {
     });
   },
 
-  updateObject(id: string, patch: Partial<SceneObject>) {
-    store.setProject((p) => ({
-      ...p,
-      objects: p.objects.map((o) => (o.id === id ? ({ ...o, ...patch } as SceneObject) : o)),
-    }));
+  addVector(vector: VectorGeometry, bw: number, bh: number, position: { x: number; y: number }) {
+    const id = actions.reserveObjectId();
+    const sourceSvg = vectorSvg(vector, bw, bh);
+    actions.addObject2D({
+      id, kind: 'svg', name: VECTOR_LABEL[vector.tool], vector, bw, bh, position, fit: 1,
+      sourceSvg, markup: prepareSvg(sourceSvg, id).markup,
+    });
+  },
+
+  editVector(object: Obj2D, patch: Partial<VectorGeometry>) {
+    if (!object.vector) return;
+    const vector = { ...object.vector, ...patch };
+    const sourceSvg = vectorSvg(vector, object.bw, object.bh);
+    actions.updateObject(object.id, { vector, sourceSvg, markup: prepareSvg(sourceSvg, object.id).markup });
+  },
+
+  orderObject(id: string, front: boolean) {
+    store.setProject((project) => {
+      const object = project.objects.find((entry) => entry.id === id);
+      if (!object || project.objects[front ? project.objects.length - 1 : 0] === object) return project;
+      const remaining = project.objects.filter((entry) => entry.id !== id);
+      return { ...project, objects: front ? [...remaining, object] : [object, ...remaining] };
+    });
+  },
+
+  duplicateObject(id: string) {
+    const object = state.project.objects.find((entry) => entry.id === id);
+    if (!object) return;
+    const nextId = actions.reserveObjectId();
+    const base = { id: nextId, name: `${object.name} (copia)` };
+    const copy = is2D(object)
+      ? { ...object, ...base, x: object.x + 20, y: object.y + 20, markup: prepareSvg(object.sourceSvg, nextId).markup }
+      : { ...object, ...base };
+    store.setProject((project) => {
+      const styles = { ...project.styles };
+      for (const [target, style] of Object.entries(project.styles)) {
+        if (target === id || target.startsWith(id + '.')) styles[nextId + target.slice(id.length)] = style;
+      }
+      let clip = project.counters.clip;
+      const copies = project.clips
+        .filter((entry) => entry.targetId === id || entry.targetId.startsWith(id + '.'))
+        .map((entry) => ({ ...entry, id: `c${++clip}`, targetId: nextId + entry.targetId.slice(id.length) }));
+      return { ...project, styles, objects: [...project.objects, copy],
+        clips: [...project.clips, ...copies], counters: { obj: Number(nextId.slice(1)), clip } };
+    });
+    actions.select(nextId);
+  },
+
+  updateObject(id: string, patch: Partial<SceneObject>, group?: symbol) {
+    store.setProject((p) => {
+      const object = p.objects.find((entry) => entry.id === id);
+      if (!object || Object.entries(patch).every(([key, value]) => Reflect.get(object, key) === value)) return p;
+      const updated = { ...object, ...patch } as SceneObject;
+      return { ...p, objects: p.objects.map((entry) => entry === object ? updated : entry) };
+    }, group);
   },
 
   /** Aplica un estilo. Un valor `undefined` elimina el override de esa propiedad. */
-  setStyle(nodeId: string, patch: Partial<NodeStyle>) {
+  setStyle(nodeId: string, patch: Partial<NodeStyle>, group?: symbol) {
     store.setProject((p) => {
-      const cur: NodeStyle = { ...(p.styles[nodeId] ?? {}) };
+      const previous = p.styles[nodeId] ?? {};
+      if (Object.entries(patch).every(([key, value]) => Reflect.get(previous, key) === value)) return p;
+      const cur: NodeStyle = { ...previous };
       for (const k of Object.keys(patch) as (keyof NodeStyle)[]) {
         const v = patch[k];
         if (v === undefined) delete cur[k];
@@ -244,11 +324,11 @@ export const actions = {
       if (Object.keys(cur).length === 0) delete styles[nodeId];
       else styles[nodeId] = cur;
       return { ...p, styles };
-    });
+    }, group);
   },
 
-  setCamera(patch: Partial<CameraState>) {
-    store.setProject((p) => ({ ...p, camera: { ...p.camera, ...patch } }));
+  setCamera(patch: Partial<CameraState>, group?: symbol) {
+    store.setProject((p) => ({ ...p, camera: { ...p.camera, ...patch } }), group);
   },
 
   addClip(args: {
@@ -277,7 +357,7 @@ export const actions = {
     return id;
   },
 
-  updateClip(id: string, patch: Partial<Pick<Clip, 'start' | 'duration' | 'sound' | 'parameters'>>) {
+  updateClip(id: string, patch: Partial<Pick<Clip, 'start' | 'duration' | 'sound' | 'parameters'>>, group?: symbol) {
     store.setProject((p) => ({
       ...p,
       clips: p.clips.map((c) => {
@@ -287,7 +367,7 @@ export const actions = {
         next.duration = Math.max(0.05, r2(next.duration));
         return next;
       }),
-    }));
+    }), group);
   },
 
   removeClip(id: string) {
@@ -299,12 +379,12 @@ export const actions = {
     store.setProject((p) => ({ ...p, voice: v }));
   },
 
-  updateVoice(patch: Partial<VoiceMeta>) {
-    store.setProject((p) => (p.voice ? { ...p, voice: { ...p.voice, ...patch } } : p));
+  updateVoice(patch: Partial<VoiceMeta>, group?: symbol) {
+    store.setProject((p) => (p.voice ? { ...p, voice: { ...p.voice, ...patch } } : p), group);
   },
 
   select(id: string | null) {
-    store.setUi({ selection: id });
+    store.setUi({ selection: id, selectedClip: null });
   },
 
   notify(kind: 'error' | 'info', text: string) {

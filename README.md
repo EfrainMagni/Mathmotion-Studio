@@ -19,8 +19,22 @@ Requiere Node 18+ y un navegador basado en Chromium (la grabación usa `getDispl
 1. **Importar SVG** (panel izquierdo; «Ejemplo» carga un SVG de prueba) o escribir una fórmula LaTeX.
 2. Clic en el lienzo = selecciona el elemento hijo; **Mayús+clic / Mayús+arrastrar** = objeto completo.
 3. En el panel derecho, pulsa una animación (Escribir/Dibujar, Radar, Brillar, Aparecer/Deslizar, Rotar/Orbitar): crea un clip en el cabezal.
-4. En la línea de tiempo mueve, edita numéricamente o elimina clips; arrastra el cabezal; ←/→ avanzan un fotograma (30 fps); Espacio reproduce.
+4. En la línea de tiempo mueve, edita numéricamente o elimina clips; arrastra el cabezal; ←/→ avanzan un fotograma (30 fps) cuando no hay un objeto seleccionado. Espacio reproduce.
 5. Objetos 3D: se insertan desde el panel; activa el **modo cámara** en la barra superior para orbitar.
+
+## Dibujo vectorial y Manim
+
+Elige una herramienta en **Dibujo vectorial** y arrastra sobre el lienzo. Mantén Mayús para dibujar círculos o cuadrados. Para colocar texto, escribe en la barra lateral y haz clic o define su caja arrastrando. El inspector permite cambiar estilos, editar la punta de las flechas y alinear u ordenar los objetos.
+
+Usa Ctrl+Z para deshacer, Ctrl+Y o Ctrl+Mayús+Z para rehacer, Ctrl+D para duplicar y Supr para eliminar. Las flechas mueven la selección 1 píxel lógico o 10 con Mayús. Sin un objeto seleccionado, izquierda y derecha recorren fotogramas. En macOS también funciona ⌘ para los atajos con Ctrl.
+
+**Exportar código Manim (.py)** muestra el script, permite copiarlo y descarga `escena.py`. Ejecútalo con Manim Community. Las fórmulas requieren una instalación de LaTeX.
+
+```bash
+manim escena.py EscenaMathMotion
+```
+
+Las notas de exportación indican qué efectos se aproximan y qué elementos quedan fuera del script. El orden de apilamiento se ajusta dentro de cada capa 2D o 3D.
 
 ## Guardar y abrir proyectos
 
@@ -41,9 +55,10 @@ El editor autoguarda el proyecto actual y su pista de voz en IndexedDB en este n
 ```bash
 npm run test:dom
 npm run test:project
+npm run test:vector
 ```
 
-Pruebas en Chromium del editor 2D y del flujo de autoguardado, recarga, descarga y reapertura de un proyecto. Usa `CHROME_PATH` si el navegador está instalado en una ruta distinta de la predeterminada.
+Pruebas en Chromium del editor 2D y del flujo de autoguardado, recarga, descarga y reapertura de un proyecto. Usa `CHROME_PATH` si el navegador está instalado en una ruta distinta de la predeterminada. La prueba vectorial verifica la sintaxis Python y puede renderizar la escena con Manim si se define `MANIM_BIN`.
 
 ## Limitaciones conocidas
 

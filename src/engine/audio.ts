@@ -4,7 +4,7 @@ import type { Clip, SoundId, VoiceMeta } from '../types';
 export class AudioEngine {
   ctx: AudioContext | null = null;
   master!: GainNode;
-  voiceBuffer: AudioBuffer | null = null;
+  private voiceBuffers = new WeakMap<Blob, AudioBuffer>();
   private live = new Set<() => void>();
   private recDest: MediaStreamAudioDestinationNode | null = null;
   private noiseBuf: AudioBuffer | null = null;
@@ -143,16 +143,16 @@ export class AudioEngine {
   // ---------- Voz ----------
 
   async decodeVoice(source: Blob): Promise<AudioBuffer> {
+    const cached = this.voiceBuffers.get(source);
+    if (cached) return cached;
     try {
       const decoder = this.ctx ?? new OfflineAudioContext(1, 1, 44100);
-      return await decoder.decodeAudioData(await source.arrayBuffer());
+      const buffer = await decoder.decodeAudioData(await source.arrayBuffer());
+      this.voiceBuffers.set(source, buffer);
+      return buffer;
     } catch {
       throw new Error('No se pudo decodificar el audio. Prueba con MP3, WAV, OGG o M4A.');
     }
-  }
-
-  clearVoice() {
-    this.voiceBuffer = null;
   }
 
   get micRecording() {
@@ -219,9 +219,10 @@ export class AudioEngine {
     const ctx = this.ensure();
     this.cancel();
     const now = ctx.currentTime + 0.02;
-    if (voice && this.voiceBuffer) {
+    const buffer = voice && this.voiceBuffers.get(voice.source);
+    if (voice && buffer) {
       const src = ctx.createBufferSource();
-      src.buffer = this.voiceBuffer;
+      src.buffer = buffer;
       src.playbackRate.value = speed;
       const g = ctx.createGain();
       g.gain.value = voice.volume;
@@ -231,7 +232,7 @@ export class AudioEngine {
       if (offset < 0) {
         src.start(now + -offset / speed, 0);
         started = true;
-      } else if (offset < this.voiceBuffer.duration) {
+      } else if (offset < buffer.duration) {
         src.start(now, offset);
         started = true;
       }

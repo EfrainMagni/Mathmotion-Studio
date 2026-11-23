@@ -11,6 +11,11 @@ const clipId = z.string().regex(/^c[1-9]\d*$/);
 const baseObject = { id: objectId, name: z.string(), scale: positive, rotation: number };
 const object2D = z.object({
   ...baseObject, kind: z.enum(['svg', 'formula']), sourceSvg: z.string(),
+  vector: z.object({
+    tool: z.enum(['rectangle', 'ellipse', 'line', 'arrow', 'text']),
+    reverseX: z.boolean().optional(), reverseY: z.boolean().optional(),
+    tip: z.enum(['triangle', 'open', 'both', 'none']).optional(), text: z.string().optional(),
+  }).optional(),
   x: number, y: number, bw: positive, bh: positive, tex: z.string().optional(),
 });
 const obj3D = z.object({
@@ -20,6 +25,7 @@ const paint = z.string().refine((value) =>
   /^(none|currentColor|transparent|#[\da-f]{3,8}|rgba?\([\d\s.,%/+-]+\)|hsla?\([\d\s.,%/+-]+\))$/i.test(value));
 const style = z.object({
   fill: paint.optional(), stroke: paint.optional(), strokeWidth: nonnegative.optional(),
+  lineStyle: z.enum(['solid', 'dotted']).optional(), opacity: number.min(0).max(1).optional(),
   scale: positive.optional(), tx: number.optional(), ty: number.optional(),
 });
 const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()])).superRefine((input, ctx) => {
@@ -29,7 +35,7 @@ const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()
   ) ctx.addIssue({ code: 'custom', message: 'Parámetros de animación no válidos.' });
 });
 const voice = z.object({
-  name: z.string(), start: nonnegative, duration: positive, volume: number.min(0).max(1),
+  name: z.string(), start: nonnegative, duration: positive, volume: number.min(0).max(1.5),
 });
 const voiceFile = voice.extend({ mime: z.string(), base64: z.base64() });
 const project = z.object({

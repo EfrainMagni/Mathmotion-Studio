@@ -1,3 +1,4 @@
+import { ManimExport } from './ManimExport';
 import { useRef, useState } from 'react';
 import { audio } from '../engine';
 import { parseProject, serializeProject } from '../engine/projectFiles';
@@ -42,10 +43,10 @@ export function TopBar() {
     setWorking(true);
     try {
       const project = parseProject(await file.text());
-      const buffer = project.voice ? await audio.decodeVoice(project.voice.source) : null;
+      if (project.voice) await audio.decodeVoice(project.voice.source);
       if (store.getState().ui.recording.phase !== 'idle') return;
       if (!confirmReplacement('¿Reemplazar el proyecto actual por el del archivo?')) return;
-      activateProject(project, buffer);
+      activateProject(project);
     } catch (error) {
       const detail = error instanceof Error ? error.message : '';
       actions.notify('error', `No se pudo abrir el proyecto. ${detail}`);
@@ -95,12 +96,13 @@ export function TopBar() {
         />
         <button className={seg(false)} disabled={busy || working} onClick={() => {
           if (confirmReplacement('¿Crear un proyecto nuevo y reemplazar el proyecto actual?')) {
-            activateProject(defaultProject(), null);
+            activateProject(defaultProject());
           }
         }}>Nuevo proyecto</button>
         <button className={seg(false)} disabled={busy || working} onClick={() => input.current?.click()}>Abrir proyecto</button>
         <button className={seg(false)} disabled={busy || working} onClick={() => void saveProject()}>Guardar proyecto</button>
       </div>
+      <ManimExport disabled={busy || working} />
 
       <div className="flex overflow-hidden rounded-md border border-white/10" role="group" aria-label="Formato">
         {FORMATS.map((f) => (
@@ -129,7 +131,7 @@ export function TopBar() {
 
       <button
         className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs disabled:opacity-40 ${cameraMode ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200' : 'border-white/10 bg-ink-700 hover:bg-ink-600'}`}
-        onClick={() => store.setUi({ cameraMode: !cameraMode })}
+        onClick={() => store.setUi({ cameraMode: !cameraMode, vectorTool: null })}
         disabled={!has3d || busy}
         aria-pressed={cameraMode}
         title={has3d ? 'Orbitar la cámara 3D con el ratón (desactiva la selección 2D)' : 'Inserta un objeto 3D para usar la cámara'}

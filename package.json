@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test:dom": "node tests/dom-test.mjs",
-    "test:project": "npm run build && node tests/project-test.mjs"
+    "test:project": "npm run build && node tests/project-test.mjs",
+    "test:vector": "npm run build && node tests/vector-test.mjs"
   },
   "dependencies": {
     "@mathjax/mathjax-newcm-font": "4.1.3",

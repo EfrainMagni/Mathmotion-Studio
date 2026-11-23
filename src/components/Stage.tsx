@@ -1,5 +1,6 @@
+import { vectorSvg } from '../engine/vector';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BACKGROUND_COLOR, STAGE_SIZES, is2D, type Box } from '../types';
+import { BACKGROUND_COLOR, STAGE_SIZES, is2D, type Box, type VectorGeometry } from '../types';
 import { actions, store, useStore } from '../store';
 import { audio, engine } from '../engine';
 import { SceneRuntime } from '../engine/runtime';
@@ -10,12 +11,38 @@ type Drag =
   | { kind: 'child'; id: string; sx: number; sy: number; ox: number; oy: number; inv: DOMMatrix }
   | { kind: 'camera'; sx: number; sy: number; az: number; el: number };
 
+type Point = { x: number; y: number };
+type Sketch = { start: Point; end: Point; vector: VectorGeometry; constrain: boolean };
+
+function sketchBounds({ start, end, vector, constrain }: Sketch) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  let bw = Math.abs(dx);
+  let bh = Math.abs(dy);
+  if (constrain && (vector.tool === 'ellipse' || vector.tool === 'rectangle')) {
+    bw = bh = Math.min(bw, bh);
+  }
+  const click = bw < 3 && bh < 3;
+  if (click && vector.tool !== 'text') return null;
+  if (vector.tool === 'text' && !vector.text?.trim()) return null;
+  if (click) {
+    bw = Math.max(80, (vector.text?.length ?? 0) * 24);
+    bh = 48;
+  }
+  bw = Math.max(1, bw);
+  bh = Math.max(1, bh);
+  const x = start.x - (dx < 0 && !click ? bw : 0);
+  const y = start.y - (dy < 0 && !click ? bh : 0);
+  return { x, y, bw, bh, vector: { ...vector, reverseX: dx < 0, reverseY: dy < 0 } };
+}
+
 /** Escenario del editor: capas de fondo, 3D, SVG, efectos y marcas de interfaz. */
 export function Stage() {
   const format = useStore((s) => s.project.format);
   const background = useStore((s) => s.project.background);
   const playing = useStore((s) => s.ui.playing);
   const recPhase = useStore((s) => s.ui.recording.phase);
+  const vectorTool = useStore((s) => s.ui.vectorTool);
   const cameraMode = useStore((s) => s.ui.cameraMode);
   const showGuides = useStore((s) => s.ui.showGuides);
   const selection = useStore((s) => s.ui.selection);
@@ -26,6 +53,9 @@ export function Stage() {
   const fxRef = useRef<SVGSVGElement>(null);
   const host3dRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null);
+  const pointer = useRef<{ id: number; generation: number; group: symbol } | null>(null);
+  const draft = useRef<Sketch | null>(null);
+  const [sketch, setSketch] = useState<Sketch | null>(null);
   const [k, setK] = useState(0.4);
   const [box, setBox] = useState<Box | null>(null);
 
@@ -120,12 +150,34 @@ export function Stage() {
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
+  function position(event: React.PointerEvent): Point {
+    const rect = stageRef.current!.getBoundingClientRect();
+    return {
+      x: Math.min(W, Math.max(0, (event.clientX - rect.left) * W / rect.width)),
+      y: Math.min(H, Math.max(0, (event.clientY - rect.top) * H / rect.height)),
+    };
+  }
+
   const onPointerDown = (e: React.PointerEvent) => {
     const { ui, project } = store.getState();
-    if (e.button !== 0 || ui.playing || ui.recording.phase !== 'idle') return;
+    if (pointer.current || e.button !== 0 || ui.playing || ui.recording.phase !== 'idle') return;
     const rt = engine.runtime;
     if (!rt) return;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+    const element = e.currentTarget as HTMLElement;
+    element.focus({ preventScroll: true });
+    element.setPointerCapture(e.pointerId);
+    pointer.current = { id: e.pointerId, generation: store.projectGeneration(), group: Symbol() };
+
+    if (ui.vectorTool && !ui.cameraMode) {
+      const start = position(e);
+      const vector: VectorGeometry = { tool: ui.vectorTool };
+      if (vector.tool === 'text') vector.text = ui.vectorText;
+      if (vector.tool === 'arrow') vector.tip = 'triangle';
+      draft.current = { start, end: start, vector, constrain: e.shiftKey };
+      setSketch(draft.current);
+      return;
+    }
 
     if (ui.cameraMode) {
       dragRef.current = { kind: 'camera', sx: e.clientX, sy: e.clientY, az: project.camera.az, el: project.camera.el };
@@ -155,6 +207,13 @@ export function Stage() {
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
+    const active = pointer.current;
+    if (!active || active.id !== e.pointerId || active.generation !== store.projectGeneration()) return;
+    if (draft.current) {
+      draft.current = { ...draft.current, end: position(e), constrain: e.shiftKey };
+      setSketch(draft.current);
+      return;
+    }
     const d = dragRef.current;
     if (!d) return;
     const dx = e.clientX - d.sx;
@@ -163,23 +222,37 @@ export function Stage() {
       actions.setCamera({
         az: d.az - dx * 0.4,
         el: Math.max(-85, Math.min(85, d.el + dy * 0.4)),
-      });
+      }, active.group);
     } else if (d.kind === 'root') {
       // El desplazamiento se divide entre la escala real del escenario en pantalla.
       const r = stageRef.current!.getBoundingClientRect();
       const kx = r.width / W;
       const ky = r.height / H;
-      actions.updateObject(d.id, { x: d.ox + dx / kx, y: d.oy + dy / ky });
+      actions.updateObject(d.id, { x: d.ox + dx / kx, y: d.oy + dy / ky }, active.group);
     } else {
       const lx = d.inv.a * dx + d.inv.c * dy;
       const ly = d.inv.b * dx + d.inv.d * dy;
-      actions.setStyle(d.id, { tx: d.ox + lx, ty: d.oy + ly });
+      actions.setStyle(d.id, { tx: d.ox + lx, ty: d.oy + ly }, active.group);
     }
   };
 
-  const endDrag = () => {
+  const endDrag = (event: React.PointerEvent) => {
+    const active = pointer.current;
+    if (!active || active.id !== event.pointerId) return;
+    if (event.type === 'pointerup' && draft.current && active.generation === store.projectGeneration()) {
+      const shape = sketchBounds({ ...draft.current, end: position(event), constrain: event.shiftKey });
+      if (shape) {
+        const { x, y, bw, bh, vector } = shape;
+        actions.addVector(vector, bw, bh, { x: x + bw / 2, y: y + bh / 2 });
+      }
+    }
+    pointer.current = null;
     dragRef.current = null;
+    draft.current = null;
+    setSketch(null);
   };
+
+  const preview = sketch && sketchBounds(sketch);
 
   const bg = BACKGROUND_COLOR[background];
   const selected = selection;
@@ -190,10 +263,13 @@ export function Stage() {
         <div
           ref={stageRef}
           data-stage
+          tabIndex={-1}
+          onDragStart={(event) => event.preventDefault()}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
+          onLostPointerCapture={endDrag}
           style={{
             width: W,
             height: H,
@@ -204,14 +280,22 @@ export function Stage() {
             top: 0,
             overflow: 'hidden',
             background: bg,
-            cursor: cameraMode ? 'grab' : 'default',
+            cursor: cameraMode ? 'grab' : vectorTool ? 'crosshair' : 'default',
             touchAction: 'none',
+            userSelect: 'none',
+            outline: 'none',
           }}
         >
           <div className={`absolute inset-0 ${background === 'grid' ? 'mm-grid' : ''}`} />
           <div ref={host3dRef} className="absolute inset-0" style={{ pointerEvents: 'none' }} />
           <div ref={layerRef} className="absolute inset-0" />
           <svg ref={fxRef} viewBox={`0 0 ${W} ${H}`} width={W} height={H} className="absolute inset-0" style={{ pointerEvents: 'none' }} />
+
+          {!hideUi && preview && (
+            <div data-vector-preview className="pointer-events-none absolute opacity-70"
+              style={{ left: preview.x, top: preview.y, width: preview.bw, height: preview.bh }}
+              dangerouslySetInnerHTML={{ __html: vectorSvg(preview.vector, preview.bw, preview.bh) }} />
+          )}
 
           {/* Elementos de interfaz del editor: no existen durante la reproducción ni la grabación */}
           {!hideUi && (

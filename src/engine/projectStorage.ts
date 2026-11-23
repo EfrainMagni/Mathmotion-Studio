@@ -33,11 +33,10 @@ function writeCurrent(db: IDBDatabase, project: Project): Promise<void> {
   });
 }
 
-export function activateProject(project: Project, buffer: AudioBuffer | null) {
+export function activateProject(project: Project) {
   engine.playback?.restart();
   audio.cancel();
   audio.cancelMic();
-  audio.voiceBuffer = buffer;
   store.replaceProject(project);
 }
 
@@ -47,16 +46,15 @@ export async function startProjectAutosave(): Promise<void> {
     const saved = await readCurrent(db);
     if (saved) {
       // Si el navegador actual no decodifica la voz, se conserva el archivo original.
-      let buffer: AudioBuffer | null = null;
       let audioFailed = false;
       if (saved.voice) {
         try {
-          buffer = await audio.decodeVoice(saved.voice.source);
+          await audio.decodeVoice(saved.voice.source);
         } catch {
           audioFailed = true;
         }
       }
-      activateProject(saved, buffer);
+      activateProject(saved);
       if (audioFailed) actions.notify('error', 'Se recuperó el proyecto, pero este navegador no pudo reproducir la pista de voz.');
     }
 

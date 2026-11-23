@@ -4,7 +4,9 @@ import {
   Focus, Hand, Maximize, Minus, MousePointer2, PanelBottom,
   PanelLeft, PanelRight, Plus, X,
 } from 'lucide-react';
-import { store, useStore } from './store';
+import { engine } from './engine';
+import { is2D } from './types';
+import { actions, store, useStore } from './store';
 import { TopBar } from './components/TopBar';
 import { LeftPanel } from './components/LeftPanel';
 import { RightPanel } from './components/RightPanel';
@@ -75,6 +77,8 @@ export function App() {
   const [dragging, setDragging] = useState(false);
   const [focus, setFocus] = useState(false);
   const [panels, setPanels] = useState({ left: true, right: true, timeline: true });
+  const vectorTool = useStore((s) => s.ui.vectorTool);
+  useEffect(() => { if (vectorTool) setTool('select'); }, [vectorTool]);
   const canPan = tool === 'hand' || spaceHeld;
 
   useEffect(() => {
@@ -133,6 +137,60 @@ export function App() {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
+  }, []);
+
+  useEffect(() => {
+    function onEditorKey(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.isComposing || event.altKey || document.querySelector('dialog[open]') ||
+        (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]'))) return;
+      const { ui, project } = store.getState();
+      if (ui.recording.phase !== 'idle') return;
+      const { selection, selectedClip } = ui;
+      const root = selection?.split('.')[0];
+      const object = project.objects.find((item) => item.id === root);
+      const key = event.key.toLowerCase();
+
+      if (event.ctrlKey || event.metaKey) {
+        if (key === 'z' || key === 'y') {
+          event.preventDefault();
+          engine.playback?.pause();
+          if (key === 'y' || event.shiftKey) store.redo();
+          else store.undo();
+        } else if (key === 'd' && object) {
+          event.preventDefault();
+          if (!event.repeat && !ui.playing) actions.duplicateObject(object.id);
+        }
+        return;
+      }
+      if (event.key === 'Delete' || (event.key === 'Backspace' && selectedClip)) {
+        if (ui.playing) return;
+        if (selectedClip) actions.removeClip(selectedClip);
+        else if (object) actions.removeObject(object.id);
+        else return;
+        event.preventDefault();
+        return;
+      }
+      const arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+      const direction = arrows[event.key as keyof typeof arrows];
+      if (!direction) return;
+      const step = event.shiftKey ? 10 : 1;
+      const [dx, dy] = direction.map((value) => value * step);
+      if (object && selection && !selectedClip && !ui.playing) {
+        event.preventDefault();
+        if (selection === object.id && is2D(object)) {
+          actions.updateObject(object.id, { x: object.x + dx, y: object.y + dy });
+        } else {
+          const delta = engine.runtime?.stageDeltaForNode(selection, dx, dy) ?? { x: dx, y: dy };
+          const style = project.styles[selection];
+          actions.setStyle(selection, { tx: (style?.tx ?? 0) + delta.x, ty: (style?.ty ?? 0) + delta.y });
+        }
+      } else if (dx && engine.playback) {
+        event.preventDefault();
+        engine.playback.step(dx);
+      }
+    }
+    window.addEventListener('keydown', onEditorKey);
+    return () => window.removeEventListener('keydown', onEditorKey);
   }, []);
 
   function startPan(event: PointerEvent<HTMLDivElement>) {
@@ -256,7 +314,7 @@ export function App() {
             className="absolute bottom-3 left-1/2 z-20 flex max-w-[calc(100%_-_1rem)] -translate-x-1/2 flex-wrap justify-center gap-0.5 rounded-xl border border-white/10 bg-slate-950/75 p-1 shadow-xl backdrop-blur-md"
           >
             <button type="button" className={controlClass} title="Seleccionar" aria-label="Seleccionar"
-              aria-pressed={tool === 'select'} onClick={() => setTool('select')}>
+              aria-pressed={tool === 'select'} onClick={() => { setTool('select'); store.setUi({ vectorTool: null }); }}>
               <MousePointer2 size={16} />
             </button>
             <button type="button" className={controlClass} title="Mover (Espacio + arrastrar)"

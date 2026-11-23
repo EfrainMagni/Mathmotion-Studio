@@ -309,7 +309,7 @@ export class SceneRuntime {
     if (!wrapper) return null;
     const objId = wrapper.dataset.mmObj!;
     const rec = this.objs.get(objId);
-    if (!rec || rec.kind === 'formula' || shift) return objId;
+    if (!rec || rec.kind === 'formula' || shift || this.project?.objects.some((o) => o.id === objId && is2D(o) && o.vector)) return objId;
     let el: Element | null = target;
     while (el && el !== rec.svg) {
       const id = el.getAttribute('data-mm-id');
@@ -317,6 +317,17 @@ export class SceneRuntime {
       el = el.parentElement;
     }
     return objId;
+  }
+
+  stageDeltaForNode(id: string, x: number, y: number) {
+    const parent = this.nodes.get(id)?.el.parentElement as SVGGraphicsElement | undefined;
+    const inv = parent?.getScreenCTM?.()?.inverse();
+    if (!this.project || !inv) return { x, y };
+    const rect = this.els.stage.getBoundingClientRect();
+    const { w, h } = STAGE_SIZES[this.project.format];
+    const dx = x * rect.width / w;
+    const dy = y * rect.height / h;
+    return { x: inv.a * dx + inv.c * dy, y: inv.b * dx + inv.d * dy };
   }
 
   /** Caja del nodo en coordenadas lógicas del escenario. */
@@ -462,7 +473,7 @@ export class SceneRuntime {
     // Pivotes: se miden con el DOM en estado base para que el resultado no dependa del historial.
     const childIds = new Set<string>();
     for (const id of states.keys()) childIds.add(id);
-    for (const [id, s] of Object.entries(p.styles)) if (s.scale !== undefined || s.tx || s.ty) childIds.add(id);
+    for (const [id, s] of Object.entries(p.styles)) if (s.scale !== undefined || s.tx || s.ty || s.opacity !== undefined) childIds.add(id);
     const needPivot: NodeRec[] = [];
     for (const id of childIds) {
       const n = this.nodes.get(id);
@@ -488,7 +499,7 @@ export class SceneRuntime {
 
     // 1) overrides de pintura del inspector (el más profundo gana)
     const styled = Object.entries(p.styles)
-      .filter(([, s]) => s.fill !== undefined || s.stroke !== undefined || s.strokeWidth !== undefined)
+      .filter(([, s]) => s.fill !== undefined || s.stroke !== undefined || s.strokeWidth !== undefined || s.lineStyle !== undefined)
       .map(([id]) => this.nodes.get(id))
       .filter((n): n is NodeRec => !!n);
     const depth = (n: NodeRec) => {
@@ -508,6 +519,12 @@ export class SceneRuntime {
         if (s.fill !== undefined) pr.fill = s.fill;
         if (s.stroke !== undefined) pr.stroke = s.stroke;
         if (s.strokeWidth !== undefined) pr['stroke-width'] = String(s.strokeWidth);
+        if (s.lineStyle) {
+          const width = Number(pr['stroke-width'] ?? this.geomInfo(el).sw) || 1;
+          pr['stroke-dasharray'] = s.lineStyle === 'dotted' ? `0 ${width * 2.5}` : 'none';
+          if (s.lineStyle === 'dotted') pr['stroke-linecap'] = 'round';
+          else delete pr['stroke-linecap'];
+        }
       }
     }
 
@@ -539,7 +556,8 @@ export class SceneRuntime {
       } else if (tx || ty) {
         pr.translate = `${tx}px ${ty}px`;
       }
-      if (st && st.opacity !== 1) mul(n.el, 'opacity', st.opacity, this.baseOpacity(n.el));
+      const opacity = (st?.opacity ?? 1) * (ov?.opacity ?? 1);
+      if (opacity !== 1) mul(n.el, 'opacity', opacity, this.baseOpacity(n.el));
       if (st && st.glow > 0) {
         const attr = n.el.getAttribute('filter');
         const base = attr && attr.startsWith('url(') ? attr + ' ' : '';
@@ -559,7 +577,7 @@ export class SceneRuntime {
       const css =
         `translate(${(o.x - o.bw / 2 + dx).toFixed(3)}px,${(o.y - o.bh / 2 + dy).toFixed(3)}px) ` +
         `rotate(${(o.rotation + (st?.rot ?? 0)).toFixed(3)}deg) scale(${(o.scale * (st?.scale ?? 1)).toFixed(5)})`;
-      const op = st ? String(st.opacity) : '1';
+      const op = String((st?.opacity ?? 1) * (p.styles[o.id]?.opacity ?? 1));
       const filter = st && st.glow > 0
         ? `drop-shadow(0 0 ${(8 + 34 * st.glow).toFixed(1)}px ${st.glowColor}) brightness(${(1 + 0.2 * st.glow).toFixed(3)})`
         : '';
@@ -623,16 +641,16 @@ export class SceneRuntime {
     if (this.scene3d) {
       const objs3 = p.objects.filter((o): o is Obj3D => o.kind === 'shape3d');
       const st3 = new Map<string, State3D>();
-      for (const [id, s] of states) {
-        if (!objs3.some((o) => o.id === id)) continue;
+      for (const { id } of objs3) {
+        const s = states.get(id);
         st3.set(id, {
-          opacity: s.opacity,
-          dx: s.dx,
-          dy: s.dy,
-          scale: s.scale,
-          rot: s.rot3,
-          glow: s.glow,
-          draw: s.draw,
+          opacity: (s?.opacity ?? 1) * (p.styles[id]?.opacity ?? 1),
+          dx: (s?.dx ?? 0) + (p.styles[id]?.tx ?? 0),
+          dy: (s?.dy ?? 0) + (p.styles[id]?.ty ?? 0),
+          scale: s?.scale ?? 1,
+          rot: s?.rot3 ?? { x: 0, y: 0, z: 0 },
+          glow: s?.glow ?? 0,
+          draw: s?.draw ?? null,
         });
       }
       this.scene3d.apply(objs3, st3, p.camera, camAz);
