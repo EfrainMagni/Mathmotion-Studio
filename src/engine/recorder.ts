@@ -1,20 +1,28 @@
-import { BACKGROUND_COLOR, STAGE_SIZES } from '../types';
+import { BACKGROUND_COLOR, STAGE_SIZES, sceneDuration } from '../types';
 import { actions, store } from '../store';
 import { audio, engine } from './index';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/** Orden de preferencia: MP4 (H.264) si el navegador lo graba; si no, WebM. */
+/**
+ * Orden de preferencia: WebM (VP9/VP8) primero, porque en Chrome/Edge sobre Windows siempre genera una pista
+ * de vídeo válida; MP4 (H.264) solo como último recurso (p. ej. Safari).
+ */
 const MIME_CANDIDATES = [
-  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-  'video/mp4;codecs=avc1',
   'video/webm;codecs=vp9,opus',
   'video/webm;codecs=vp8,opus',
+  'video/webm;codecs=vp9',
+  'video/webm;codecs=vp8',
   'video/webm',
+  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+  'video/mp4',
 ];
 
-/** Duración por defecto de una escena sin clips ni voz. */
-const STATIC_SECONDS = 3;
+/** Fotogramas por segundo de la grabación. */
+const FPS = 30;
+
+/** Duración mínima de cualquier grabación (también la de una escena estática). */
+const MIN_SECONDS = 3;
 
 export function pickMime(): string | null {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return null;
@@ -92,7 +100,6 @@ async function run(
 ) {
   const project = store.getState().project;
   const { w: W, h: H } = STAGE_SIZES[project.format];
-  const isStatic = project.clips.length === 0 && !project.voice;
   const prevSpeed = playback.speed;
   const chunks: Blob[] = [];
   let recorder: MediaRecorder | null = null;
@@ -101,8 +108,9 @@ async function run(
   let startedRecording = false;
   let busy = false;
   let hasFrame = false;
-  let raf = 0;
+  let tickTimer = 0;
   let endTimer = 0;
+  const totalDuration = Math.max(sceneDuration(project), MIN_SECONDS);
 
   const mk = () => {
     const c = document.createElement('canvas');
@@ -119,6 +127,12 @@ async function run(
   const bctx = base.getContext('2d')!;
   const fctx = frame.getContext('2d')!;
   const octx = out.getContext('2d')!;
+  const paintOut = () => {
+    // Fondo sólido en cada fotograma: la pista de vídeo nunca queda vacía ni transparente.
+    drawBackground(octx, W, H, store.getState().project.background);
+    octx.drawImage(frame, 0, 0);
+  };
+  drawBackground(fctx, W, H, project.background);
 
   /** Dibuja el estado actual del runtime. Debe llamarse justo después de `renderAt` (por el WebGL). */
   const grab = () => {
@@ -133,28 +147,36 @@ async function run(
       busy = false;
       return;
     }
-    const img = new Image();
-    const url = URL.createObjectURL(new Blob([snap.svg], { type: 'image/svg+xml;charset=utf-8' }));
-    img.src = url;
-    img
-      .decode()
-      .then(() => {
+    const toImage = async (svg: string) => {
+      const img = new Image();
+      img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      await img.decode();
+      return img;
+    };
+    (async () => {
+      let img: HTMLImageElement;
+      try {
+        img = await toImage(snap.svg);
+      } catch {
+        // Respaldo: sin filtros, imágenes ni foreignObject, para que al menos las formas vectoriales se vean.
+        img = await toImage(runtime.snapshotScene(W, H, true).svg);
+      }
+      fctx.drawImage(base, 0, 0);
+      fctx.drawImage(img, 0, 0, W, H);
+      hasFrame = true;
+    })()
+      .catch(() => {
+        // Si todo falla se conserva el fondo (más la capa 3D) en lugar de un fotograma vacío.
         fctx.drawImage(base, 0, 0);
-        fctx.drawImage(img, 0, 0, W, H);
-        octx.drawImage(frame, 0, 0);
         hasFrame = true;
       })
-      .catch(() => {
-        /* se conserva el fotograma anterior */
-      })
       .finally(() => {
-        URL.revokeObjectURL(url);
         busy = false;
       });
   };
 
   const cleanup = () => {
-    cancelAnimationFrame(raf);
+    window.clearInterval(tickTimer);
     window.clearTimeout(endTimer);
     playback.onTick = null;
     playback.onComplete = null;
@@ -239,7 +261,7 @@ async function run(
 
   // 2) Canvas oculto → vídeo, más la mezcla de audio común
   try {
-    stream = out.captureStream(60);
+    stream = out.captureStream(FPS);
     const dest = audio.createRecordingDestination();
     const mixed = new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
     const q = QUALITY[quality];
@@ -251,26 +273,26 @@ async function run(
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.onerror = () => active?.stop('manual');
 
-  // Vuelca el último fotograma en cada refresco: el vídeo mantiene su ritmo aunque la escena sea estática.
+  // Bucle de renderizado a 30 fps (temporizador, no rAF: sigue vivo con la pestaña en segundo plano).
+  // Cada tick pinta fondo + último fotograma y pide explícitamente un fotograma a la pista de vídeo.
+  const videoTrack = stream?.getVideoTracks()[0] as (MediaStreamTrack & { requestFrame?: () => void }) | undefined;
   const pump = () => {
-    octx.drawImage(frame, 0, 0);
-    raf = requestAnimationFrame(pump);
+    if (finished) return;
+    paintOut();
+    if (recorder?.state === 'recording') videoTrack?.requestFrame?.();
   };
-  raf = requestAnimationFrame(pump);
+  pump();
 
-  // 3) Grabar: escena animada desde 0 s, o escena estática de STATIC_SECONDS
-  recorder.start(1000);
+  // 3) Grabar la duración real de la línea de tiempo (máx. de clips, voz y MIN_SECONDS), en tiempo real
+  recorder.start(500);
   startedRecording = true;
   setRec({ phase: 'recording', message: 'Grabando…', captureSize: { w: W, h: H } });
-  if (isStatic) {
-    endTimer = window.setTimeout(() => active?.stop('complete'), STATIC_SECONDS * 1000);
-    return;
-  }
+  const startedAt = performance.now();
+  tickTimer = window.setInterval(() => {
+    pump();
+    if (performance.now() - startedAt >= totalDuration * 1000 + 300) active?.stop('complete');
+  }, 1000 / FPS);
   playback.onTick = () => grab(); // justo después de dibujar cada fotograma
-  playback.onComplete = () => {
-    grab();
-    // pequeña cola para que el último fotograma quede en el archivo
-    endTimer = window.setTimeout(() => active?.stop('complete'), 700);
-  };
+  playback.onComplete = () => grab(); // la escena se queda en su último estado hasta totalDuration
   playback.play();
 }

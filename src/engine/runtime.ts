@@ -193,25 +193,48 @@ export class SceneRuntime {
    * capas 2D (posición, rotación, escala, opacidad y brillo ya aplicados) más las capas de efectos,
    * y los `<canvas>` WebGL de la capa 3D, que deben copiarse en el mismo turno en que se dibujaron.
    */
-  snapshotScene(W: number, H: number): { svg: string; gl: HTMLCanvasElement[] } {
+  snapshotScene(W: number, H: number, safe = false): { svg: string; gl: HTMLCanvasElement[] } {
     const ser = new XMLSerializer();
     const parts: string[] = [];
+    // Propiedades que en la copia aislada (imagen SVG) ya no heredan las hojas de estilo de la página.
+    const INLINE = [
+      'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-dasharray', 'stroke-dashoffset',
+      'stroke-linecap', 'stroke-linejoin', 'opacity', 'font-family', 'font-size', 'font-weight', 'font-style',
+      'text-anchor', 'visibility', 'display',
+    ];
     for (const wrapper of Array.from(this.els.layer.children) as HTMLElement[]) {
-      const svg = wrapper.firstElementChild as SVGSVGElement | null;
-      if (!svg || !wrapper.classList.contains('mm-obj')) continue;
+      const live = wrapper.firstElementChild as SVGSVGElement | null;
+      if (!live || !wrapper.classList.contains('mm-obj')) continue;
       const cs = getComputedStyle(wrapper);
       const op = parseFloat(wrapper.style.opacity || '1');
       if (cs.display === 'none' || op <= 0) continue;
       const bw = parseFloat(wrapper.style.width) || wrapper.offsetWidth;
       const bh = parseFloat(wrapper.style.height) || wrapper.offsetHeight;
-      // En pantalla el CSS (100 % × 100 %) manda sobre estos atributos; en la copia hacen falta.
+      // Se trabaja sobre una copia: los estilos calculados se incrustan en ella (el SVG vivo no se toca).
+      const svg = live.cloneNode(true) as SVGSVGElement;
       svg.setAttribute('width', String(bw));
       svg.setAttribute('height', String(bh));
       if (wrapper.dataset.kind === 'formula') svg.setAttribute('overflow', 'visible');
+      const src = [live, ...Array.from(live.querySelectorAll('*'))];
+      const dst = [svg, ...Array.from(svg.querySelectorAll('*'))];
+      src.forEach((el, i) => {
+        const copy = dst[i] as SVGElement | undefined;
+        if (!copy || el.closest(NON_RENDERED_SEL)) return;
+        if (safe && (el.localName === 'foreignObject' || el.localName === 'image')) {
+          copy.remove();
+          return;
+        }
+        const ecs = getComputedStyle(el);
+        for (const prop of INLINE) {
+          const v = ecs.getPropertyValue(prop);
+          if (v) copy.style.setProperty(prop, v);
+        }
+        if (safe) copy.style.removeProperty('filter');
+      });
       const m = new DOMMatrix(cs.transform === 'none' ? undefined : cs.transform);
       const ox = bw / 2;
       const oy = bh / 2;
-      const filter = wrapper.style.filter ? `filter:${wrapper.style.filter};` : '';
+      const filter = !safe && wrapper.style.filter ? `filter:${wrapper.style.filter};` : '';
       parts.push(
         `<g transform="translate(${ox} ${oy}) matrix(${m.a} ${m.b} ${m.c} ${m.d} ${m.e} ${m.f}) translate(${-ox} ${-oy})" ` +
           `opacity="${op}" style="color:${cs.color};${filter}">${ser.serializeToString(svg)}</g>`,
