@@ -1,6 +1,7 @@
+import { VECTOR_LABEL } from '../engine/vector';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Box,
+  ArrowUpRight, Box, Minus, MousePointer2, Type,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -17,7 +18,7 @@ import {
   Volume2,
 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { SHAPE3D_LABEL, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, type Shape3D, type SoundId } from '../types';
+import { SHAPE3D_LABEL, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, type Shape3D, type SoundId, type VectorTool } from '../types';
 import { audio, engine } from '../engine';
 import { SAMPLE_SVG, prepareSvg } from '../engine/svgImport';
 import { formulaToPrepared, loadMathJax, texToSvg } from '../engine/mathjax';
@@ -424,7 +425,6 @@ function AudioSection() {
       const generation = store.projectGeneration();
       const buffer = await audio.decodeVoice(file);
       if (generation !== store.projectGeneration()) return;
-      audio.voiceBuffer = buffer;
       actions.setVoice({ source: file, name: file.name, duration: buffer.duration, start: 0, volume: 1 });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -456,7 +456,6 @@ function AudioSection() {
         const generation = store.projectGeneration();
         const { source, name, buffer } = await audio.stopMic();
         if (generation !== store.projectGeneration()) return;
-        audio.voiceBuffer = buffer;
         actions.setVoice({ source, name, duration: buffer.duration, start: 0, volume: 1 });
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
@@ -509,10 +508,7 @@ function AudioSection() {
                 className="ml-auto text-slate-400 hover:text-rose-300"
                 aria-label="Quitar pista de voz"
                 title="Quitar pista de voz"
-                onClick={() => {
-                  audio.clearVoice();
-                  actions.setVoice(null);
-                }}
+                onClick={() => actions.setVoice(null)}
               >
                 <Trash2 size={13} />
               </button>
@@ -541,9 +537,41 @@ function AudioSection() {
   );
 }
 
+const DRAW_TOOLS = [
+  ['rectangle', Square], ['ellipse', Circle], ['line', Minus], ['arrow', ArrowUpRight], ['text', Type],
+] as const;
+
+function DrawingSection() {
+  const active = useStore((s) => s.ui.vectorTool);
+  const text = useStore((s) => s.ui.vectorText);
+  const disabled = useStore((s) => s.ui.playing || s.ui.recording.phase !== 'idle');
+  function select(tool: VectorTool | null) {
+    store.setUi({ vectorTool: tool, cameraMode: false });
+  }
+
+  return (
+    <Section title="Dibujo vectorial">
+      <div className="grid grid-cols-2 gap-1.5">
+        <button className={!active ? btnPrimary : btn} aria-pressed={!active} disabled={disabled}
+          onClick={() => select(null)}><MousePointer2 size={13} /> Selección</button>
+        {DRAW_TOOLS.map(([tool, Icon]) => (
+          <button key={tool} className={active === tool ? btnPrimary : btn} aria-pressed={active === tool}
+            disabled={disabled} onClick={() => select(tool)}><Icon size={13} /> {VECTOR_LABEL[tool]}</button>
+        ))}
+      </div>
+      {active === 'text' && (
+        <Field label="Texto para dibujar">
+          <input className={input} value={text} maxLength={250} onChange={(event) => store.setUi({ vectorText: event.target.value })} />
+        </Field>
+      )}
+    </Section>
+  );
+}
+
 export function LeftPanel() {
   return (
     <aside className="scroll-thin w-[300px] shrink-0 overflow-y-auto border-r border-white/10 bg-ink-800">
+      <DrawingSection />
       <ObjectsSection />
       <SvgSection />
       <LatexSection />

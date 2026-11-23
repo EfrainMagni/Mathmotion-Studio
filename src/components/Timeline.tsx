@@ -120,7 +120,7 @@ export function Timeline() {
   useStore((s) => s.ui.treeVersion);
   const [pps, setPps] = useState(90);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ id: string | 'voice'; sx: number; start: number } | null>(null);
+  const dragRef = useRef<{ id: string | 'voice'; sx: number; start: number; group: symbol } | null>(null);
 
   const total = sceneDuration(project);
   const span = Math.max(total + 3, 10);
@@ -132,21 +132,17 @@ export function Timeline() {
     return ids;
   }, [clips]);
 
-  // Atajos: Espacio, ←/→ (fotograma), Supr (clip). No actúan mientras se escribe en un campo.
+  // Espacio reproduce cuando el foco está fuera de campos y diálogos.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t.closest('input,textarea,select,[contenteditable]')) return;
+      if (t.closest('input,textarea,select,[contenteditable]') || document.querySelector('dialog[open]')) return;
       if (store.getState().ui.recording.phase !== 'idle') return;
       const pb = engine.playback;
       if (!pb) return;
       if (e.code === 'Space') {
         e.preventDefault();
         pb.toggle();
-      } else if (e.code === 'ArrowRight') pb.step(e.shiftKey ? 10 : 1);
-      else if (e.code === 'ArrowLeft') pb.step(e.shiftKey ? -10 : -1);
-      else if ((e.code === 'Delete' || e.code === 'Backspace') && store.getState().ui.selectedClip) {
-        actions.removeClip(store.getState().ui.selectedClip!);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -164,15 +160,15 @@ export function Timeline() {
     if (busy) return;
     e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    dragRef.current = { id, sx: e.clientX, start };
-    if (id !== 'voice') store.setUi({ selectedClip: id });
+    dragRef.current = { id, sx: e.clientX, start, group: Symbol() };
+    if (id !== 'voice') store.setUi({ selectedClip: id, selection: null });
   };
   const moveBlockDrag = (e: React.PointerEvent) => {
     const d = dragRef.current;
     if (!d) return;
     const ns = Math.max(0, Math.round((d.start + (e.clientX - d.sx) / pps) * 100) / 100);
-    if (d.id === 'voice') actions.updateVoice({ start: ns });
-    else actions.updateClip(d.id, { start: ns });
+    if (d.id === 'voice') actions.updateVoice({ start: ns }, d.group);
+    else actions.updateClip(d.id, { start: ns }, d.group);
   };
   const endBlockDrag = () => {
     dragRef.current = null;

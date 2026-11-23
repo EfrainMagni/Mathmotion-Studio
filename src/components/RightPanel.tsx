@@ -88,6 +88,19 @@ function Inspector() {
   const stroke = style.stroke ?? paint?.stroke;
   const strokeWidth = style.strokeWidth ?? paint?.strokeWidth ?? 0;
   const scale = info.isRoot ? obj.scale : style.scale ?? 1;
+  const center = (axis: 'x' | 'y') => {
+    const { w, h } = STAGE_SIZES[project.format];
+    if (is2D(obj)) {
+      actions.updateObject(obj.id, axis === 'x' ? { x: w / 2 } : { y: h / 2 });
+      return;
+    }
+    const box = engine.runtime?.getBox(obj.id);
+    if (!box) return;
+    const position = project.styles[obj.id];
+    if (axis === 'x') actions.setStyle(obj.id, { tx: (position?.tx ?? 0) + (w - box.w) / 2 - box.x });
+    else actions.setStyle(obj.id, { ty: (position?.ty ?? 0) + (h - box.h) / 2 - box.y });
+  };
+
   const defaultFill = is3d ? '#38bdf8' : '#ffffff';
 
   const setScale = (v: number) => (info.isRoot ? actions.updateObject(obj.id, { scale: v }) : actions.setStyle(selection, { scale: v }));
@@ -129,13 +142,47 @@ function Inspector() {
               value={strokeWidth}
               min={0}
               step={0.5}
-              disabled={is3d}
               onChange={(v) => actions.setStyle(selection, { strokeWidth: v })}
             />
+          </Field>
+          <Field label="Estilo de línea">
+            <select className={input} value={style.lineStyle ?? ''} onChange={(event) => {
+              const value = event.target.value;
+              actions.setStyle(selection, { lineStyle: value === 'solid' || value === 'dotted' ? value : undefined });
+            }}>
+              <option value="">Original</option>
+              <option value="solid">Sólida</option>
+              <option value="dotted">Punteada</option>
+            </select>
           </Field>
         </>
       ) : (
         <p className="text-[11px] text-slate-500">Este elemento no tiene geometría con relleno ni trazo.</p>
+      )}
+
+      <Field label="Opacidad (%)">
+        <NumberInput className={`${input} w-20`} value={(style.opacity ?? 1) * 100} min={0} max={100} step={5}
+          onChange={(value) => actions.setStyle(selection, { opacity: value / 100 })} />
+      </Field>
+
+      {is2D(obj) && obj.vector?.tool === 'arrow' && (
+        <Field label="Punta de flecha">
+          <select className={input} value={obj.vector.tip ?? 'triangle'} onChange={(event) => {
+            const tip = event.target.value;
+            if (tip === 'triangle' || tip === 'open' || tip === 'both' || tip === 'none') actions.editVector(obj, { tip });
+          }}>
+            <option value="triangle">Triangular</option>
+            <option value="open">Abierta</option>
+            <option value="both">Ambos extremos</option>
+            <option value="none">Sin punta</option>
+          </select>
+        </Field>
+      )}
+      {is2D(obj) && obj.vector?.tool === 'text' && (
+        <Field label="Contenido del texto">
+          <input className={input} value={obj.vector.text ?? ''} maxLength={250}
+            onChange={(event) => actions.editVector(obj, { text: event.target.value })} />
+        </Field>
       )}
 
       <Field label="Escala">
@@ -168,10 +215,18 @@ function Inspector() {
         </div>
       )}
 
+      <div className="grid grid-cols-2 gap-1.5" role="group" aria-label="Alineación y orden">
+        <button className={btn} onClick={() => center('x')}>Centrar horizontal</button>
+        <button className={btn} onClick={() => center('y')}>Centrar vertical</button>
+        <button className={btn} onClick={() => actions.orderObject(obj.id, true)}>Traer al frente</button>
+        <button className={btn} onClick={() => actions.orderObject(obj.id, false)}>Enviar atrás</button>
+        <button className={btn} onClick={() => actions.duplicateObject(obj.id)} title="Ctrl+D">Duplicar objeto</button>
+      </div>
+
       {!info.isRoot && (
         <button
           className={btn}
-          onClick={() => actions.setStyle(selection, { fill: undefined, stroke: undefined, strokeWidth: undefined, scale: undefined, tx: undefined, ty: undefined })}
+          onClick={() => actions.setStyle(selection, { fill: undefined, stroke: undefined, strokeWidth: undefined, lineStyle: undefined, opacity: undefined, scale: undefined, tx: undefined, ty: undefined })}
         >
           Restablecer estilo y posición
         </button>

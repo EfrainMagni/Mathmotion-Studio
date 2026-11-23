@@ -55,6 +55,16 @@ export interface Clip {
   sound: SoundId | null;
 }
 
+export type VectorTool = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text';
+export type ArrowTip = 'triangle' | 'open' | 'both' | 'none';
+export interface VectorGeometry {
+  tool: VectorTool;
+  reverseX?: boolean;
+  reverseY?: boolean;
+  tip?: ArrowTip;
+  text?: string;
+}
+
 export interface Obj2D {
   id: string;
   kind: 'svg' | 'formula';
@@ -70,6 +80,7 @@ export interface Obj2D {
   scale: number;
   rotation: number;
   tex?: string;
+  vector?: VectorGeometry;
   /** SVG original o generado por MathJax, para reconstruir el objeto al abrir un archivo. */
   sourceSvg: string;
 }
@@ -91,6 +102,8 @@ export interface NodeStyle {
   fill?: string;
   stroke?: string;
   strokeWidth?: number;
+  lineStyle?: 'solid' | 'dotted';
+  opacity?: number;
   /** Solo nodos hijos; la escala de un objeto raíz vive en el propio objeto. */
   scale?: number;
   tx?: number;

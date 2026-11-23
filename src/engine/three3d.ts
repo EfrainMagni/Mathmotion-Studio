@@ -1,4 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import type { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import type { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import type { Box, CameraState, NodeStyle, Obj3D, Shape3D } from '../types';
 
 /** Estado animado de un objeto 3D en un instante (calculado por el runtime). */
@@ -37,7 +40,7 @@ interface MatRec {
   kind: 'mesh' | 'line';
 }
 interface LineRec {
-  geo: any;
+  geo: LineSegmentsGeometry;
   total: number;
 }
 interface Entry {
@@ -48,7 +51,8 @@ interface Entry {
   lines: LineRec[];
   arrow?: any;
   arrowLen?: number;
-  colorKey: string;
+  arrowLine?: LineSegments2;
+  styleKey: string;
 }
 
 export class Scene3D {
@@ -60,6 +64,11 @@ export class Scene3D {
 
   private constructor(
     private THREE: any,
+    private lines: {
+      LineMaterial: typeof LineMaterial;
+      LineSegments2: typeof LineSegments2;
+      LineSegmentsGeometry: typeof LineSegmentsGeometry;
+    },
     private host: HTMLElement,
     private W: number,
     private H: number,
@@ -105,9 +114,14 @@ export class Scene3D {
     const gl = (probe.getContext('webgl2') || probe.getContext('webgl')) as WebGLRenderingContext | null;
     if (!gl) throw new Error('WebGL no está disponible en este navegador o dispositivo.');
     gl.getExtension('WEBGL_lose_context')?.loseContext();
-    const THREE = await import('three');
+    const [THREE, { LineMaterial }, { LineSegments2 }, { LineSegmentsGeometry }] = await Promise.all([
+      import('three'),
+      import('three/addons/lines/LineMaterial.js'),
+      import('three/addons/lines/LineSegments2.js'),
+      import('three/addons/lines/LineSegmentsGeometry.js'),
+    ]);
     try {
-      return new Scene3D(THREE, host, W, H);
+      return new Scene3D(THREE, { LineMaterial, LineSegments2, LineSegmentsGeometry }, host, W, H);
     } catch (e) {
       throw new Error(`No se pudo iniciar WebGL: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -131,15 +145,38 @@ export class Scene3D {
     e.mats.push({ mat, base: opacity, baseColor: mat.color.clone(), kind });
     if (kind === 'line') {
       const geo = obj.geometry;
-      const total = geo.attributes.position.count;
+      const total = geo.attributes.instanceStart.count;
       e.lines.push({ geo, total });
     }
   }
 
-  private build(o: Obj3D, fill: string, stroke: string): Entry {
+  private build(o: Obj3D, style: NodeStyle, styleKey: string): Entry {
     const T = this.THREE;
-    const e: Entry = { id: o.id, shape: o.shape, group: new T.Group(), mats: [], lines: [], colorKey: fill + stroke };
-    const lineMat = (c: string) => new T.LineBasicMaterial({ color: new T.Color(c) });
+    const e: Entry = { id: o.id, shape: o.shape, group: new T.Group(), mats: [], lines: [], styleKey };
+    const def = DEFAULT_COLORS[o.shape];
+    const fill = style.fill && style.fill !== 'none' ? style.fill : def.fill;
+    const fillOpacity = style.fill === 'none' ? 0 : 1;
+    const linewidth = style.strokeWidth ?? 1;
+    const strokeOpacity = style.stroke === 'none' || linewidth === 0 ? 0 : 1;
+    const makeLine = (positions: number[] | Float32Array, defaultColor: string, opacity = 1, tracked = true) => {
+      const { LineSegmentsGeometry, LineSegments2, LineMaterial } = this.lines;
+      const geometry = new LineSegmentsGeometry().setPositions(positions);
+      const color = style.stroke && style.stroke !== 'none' ? style.stroke : defaultColor;
+      const material = new LineMaterial({
+        color: new T.Color(color).getHex(), linewidth, dashed: style.lineStyle === 'dotted',
+        dashSize: 0.035, gapSize: 0.085,
+      });
+      const line = new LineSegments2(geometry, material);
+      line.computeLineDistances();
+      this.track(e, line, tracked ? 'line' : 'mesh', opacity * strokeOpacity);
+      return line;
+    };
+    const wireFor = (geometry: InstanceType<typeof T.BufferGeometry>, opacity: number) => {
+      const wireframe = new T.WireframeGeometry(geometry);
+      const line = makeLine(wireframe.attributes.position.array, def.stroke, opacity);
+      wireframe.dispose();
+      return line;
+    };
     const meshMat = (c: string) =>
       new T.MeshStandardMaterial({ color: new T.Color(c), side: T.DoubleSide, roughness: 0.55, metalness: 0.05 });
 
@@ -151,17 +188,13 @@ export class Scene3D {
           [[0, 0, -3.2, 0, 0, 3.2], '#60a5fa'],
         ];
         defs.forEach(([pts, col], i) => {
-          const g = new T.BufferGeometry();
-          g.setAttribute('position', new T.Float32BufferAttribute(pts, 3));
-          const l = new T.LineSegments(g, lineMat(col));
-          e.group.add(l);
-          this.track(e, l, 'line');
-          const cone = new T.Mesh(new T.ConeGeometry(0.12, 0.4, 16), meshMat(col));
+          e.group.add(makeLine(pts, col));
+          const cone = new T.Mesh(new T.ConeGeometry(0.12, 0.4, 16), meshMat(style.fill ? fill : col));
           cone.position.set(i === 0 ? 3.4 : 0, i === 1 ? 3.4 : 0, i === 2 ? 3.4 : 0);
           if (i === 0) cone.rotation.z = -Math.PI / 2;
           if (i === 2) cone.rotation.x = Math.PI / 2;
           e.group.add(cone);
-          this.track(e, cone, 'mesh');
+          this.track(e, cone, 'mesh', fillOpacity);
         });
         break;
       }
@@ -174,20 +207,16 @@ export class Scene3D {
         const geo = new T.LatheGeometry(pts, 40);
         const mesh = new T.Mesh(geo, meshMat(fill));
         e.group.add(mesh);
-        this.track(e, mesh, 'mesh', 0.45);
-        const wire = new T.LineSegments(new T.WireframeGeometry(geo), lineMat(stroke));
-        e.group.add(wire);
-        this.track(e, wire, 'line', 0.9);
+        this.track(e, mesh, 'mesh', 0.45 * fillOpacity);
+        e.group.add(wireFor(geo, 0.9));
         break;
       }
       case 'sphere': {
         const geo = new T.SphereGeometry(1.4, 28, 18);
         const mesh = new T.Mesh(geo, meshMat(fill));
         e.group.add(mesh);
-        this.track(e, mesh, 'mesh', 0.5);
-        const wire = new T.LineSegments(new T.WireframeGeometry(geo), lineMat(stroke));
-        e.group.add(wire);
-        this.track(e, wire, 'line', 0.7);
+        this.track(e, mesh, 'mesh', 0.5 * fillOpacity);
+        e.group.add(wireFor(geo, 0.7));
         break;
       }
       case 'vector': {
@@ -197,8 +226,12 @@ export class Scene3D {
         e.group.add(arrow);
         e.arrow = arrow;
         e.arrowLen = len;
-        this.track(e, arrow.line, 'mesh'); // la línea de la flecha se anima por longitud, no por drawRange
-        this.track(e, arrow.cone, 'mesh');
+        arrow.remove(arrow.line);
+        arrow.line.material.dispose();
+        e.arrowLine = makeLine([0, 0, 0, 0, 1, 0], style.fill && style.fill !== 'none' ? fill : def.stroke, 1, false);
+        arrow.add(e.arrowLine);
+        e.arrowLine.scale.y = len - 0.55;
+        this.track(e, arrow.cone, 'mesh', fillOpacity);
         break;
       }
     }
@@ -224,17 +257,18 @@ export class Scene3D {
         this.entries.delete(id);
       }
     }
-    for (const o of objs) {
-      const def = DEFAULT_COLORS[o.shape];
-      const fill = styles[o.id]?.fill && styles[o.id].fill !== 'none' ? styles[o.id].fill! : def.fill;
-      const stroke = styles[o.id]?.stroke && styles[o.id].stroke !== 'none' ? styles[o.id].stroke! : def.stroke;
-      const cur = this.entries.get(o.id);
-      if (cur && cur.shape === o.shape && cur.colorKey === fill + stroke) continue;
-      if (cur) this.disposeEntry(cur);
-      const e = this.build(o, fill, stroke);
-      this.entries.set(o.id, e);
-      this.scene.add(e.group);
-    }
+    objs.forEach((o, index) => {
+      const style = styles[o.id] ?? {};
+      const key = JSON.stringify([style.fill, style.stroke, style.strokeWidth, style.lineStyle]);
+      let entry = this.entries.get(o.id);
+      if (!entry || entry.shape !== o.shape || entry.styleKey !== key) {
+        if (entry) this.disposeEntry(entry);
+        entry = this.build(o, style, key);
+        this.entries.set(o.id, entry);
+        this.scene.add(entry.group);
+      }
+      entry.group.renderOrder = index;
+    });
   }
 
   // ---------- Estado por fotograma ----------
@@ -279,12 +313,12 @@ export class Scene3D {
         }
       }
       for (const l of e.lines) {
-        const n = p === null ? l.total : Math.floor((l.total * Math.min(1, p / 0.7)) / 2) * 2;
-        l.geo.setDrawRange(0, n);
+        l.geo.instanceCount = p === null ? l.total : Math.floor(l.total * Math.min(1, p / 0.7));
       }
       if (e.arrow) {
         const k = p === null ? 1 : Math.max(0.001, Math.min(1, p / 0.7));
         e.arrow.setLength(e.arrowLen! * k, 0.55 * k, 0.28 * k);
+        if (e.arrowLine) e.arrowLine.scale.y = (e.arrowLen! - 0.55) * k;
       }
     }
     this.render();
