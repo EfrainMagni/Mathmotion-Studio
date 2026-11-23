@@ -1,13 +1,23 @@
-import type { VectorGeometry, VectorTool } from '../types';
+import type { VectorGeometry, VectorTool, Vertex } from '../types';
 
 export const VECTOR_LABEL: Record<VectorTool, string> = {
   rectangle: 'Rectángulo', ellipse: 'Círculo / Elipse', line: 'Línea',
-  arrow: 'Flecha vectorial', text: 'Texto libre',
+  arrow: 'Flecha vectorial', text: 'Texto libre', polygon: 'Polígono',
 };
 
 export const VECTOR_FILL = '#38bdf8';
 export const VECTOR_STROKE = '#38bdf8';
 export const VECTOR_STROKE_WIDTH = 4;
+
+export function regularPolygon(center: Vertex, radius: number, sides: number, angle = -Math.PI / 2) {
+  const diameter = radius * 2;
+  const vertices = Array.from({ length: sides }, (_, index) => {
+    const theta = angle + 2 * Math.PI * index / sides;
+    return { x: radius + radius * Math.cos(theta), y: radius + radius * Math.sin(theta) };
+  });
+  const vector: VectorGeometry = { tool: 'polygon', vertices };
+  return { x: center.x - radius, y: center.y - radius, bw: diameter, bh: diameter, vector };
+}
 
 function xml(text: string) {
   return text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ud800-\udfff\ufffe\uffff]/gu, '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -26,6 +36,7 @@ export function vectorSvg(vector: VectorGeometry, width: number, height: number)
     ? `<defs><marker id="tip" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="strokeWidth" markerWidth="4" markerHeight="4" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10${tip === 'open' ? '' : 'Z'}" fill="${tip === 'open' ? 'none' : 'context-stroke'}" stroke="context-stroke" stroke-width="1"/></marker></defs>`
     : '';
   const markup = {
+    polygon: `<polygon points="${vector.vertices?.map(({ x, y }) => `${x},${y}`).join(' ') ?? ''}" ${fill}/>`,
     rectangle: `<rect width="${width}" height="${height}" ${fill}/>`,
     ellipse: `<ellipse cx="${width / 2}" cy="${height / 2}" rx="${width / 2}" ry="${height / 2}" ${fill}/>`,
     line: `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" ${stroke}/>`,

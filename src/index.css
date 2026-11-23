@@ -3,10 +3,32 @@
 @tailwind utilities;
 
 html, body, #root { height: 100%; margin: 0; }
-body { background: #070b14; color: #e2e8f0; font-family: Inter, system-ui, sans-serif; overflow: hidden; }
+body {
+  background: #141414;
+  color: #d4d4d4;
+  color-scheme: dark;
+  font: 11px/1.35 Inter, system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.studio-dialog {
+  @apply m-auto max-h-[90vh] rounded-md border border-bezel bg-ink-800 p-3 text-slate-300 shadow-2xl backdrop:bg-black/50;
+}
+
+.studio-toolbar :is(button, select) {
+  min-block-size: 24px;
+}
+
+.studio-drawing button {
+  justify-content: flex-start;
+  gap: 4px;
+  padding-inline: 4px;
+}
+
+.studio-drawing svg { flex: none; }
 
 /* Objetos 2D del escenario: el contenedor no captura el puntero; solo la geometría pintada. */
-.mm-obj { position: absolute; left: 0; top: 0; transform-origin: 50% 50%; pointer-events: none; will-change: transform; }
+.mm-obj { font-size: 16px; position: absolute; left: 0; top: 0; transform-origin: 50% 50%; pointer-events: none; will-change: transform; }
 .mm-obj > svg { display: block; width: 100%; height: 100%; pointer-events: none; }
 .mm-obj > svg * { pointer-events: auto; }
 .mm-obj[data-kind='formula'] { pointer-events: auto; }
@@ -14,13 +36,13 @@ body { background: #070b14; color: #e2e8f0; font-family: Inter, system-ui, sans-
 
 .mm-grid {
   background-image:
-    linear-gradient(rgba(148,163,184,.35) 2px, transparent 2px),
-    linear-gradient(90deg, rgba(148,163,184,.35) 2px, transparent 2px),
-    linear-gradient(rgba(148,163,184,.14) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148,163,184,.14) 1px, transparent 1px);
+    linear-gradient(rgba(160,160,160,.27) 2px, transparent 2px),
+    linear-gradient(90deg, rgba(160,160,160,.27) 2px, transparent 2px),
+    linear-gradient(rgba(160,160,160,.11) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(160,160,160,.11) 1px, transparent 1px);
   background-size: 200px 200px, 200px 200px, 40px 40px, 40px 40px;
 }
 
 input[type='number'] { -moz-appearance: textfield; }
-.scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
-.scroll-thin::-webkit-scrollbar-thumb { background: #26355a; border-radius: 4px; }
+.scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: #424242; border-radius: 4px; }

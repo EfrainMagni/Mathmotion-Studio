@@ -1,22 +1,31 @@
-import { vectorSvg } from '../engine/vector';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BACKGROUND_COLOR, STAGE_SIZES, is2D, type Box, type VectorGeometry } from '../types';
+import { regularPolygon, vectorSvg } from '../engine/vector';
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
+import { BACKGROUND_COLOR, STAGE_SIZES, is2D, type Box, type Obj2D, type VectorGeometry, type Vertex } from '../types';
 import { actions, store, useStore } from '../store';
 import { audio, engine } from '../engine';
 import { SceneRuntime } from '../engine/runtime';
 import { Playback } from '../engine/playback';
+import { PolygonOptions } from './PolygonOptions';
 
 type Drag =
   | { kind: 'root'; id: string; sx: number; sy: number; ox: number; oy: number }
   | { kind: 'child'; id: string; sx: number; sy: number; ox: number; oy: number; inv: DOMMatrix }
+  | { kind: 'vertex'; id: string; native: Obj2D | null; index: number; points: Vertex[]; start: Vertex; inverse: DOMMatrix }
   | { kind: 'camera'; sx: number; sy: number; az: number; el: number };
 
-type Point = { x: number; y: number };
-type Sketch = { start: Point; end: Point; vector: VectorGeometry; constrain: boolean };
+type Sketch = { start: Vertex; end: Vertex; vector: VectorGeometry; constrain: boolean; polygonSides: number };
 
-function sketchBounds({ start, end, vector, constrain }: Sketch) {
+function transformVertex(matrix: DOMMatrix, x: number, y: number): Vertex {
+  return { x: matrix.a * x + matrix.c * y + matrix.e, y: matrix.b * x + matrix.d * y + matrix.f };
+}
+
+function sketchBounds({ start, end, vector, constrain, polygonSides }: Sketch) {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
+  if (vector.tool === 'polygon') {
+    const radius = Math.hypot(dx, dy);
+    return radius >= 1 ? regularPolygon(start, radius, polygonSides, Math.atan2(dy, dx)) : null;
+  }
   let bw = Math.abs(dx);
   let bh = Math.abs(dy);
   if (constrain && (vector.tool === 'ellipse' || vector.tool === 'rectangle')) {
@@ -37,12 +46,16 @@ function sketchBounds({ start, end, vector, constrain }: Sketch) {
 }
 
 /** Escenario del editor: capas de fondo, 3D, SVG, efectos y marcas de interfaz. */
-export function Stage() {
+export function Stage({ viewportScale }: { viewportScale: number }) {
   const format = useStore((s) => s.project.format);
   const background = useStore((s) => s.project.background);
   const playing = useStore((s) => s.ui.playing);
   const recPhase = useStore((s) => s.ui.recording.phase);
   const vectorTool = useStore((s) => s.ui.vectorTool);
+  const direct = useStore((s) => s.ui.pointerTool === 'direct');
+  const anchorProject = useStore((s) => s.ui.pointerTool === 'direct' ? s.project : null);
+  const treeVersion = useStore((s) => s.ui.pointerTool === 'direct' ? s.ui.treeVersion : 0);
+  const time = useStore((s) => s.ui.pointerTool === 'direct' && !s.ui.playing ? s.ui.time : 0);
   const cameraMode = useStore((s) => s.ui.cameraMode);
   const showGuides = useStore((s) => s.ui.showGuides);
   const selection = useStore((s) => s.ui.selection);
@@ -56,6 +69,8 @@ export function Stage() {
   const pointer = useRef<{ id: number; generation: number; group: symbol } | null>(null);
   const draft = useRef<Sketch | null>(null);
   const [sketch, setSketch] = useState<Sketch | null>(null);
+  const [anchors, setAnchors] = useState<Vertex[]>([]);
+  const [activeAnchor, setActiveAnchor] = useState<number | null>(null);
   const [k, setK] = useState(0.4);
   const [box, setBox] = useState<Box | null>(null);
 
@@ -150,7 +165,23 @@ export function Stage() {
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  function position(event: React.PointerEvent): Point {
+  useLayoutEffect(() => {
+    const target = direct && !hideUi && selection ? engine.runtime?.getVertexTarget(selection) : null;
+    if (!target) {
+      setAnchors((previous) => previous.length ? [] : previous);
+      return;
+    }
+    const rect = stageRef.current!.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    setAnchors(target.points.map(({ x, y }) => {
+      const client = transformVertex(target.matrix, x, y);
+      return { x: (client.x - rect.left) * W / rect.width, y: (client.y - rect.top) * H / rect.height };
+    }));
+  }, [direct, hideUi, selection, anchorProject, treeVersion, time, W, H, k, viewportScale]);
+
+  useEffect(() => setActiveAnchor(null), [selection, direct]);
+
+  function position(event: PointerEvent): Vertex {
     const rect = stageRef.current!.getBoundingClientRect();
     return {
       x: Math.min(W, Math.max(0, (event.clientX - rect.left) * W / rect.width)),
@@ -174,7 +205,7 @@ export function Stage() {
       const vector: VectorGeometry = { tool: ui.vectorTool };
       if (vector.tool === 'text') vector.text = ui.vectorText;
       if (vector.tool === 'arrow') vector.tip = 'triangle';
-      draft.current = { start, end: start, vector, constrain: e.shiftKey };
+      draft.current = { start, end: start, vector, constrain: e.shiftKey, polygonSides: ui.polygonSides };
       setSketch(draft.current);
       return;
     }
@@ -183,6 +214,20 @@ export function Stage() {
       dragRef.current = { kind: 'camera', sx: e.clientX, sy: e.clientY, az: project.camera.az, el: project.camera.el };
       return;
     }
+    if (ui.pointerTool === 'direct' && e.target instanceof HTMLElement && e.target.dataset.vertexIndex !== undefined && ui.selection) {
+      const target = rt.getVertexTarget(ui.selection);
+      const index = Number(e.target.dataset.vertexIndex);
+      if (!target || !target.points[index]) return;
+      const inverse = target.matrix.inverse();
+      if (!Number.isFinite(inverse.a)) return;
+      setActiveAnchor(index);
+      dragRef.current = {
+        kind: 'vertex', id: target.id, native: target.native, points: target.points, index,
+        start: transformVertex(inverse, e.clientX, e.clientY), inverse,
+      };
+      return;
+    }
+
     const id = rt.resolveTarget(e.target, e.shiftKey);
     if (!id) {
       actions.select(null);
@@ -190,6 +235,7 @@ export function Stage() {
       return;
     }
     actions.select(id);
+    if (ui.pointerTool === 'direct') return;
     const info = rt.getNodeInfo(id);
     if (!info) return;
     const obj = project.objects.find((o) => o.id === info.objId);
@@ -216,6 +262,10 @@ export function Stage() {
     }
     const d = dragRef.current;
     if (!d) return;
+    if (d.kind === 'vertex') {
+      moveVertex(d, e, active.group);
+      return;
+    }
     const dx = e.clientX - d.sx;
     const dy = e.clientY - d.sy;
     if (d.kind === 'camera') {
@@ -236,12 +286,37 @@ export function Stage() {
     }
   };
 
+  function moveVertex(drag: Extract<Drag, { kind: 'vertex' }>, event: PointerEvent, group: symbol) {
+    const point = transformVertex(drag.inverse, event.clientX, event.clientY);
+    const from = drag.points[drag.index];
+    const edited = { x: from.x + (point.x - drag.start.x), y: from.y + (point.y - drag.start.y) };
+    if (!Number.isFinite(edited.x) || !Number.isFinite(edited.y)) return;
+    const current = store.getState().project;
+    const object = current.objects.find((entry) => entry.id === drag.id);
+    const existing = drag.native && object && is2D(object) ? object.vector?.vertices : current.styles[drag.id]?.vertices;
+    // Un clic sobre el ancla por sí solo no cambia la geometría.
+    const previous = existing?.[drag.index] ?? from;
+    if (edited.x === previous.x && edited.y === previous.y) return;
+    const points = drag.points.map((vertex, index) => index === drag.index ? edited : vertex);
+    if (drag.native && object && is2D(object)) actions.editVector(object, { tool: 'polygon', vertices: points }, group);
+    else if (!drag.native) actions.setStyle(drag.id, { vertices: points }, group);
+  }
+
   const endDrag = (event: React.PointerEvent) => {
     const active = pointer.current;
     if (!active || active.id !== event.pointerId) return;
+    if (event.type === 'pointerup' && dragRef.current?.kind === 'vertex' && active.generation === store.projectGeneration()) {
+      moveVertex(dragRef.current, event, active.group);
+    }
     if (event.type === 'pointerup' && draft.current && active.generation === store.projectGeneration()) {
-      const shape = sketchBounds({ ...draft.current, end: position(event), constrain: event.shiftKey });
-      if (shape) {
+      const end = position(event);
+      const start = draft.current.start;
+      const rect = stageRef.current!.getBoundingClientRect();
+      const pixelDistance = Math.hypot((end.x - start.x) * rect.width / W, (end.y - start.y) * rect.height / H);
+      const polygonClick = draft.current.vector.tool === 'polygon' && pixelDistance < 3;
+      const shape = sketchBounds({ ...draft.current, end, constrain: event.shiftKey });
+      if (polygonClick) store.setUi({ polygonRequest: start });
+      else if (shape) {
         const { x, y, bw, bh, vector } = shape;
         actions.addVector(vector, bw, bh, { x: x + bw / 2, y: y + bh / 2 });
       }
@@ -256,10 +331,12 @@ export function Stage() {
 
   const bg = BACKGROUND_COLOR[background];
   const selected = selection;
+  const anchorSize = 8 / (k * viewportScale);
 
   return (
     <div ref={wrapRef} className="relative flex h-full w-full items-center justify-center overflow-hidden bg-ink-950">
-      <div style={{ width: W * k, height: H * k }} className="relative shadow-2xl shadow-black/60 ring-1 ring-white/10">
+      <PolygonOptions />
+      <div style={{ width: W * k, height: H * k }} className="relative shadow-2xl shadow-black/60 ring-1 ring-bezel">
         <div
           ref={stageRef}
           data-stage
@@ -302,10 +379,10 @@ export function Stage() {
             <div className="mm-ui pointer-events-none absolute inset-0">
               {showGuides && (
                 <>
-                  <div className="absolute top-0 bottom-0 left-1/2 w-px bg-cyan-300/25" />
-                  <div className="absolute left-0 right-0 top-1/2 h-px bg-cyan-300/25" />
+                  <div className="absolute top-0 bottom-0 left-1/2 w-px bg-white/15" />
+                  <div className="absolute left-0 right-0 top-1/2 h-px bg-white/15" />
                   <div
-                    className="absolute border border-dashed border-cyan-300/20"
+                    className="absolute border border-dashed border-white/15"
                     style={{ left: W * 0.05, top: H * 0.05, width: W * 0.9, height: H * 0.9 }}
                   />
                 </>
@@ -318,13 +395,19 @@ export function Stage() {
                     top: box.y,
                     width: box.w,
                     height: box.h,
-                    outline: `${Math.max(2, 2 / k)}px dashed #22d3ee`,
+                    outline: `${Math.max(2, 2 / k)}px dashed #5c9ef4`,
                     outlineOffset: `${3 / k}px`,
                   }}
                 />
               )}
+              {direct && anchors.map((vertex, index) => (
+                <span key={index} data-vertex-index={index} title={`Vértice ${index + 1}`}
+                  className={`pointer-events-auto absolute cursor-move border border-accent ${activeAnchor === index ? 'bg-accent' : 'bg-white'}`}
+                  style={{ left: vertex.x - anchorSize / 2, top: vertex.y - anchorSize / 2,
+                    width: anchorSize, height: anchorSize, borderWidth: anchorSize / 8 }} />
+              ))}
               {cameraMode && (
-                <div className="absolute left-4 top-4 rounded bg-black/60 px-3 py-1.5 text-[26px] text-cyan-200">
+                <div className="absolute left-4 top-4 rounded bg-black/60 px-3 py-1.5 text-[26px] text-accent-light">
                   Modo cámara: arrastra para orbitar · rueda para acercar
                 </div>
               )}

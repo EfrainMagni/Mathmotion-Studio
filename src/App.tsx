@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent, PointerEvent } from 'react';
 import {
-  Focus, Hand, Maximize, Minus, MousePointer2, PanelBottom,
+  Focus, Hand, Maximize, Minus, MousePointer, MousePointer2, PanelBottom,
   PanelLeft, PanelRight, Plus, X,
 } from 'lucide-react';
 import { engine } from './engine';
@@ -25,7 +25,7 @@ function Notice() {
     <div
       role={notice.kind === 'error' ? 'alert' : 'status'}
       className={`absolute left-1/2 top-14 z-50 flex max-w-[640px] -translate-x-1/2 items-start gap-3 rounded-md border px-3 py-2 text-xs shadow-lg ${
-        notice.kind === 'error' ? 'border-rose-400/40 bg-rose-950/95 text-rose-100' : 'border-cyan-400/30 bg-ink-700/95 text-slate-100'
+        notice.kind === 'error' ? 'border-rose-400/40 bg-rose-950/95 text-rose-100' : 'border-bezel bg-ink-700/95 text-slate-100'
       }`}
     >
       <span className="leading-snug">{notice.text}</span>
@@ -62,9 +62,9 @@ function clearMouseFocus(event: MouseEvent<HTMLDivElement>) {
 }
 
 const controlClass =
-  'grid h-8 min-w-8 place-items-center rounded-md px-1.5 text-slate-300 ' +
-  'hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-cyan-300 ' +
-  'aria-pressed:bg-cyan-400/20 aria-pressed:text-cyan-200';
+  'grid h-6 min-w-6 place-items-center rounded px-1 text-slate-300 ' +
+  'hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-accent ' +
+  'aria-pressed:bg-accent-soft aria-pressed:text-accent-light';
 
 export function App() {
   const projectGeneration = useStore(() => store.projectGeneration());
@@ -72,14 +72,13 @@ export function App() {
   const sceneRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null);
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, scale: 1 });
-  const [tool, setTool] = useState<'select' | 'hand'>('select');
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [focus, setFocus] = useState(false);
   const [panels, setPanels] = useState({ left: true, right: true, timeline: true });
   const vectorTool = useStore((s) => s.ui.vectorTool);
-  useEffect(() => { if (vectorTool) setTool('select'); }, [vectorTool]);
-  const canPan = tool === 'hand' || spaceHeld;
+  const pointerTool = useStore((s) => s.ui.pointerTool);
+  const canPan = pointerTool === 'hand' || spaceHeld;
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -160,6 +159,11 @@ export function App() {
           event.preventDefault();
           if (!event.repeat && !ui.playing) actions.duplicateObject(object.id);
         }
+        return;
+      }
+      if (key === 'a' && !ui.playing) {
+        event.preventDefault();
+        store.setUi({ pointerTool: 'direct', vectorTool: null, cameraMode: false });
         return;
       }
       if (event.key === 'Delete' || (event.key === 'Backspace' && selectedClip)) {
@@ -260,8 +264,6 @@ export function App() {
             ref={viewportRef}
             className="absolute inset-0 overflow-hidden bg-slate-950"
             style={{
-              backgroundImage: 'radial-gradient(circle, rgb(148 163 184 / 22%) 1px, transparent 1px)',
-              backgroundSize: '20px 20px',
               cursor: dragging ? 'grabbing' : canPan ? 'grab' : undefined,
               touchAction: canPan || dragging ? 'none' : undefined,
             }}
@@ -276,14 +278,14 @@ export function App() {
               className="absolute inset-0 origin-top-left"
               style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})` }}
             >
-              <Stage />
+              <Stage viewportScale={camera.scale} />
             </div>
             {(canPan || dragging) && <div aria-hidden="true" className="absolute inset-0 z-10" />}
           </div>
 
           {!focus && (
             <div
-              className="absolute right-2 top-2 z-20 flex rounded-lg border border-white/10 bg-slate-950/75 p-0.5 backdrop-blur-md"
+              className="absolute right-1.5 top-1.5 z-20 flex rounded-lg border border-bezel bg-ink-700/95 p-0.5 backdrop-blur-md"
               onClick={clearMouseFocus}
             >
               {([
@@ -311,14 +313,20 @@ export function App() {
             role="group"
             aria-label="Controles del lienzo"
             onClick={clearMouseFocus}
-            className="absolute bottom-3 left-1/2 z-20 flex max-w-[calc(100%_-_1rem)] -translate-x-1/2 flex-wrap justify-center gap-0.5 rounded-xl border border-white/10 bg-slate-950/75 p-1 shadow-xl backdrop-blur-md"
+            className="absolute bottom-2 left-1/2 z-20 flex max-w-[calc(100%_-_1rem)] -translate-x-1/2 flex-wrap justify-center gap-0.5 rounded-md border border-bezel bg-ink-700/95 p-1 shadow-xl backdrop-blur-md"
           >
             <button type="button" className={controlClass} title="Seleccionar" aria-label="Seleccionar"
-              aria-pressed={tool === 'select'} onClick={() => { setTool('select'); store.setUi({ vectorTool: null }); }}>
+              aria-pressed={pointerTool === 'select' && !vectorTool}
+              onClick={() => store.setUi({ vectorTool: null, pointerTool: 'select', cameraMode: false })}>
               <MousePointer2 size={16} />
             </button>
+            <button type="button" className={controlClass} title="Selección Directa (Vértices) · A"
+              aria-label="Selección Directa (Vértices)" aria-keyshortcuts="A" aria-pressed={pointerTool === 'direct'}
+              onClick={() => store.setUi({ pointerTool: 'direct', vectorTool: null, cameraMode: false })}>
+              <MousePointer size={15} />
+            </button>
             <button type="button" className={controlClass} title="Mover (Espacio + arrastrar)"
-              aria-label="Mover" aria-pressed={tool === 'hand'} onClick={() => setTool('hand')}>
+              aria-label="Mover" aria-pressed={pointerTool === 'hand'} onClick={() => store.setUi({ vectorTool: null, pointerTool: 'hand', cameraMode: false })}>
               <Hand size={16} />
             </button>
             <button type="button" className={controlClass} title="Alejar" aria-label="Alejar"

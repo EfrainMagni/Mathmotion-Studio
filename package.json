@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test:dom": "node tests/dom-test.mjs",
     "test:project": "npm run build && node tests/project-test.mjs",
-    "test:vector": "npm run build && node tests/vector-test.mjs"
+    "test:vector": "npm run build && node tests/vector-test.mjs",
+    "test:polygon": "npm run build && node tests/polygon-test.mjs"
   },
   "dependencies": {
     "@mathjax/mathjax-newcm-font": "4.1.3",

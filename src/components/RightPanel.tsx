@@ -45,14 +45,14 @@ function PaintRow({
         disabled={isNone}
         title={isPaintServer ? 'Degradado o patrón: elegir un color lo sustituye' : undefined}
         onChange={(e) => onColor(e.target.value)}
-        className="h-6 w-9 cursor-pointer rounded border border-white/10 bg-transparent disabled:opacity-30"
+        className="h-6 w-9 cursor-pointer rounded border border-bezel bg-transparent disabled:opacity-30"
         aria-label={label}
       />
       <label className="flex items-center gap-1 text-[11px] text-slate-400">
         <input type="checkbox" checked={isNone} onChange={(e) => onNone(e.target.checked)} /> {noneLabel}
       </label>
       {hasOverride && (
-        <button className="text-[11px] text-cyan-300 underline" onClick={onReset} title="Volver al valor original">
+        <button className="text-[11px] text-accent-light underline" onClick={onReset} title="Volver al valor original">
           original
         </button>
       )}
@@ -107,7 +107,7 @@ function Inspector() {
 
   return (
     <Section title="Inspector">
-      <div className="rounded bg-ink-900 p-2 text-xs">
+      <div className="rounded bg-ink-900 p-1.5 text-xs">
         <div className="truncate font-semibold text-slate-100" title={info.name}>{info.name}</div>
         <div className="font-mono text-[10px] text-slate-500">
           {selection} · {is3d ? obj.kind === 'shape3d' && obj.shape : info.tag}
@@ -287,7 +287,7 @@ function Animations() {
         </select>
       </Field>
 
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('draw')}>
           <PenTool size={14} /> Escribir / Dibujar
         </button>
@@ -298,7 +298,7 @@ function Animations() {
           <Sparkles size={14} /> Brillar
         </button>
 
-        <div className="space-y-1.5 rounded border border-white/5 p-2">
+        <div className="space-y-1.5 rounded border border-bezel p-2">
           <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('appear', { direction: dir, distance: dist })}>
             <MoveRight size={14} /> Aparecer / Deslizar
           </button>
@@ -312,7 +312,7 @@ function Animations() {
           </div>
         </div>
 
-        <div className="space-y-1.5 rounded border border-white/5 p-2">
+        <div className="space-y-1.5 rounded border border-bezel p-2">
           <button
             className={`${btn} w-full justify-start`}
             disabled={!enabled}
@@ -345,7 +345,7 @@ function Animations() {
           )}
         </div>
 
-        <div className="space-y-1.5 rounded border border-white/5 p-2">
+        <div className="space-y-1.5 rounded border border-bezel p-2">
           <button
             className={`${btn} w-full justify-start`}
             disabled={!enabled || !is3d}
@@ -365,7 +365,7 @@ function Animations() {
 
 export function RightPanel() {
   return (
-    <aside className="scroll-thin w-[300px] shrink-0 overflow-y-auto border-l border-white/10 bg-ink-800">
+    <aside className="scroll-thin w-[248px] shrink-0 overflow-y-auto border-l border-bezel bg-ink-800">
       <Inspector />
       <Animations />
     </aside>

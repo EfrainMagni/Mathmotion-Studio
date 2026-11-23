@@ -14,9 +14,9 @@ export function Section({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className="border-b border-white/5">
+    <section className="border-b border-bezel">
       <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-300 hover:bg-white/5"
+        className="flex w-full items-center min-h-6 gap-1.5 px-2 text-left text-xs font-semibold text-slate-300 hover:bg-white/5"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
       >
@@ -24,17 +24,17 @@ export function Section({
         {icon}
         {title}
       </button>
-      {open && <div className="space-y-2 px-3 pb-3">{children}</div>}
+      {open && <div className="space-y-1.5 px-2 pb-2">{children}</div>}
     </section>
   );
 }
 
 export const btn =
-  'inline-flex items-center justify-center gap-1.5 rounded-md border border-white/10 bg-ink-700 px-2.5 py-1.5 text-xs font-medium text-slate-100 hover:bg-ink-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-ink-700';
+  'inline-flex items-center justify-center gap-1.5 min-h-6 rounded border border-bezel bg-ink-700 px-1.5 py-0.5 text-xs font-medium text-slate-100 hover:bg-ink-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-ink-700';
 export const btnPrimary =
-  'inline-flex items-center justify-center gap-1.5 rounded-md bg-cyan-500 px-2.5 py-1.5 text-xs font-semibold text-ink-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-cyan-500';
+  'inline-flex items-center justify-center gap-1.5 min-h-6 rounded border border-accent/50 bg-accent-soft px-1.5 py-0.5 text-xs font-semibold text-accent-light hover:border-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-accent-soft';
 export const input =
-  'w-full rounded-md border border-white/10 bg-ink-900 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400 disabled:opacity-40';
+  'min-h-6 w-full rounded border border-bezel bg-ink-900 px-1.5 py-0.5 text-xs text-slate-100 outline-none focus:border-accent disabled:opacity-40';
 
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return (

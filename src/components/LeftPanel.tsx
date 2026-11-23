@@ -1,7 +1,7 @@
 import { VECTOR_LABEL } from '../engine/vector';
 import { useEffect, useRef, useState } from 'react';
 import {
-  ArrowUpRight, Box, Minus, MousePointer2, Type,
+  ArrowUpRight, Box, Minus, MousePointer2, Pentagon, Settings2, Type,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -50,7 +50,7 @@ function TreeRow({
         role="treeitem"
         aria-selected={sel}
         data-node-id={node.id}
-        className={`flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-xs ${sel ? 'bg-cyan-500/25 text-cyan-100' : 'hover:bg-white/5'}`}
+        className={`flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-xs ${sel ? 'bg-accent-soft text-accent-light' : 'hover:bg-white/5'}`}
         style={{ paddingLeft: 4 + depth * 12 }}
         onClick={() => actions.select(node.id)}
       >
@@ -114,7 +114,7 @@ function ObjectsSection() {
   return (
     <Section title="Objetos" icon={<Layers size={14} />}>
       {objects.length === 0 && <p className="text-xs text-slate-500">Importa un SVG, inserta una fórmula o un objeto 3D.</p>}
-      <div ref={boxRef} role="tree" className="scroll-thin max-h-72 overflow-auto rounded border border-white/5 bg-ink-900 p-1">
+      <div ref={boxRef} role="tree" className="scroll-thin max-h-72 overflow-auto rounded border border-bezel bg-ink-900 p-1">
         {objects.map((o) => {
           const tree = o.kind === 'svg' ? engine.runtime?.getTree(o.id) : null;
           if (tree) {
@@ -139,7 +139,7 @@ function ObjectsSection() {
               role="treeitem"
               aria-selected={sel}
               data-node-id={o.id}
-              className={`group flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-xs ${sel ? 'bg-cyan-500/25 text-cyan-100' : 'hover:bg-white/5'}`}
+              className={`group flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-xs ${sel ? 'bg-accent-soft text-accent-light' : 'hover:bg-white/5'}`}
               style={{ paddingLeft: 20 }}
               onClick={() => actions.select(o.id)}
             >
@@ -333,7 +333,7 @@ function LatexSection() {
           <button className={btn} onClick={() => setRetry((r) => r + 1)}>Reintentar</button>
         </div>
       )}
-      <div className="relative flex min-h-[72px] items-center justify-center overflow-hidden rounded border border-white/10 bg-ink-900 p-2">
+      <div className="relative flex min-h-[56px] items-center justify-center overflow-hidden rounded border border-bezel bg-ink-900 p-2">
         {status === 'loading' && (
           <span className="absolute right-2 top-2 flex items-center gap-1 text-[11px] text-slate-400">
             <Loader2 size={12} className="animate-spin" /> Procesando…
@@ -474,7 +474,7 @@ function AudioSection() {
             <button className={btn} onClick={() => audio.playEffect(id)} aria-label={`Escuchar ${SOUND_LABEL[id]}`} title="Escuchar">
               <Play size={12} />
             </button>
-            <span className={`flex-1 truncate ${clipSound === id ? 'text-cyan-300' : ''}`}>{SOUND_LABEL[id]}</span>
+            <span className={`flex-1 truncate ${clipSound === id ? 'text-accent-light' : ''}`}>{SOUND_LABEL[id]}</span>
             <button
               className={btn}
               disabled={!selectedClip}
@@ -487,7 +487,7 @@ function AudioSection() {
         ))}
       </div>
 
-      <div className="space-y-2 border-t border-white/5 pt-2">
+      <div className="space-y-1.5 border-t border-bezel pt-2">
         <p className="text-[11px] uppercase tracking-wide text-slate-500">Pista de voz</p>
         <input ref={fileRef} type="file" accept="audio/*" className="hidden" onChange={(e) => void onFile(e.target.files?.[0])} />
         <div className="flex gap-2">
@@ -500,7 +500,7 @@ function AudioSection() {
         </div>
         {err && <p role="alert" className="rounded bg-rose-500/15 p-2 text-xs text-rose-200">{err}</p>}
         {voice && (
-          <div className="space-y-1.5 rounded border border-white/10 bg-ink-900 p-2">
+          <div className="space-y-1.5 rounded border border-bezel bg-ink-900 p-2">
             <div className="flex items-center gap-1.5 text-xs">
               <Volume2 size={13} className="shrink-0 text-emerald-300" />
               <span className="truncate" title={voice.name}>{voice.name}</span>
@@ -527,7 +527,7 @@ function AudioSection() {
                 step={0.05}
                 value={voice.volume}
                 onChange={(e) => actions.updateVoice({ volume: parseFloat(e.target.value) })}
-                className="w-28 accent-cyan-400"
+                className="w-28 accent-accent"
               />
             </Field>
           </div>
@@ -538,27 +538,36 @@ function AudioSection() {
 }
 
 const DRAW_TOOLS = [
-  ['rectangle', Square], ['ellipse', Circle], ['line', Minus], ['arrow', ArrowUpRight], ['text', Type],
+  ['rectangle', Square], ['ellipse', Circle], ['line', Minus], ['arrow', ArrowUpRight], ['text', Type], ['polygon', Pentagon],
 ] as const;
 
 function DrawingSection() {
   const active = useStore((s) => s.ui.vectorTool);
   const text = useStore((s) => s.ui.vectorText);
+  const normalSelection = useStore((s) => s.ui.pointerTool === 'select' && !s.ui.cameraMode);
+  const polygonSides = useStore((s) => s.ui.polygonSides);
   const disabled = useStore((s) => s.ui.playing || s.ui.recording.phase !== 'idle');
   function select(tool: VectorTool | null) {
-    store.setUi({ vectorTool: tool, cameraMode: false });
+    store.setUi({ vectorTool: tool, cameraMode: false, pointerTool: 'select' });
   }
 
   return (
     <Section title="Dibujo vectorial">
-      <div className="grid grid-cols-2 gap-1.5">
-        <button className={!active ? btnPrimary : btn} aria-pressed={!active} disabled={disabled}
-          onClick={() => select(null)}><MousePointer2 size={13} /> Selección</button>
+      <div className="studio-drawing grid grid-cols-2 gap-1">
+        <button className={!active && normalSelection ? btnPrimary : btn} aria-pressed={!active && normalSelection} disabled={disabled}
+          onClick={() => select(null)}><MousePointer2 size={12} /> Selección</button>
         {DRAW_TOOLS.map(([tool, Icon]) => (
           <button key={tool} className={active === tool ? btnPrimary : btn} aria-pressed={active === tool}
-            disabled={disabled} onClick={() => select(tool)}><Icon size={13} /> {VECTOR_LABEL[tool]}</button>
+            disabled={disabled} onClick={() => select(tool)} title={VECTOR_LABEL[tool]}>
+            <Icon size={12} /> <span className="truncate">{VECTOR_LABEL[tool]}</span>
+          </button>
         ))}
       </div>
+      {active === 'polygon' && (
+        <button className={`${btn} w-full`} disabled={disabled} onClick={() => store.setUi({ polygonRequest: 'options' })}>
+          <Settings2 size={12} /> Opciones de polígono · {polygonSides} lados
+        </button>
+      )}
       {active === 'text' && (
         <Field label="Texto para dibujar">
           <input className={input} value={text} maxLength={250} onChange={(event) => store.setUi({ vectorText: event.target.value })} />
@@ -570,7 +579,7 @@ function DrawingSection() {
 
 export function LeftPanel() {
   return (
-    <aside className="scroll-thin w-[300px] shrink-0 overflow-y-auto border-r border-white/10 bg-ink-800">
+    <aside className="scroll-thin w-[228px] shrink-0 overflow-y-auto border-r border-bezel bg-ink-800">
       <DrawingSection />
       <ObjectsSection />
       <SvgSection />
