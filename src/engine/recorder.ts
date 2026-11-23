@@ -1,16 +1,20 @@
-import { STAGE_SIZES } from '../types';
+import { BACKGROUND_COLOR, STAGE_SIZES } from '../types';
 import { actions, store } from '../store';
 import { audio, engine } from './index';
-import { channelName, type EditorToStage, type StageToEditor } from './stageLink';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+/** Orden de preferencia: MP4 (H.264) si el navegador lo graba; si no, WebM. */
 const MIME_CANDIDATES = [
+  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+  'video/mp4;codecs=avc1',
   'video/webm;codecs=vp9,opus',
   'video/webm;codecs=vp8,opus',
-  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
   'video/webm',
 ];
+
+/** Duración por defecto de una escena sin clips ni voz. */
+const STATIC_SECONDS = 3;
 
 export function pickMime(): string | null {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return null;
@@ -23,7 +27,7 @@ export const QUALITY = {
 } as const;
 
 interface Active {
-  stop: (reason: 'manual' | 'complete' | 'capture-ended' | 'window-closed') => void;
+  stop: (reason: 'manual' | 'complete') => void;
 }
 let active: Active | null = null;
 
@@ -45,94 +49,124 @@ function fail(msg: string) {
   actions.notify('error', msg);
 }
 
+
+function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number, background: keyof typeof BACKGROUND_COLOR) {
+  ctx.fillStyle = BACKGROUND_COLOR[background];
+  ctx.fillRect(0, 0, W, H);
+  if (background !== 'grid') return;
+  // Misma cuadrícula que `.mm-grid`: líneas de 2 px cada 200 px y de 1 px cada 40 px.
+  const lines = (step: number, width: number, alpha: number) => {
+    ctx.fillStyle = `rgba(160,160,160,${alpha})`;
+    for (let x = 0; x < W; x += step) ctx.fillRect(x, 0, width, H);
+    for (let y = 0; y < H; y += step) ctx.fillRect(0, y, W, width);
+  };
+  lines(40, 1, 0.11);
+  lines(200, 2, 0.27);
+}
+
 /**
- * Inicia la grabación. DEBE llamarse directamente desde el manejador de clic:
- * `window.open` y `getDisplayMedia` se invocan de forma síncrona dentro del gesto del usuario.
+ * Inicia la grabación directa del escenario. No usa la captura de pantalla: cada fotograma se dibuja
+ * en un canvas oculto a la resolución lógica del escenario (1920×1080 o 1080×1920, sin interfaz) y ese
+ * canvas se graba con `captureStream` + `MediaRecorder`, mezclando la pista de audio del proyecto.
  */
 export function beginRecording() {
   if (active) return;
-  const { project, ui } = store.getState();
-  if (!navigator.mediaDevices?.getDisplayMedia) {
-    return fail('Este navegador no admite captura de pantalla (getDisplayMedia).');
-  }
+  const { ui } = store.getState();
   const mime = pickMime();
   if (!mime) return fail('Este navegador no admite ningún formato de grabación compatible (MediaRecorder).');
-  if (!engine.playback) return fail('El escenario aún no está listo.');
-  if (project.clips.length === 0 && !project.voice) {
-    return fail('No hay animaciones ni voz para grabar. Añade al menos un clip.');
+  if (!('captureStream' in HTMLCanvasElement.prototype)) {
+    return fail('Este navegador no permite grabar un canvas (captureStream).');
   }
-
-  const sessionId = Math.random().toString(36).slice(2, 10);
-  const url = new URL(window.location.href);
-  url.search = `?stage=${sessionId}`;
-  url.hash = '';
-  const size = STAGE_SIZES[project.format];
-  const portrait = size.h > size.w;
-  const win = window.open(
-    url.toString(),
-    'mathmotion-stage',
-    `popup=yes,width=${portrait ? 450 : 960},height=${portrait ? 800 : 540}`,
-  );
-  if (!win) return fail('El navegador bloqueó la ventana de grabación. Permite las ventanas emergentes e inténtalo de nuevo.');
-
-  audio.ensure(); // dentro del gesto: desbloquea el audio
-  setRec({
-    phase: 'picker',
-    message: 'En el selector del navegador elige la pestaña «MathMotion · vista de grabación».',
-    captureSize: null,
-  });
-
-  let displayPromise: Promise<MediaStream>;
-  try {
-    displayPromise = navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: 30 }, displaySurface: 'browser' } as any,
-      audio: false,
-      selfBrowserSurface: 'exclude',
-      surfaceSwitching: 'exclude',
-      preferCurrentTab: false,
-    } as any);
-  } catch (e) {
-    win.close();
-    return fail(`No se pudo iniciar la captura: ${(e as Error).message}`);
-  }
-  void run(displayPromise, win, sessionId, mime, ui.recordQuality);
+  const runtime = engine.runtime;
+  const playback = engine.playback;
+  if (!runtime || !playback) return fail('El escenario aún no está listo.');
+  audio.ensure(); // dentro del gesto del usuario: desbloquea el audio
+  void run(runtime, playback, mime, ui.recordQuality);
 }
 
 async function run(
-  displayPromise: Promise<MediaStream>,
-  win: Window,
-  sessionId: string,
+  runtime: NonNullable<typeof engine.runtime>,
+  playback: NonNullable<typeof engine.playback>,
   mime: string,
   quality: 'light' | 'standard',
 ) {
-  const playback = engine.playback!;
-  const channel = new BroadcastChannel(channelName(sessionId));
-  let display: MediaStream | null = null;
-  let recorder: MediaRecorder | null = null;
-  let finished = false;
-  let pollTimer = 0;
+  const project = store.getState().project;
+  const { w: W, h: H } = STAGE_SIZES[project.format];
+  const isStatic = project.clips.length === 0 && !project.voice;
   const prevSpeed = playback.speed;
   const chunks: Blob[] = [];
+  let recorder: MediaRecorder | null = null;
+  let stream: MediaStream | null = null;
+  let finished = false;
   let startedRecording = false;
+  let busy = false;
+  let hasFrame = false;
+  let raf = 0;
+  let endTimer = 0;
+
+  const mk = () => {
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    return c;
+  };
+  const base = mk(); // fondo + capa 3D (se copia de forma síncrona)
+  const frame = mk(); // último fotograma completo
+  const out = mk(); // el que se captura
+  out.setAttribute('aria-hidden', 'true');
+  out.style.cssText = 'position:fixed;left:-99999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
+  document.body.appendChild(out);
+  const bctx = base.getContext('2d')!;
+  const fctx = frame.getContext('2d')!;
+  const octx = out.getContext('2d')!;
+
+  /** Dibuja el estado actual del runtime. Debe llamarse justo después de `renderAt` (por el WebGL). */
+  const grab = () => {
+    if (busy || finished) return;
+    busy = true;
+    let snap: ReturnType<typeof runtime.snapshotScene>;
+    try {
+      drawBackground(bctx, W, H, store.getState().project.background);
+      snap = runtime.snapshotScene(W, H);
+      for (const gl of snap.gl) bctx.drawImage(gl, 0, 0, W, H);
+    } catch {
+      busy = false;
+      return;
+    }
+    const img = new Image();
+    const url = URL.createObjectURL(new Blob([snap.svg], { type: 'image/svg+xml;charset=utf-8' }));
+    img.src = url;
+    img
+      .decode()
+      .then(() => {
+        fctx.drawImage(base, 0, 0);
+        fctx.drawImage(img, 0, 0, W, H);
+        octx.drawImage(frame, 0, 0);
+        hasFrame = true;
+      })
+      .catch(() => {
+        /* se conserva el fotograma anterior */
+      })
+      .finally(() => {
+        URL.revokeObjectURL(url);
+        busy = false;
+      });
+  };
 
   const cleanup = () => {
-    window.clearInterval(pollTimer);
+    cancelAnimationFrame(raf);
+    window.clearTimeout(endTimer);
     playback.onTick = null;
     playback.onComplete = null;
     playback.pause();
     playback.setSpeed(prevSpeed);
-    display?.getTracks().forEach((t) => t.stop()); // libera las pistas de captura
+    stream?.getTracks().forEach((t) => t.stop());
     audio.releaseRecordingDestination();
-    channel.close();
-    try {
-      win.close();
-    } catch {
-      /* ya cerrada */
-    }
+    out.remove();
     active = null;
   };
 
-  const finalize = (reason: string) => {
+  const finalize = () => {
     if (finished) return;
     finished = true;
     setRec({ phase: 'finishing', message: 'Guardando archivo…' });
@@ -156,15 +190,8 @@ async function run(
       document.body.appendChild(a);
       a.click();
       a.remove();
-      setRec({ phase: 'idle', message: null, lastFile: { url: urlObj, name, size: blob.size, mime: blob.type } });
-      actions.notify(
-        'info',
-        reason === 'capture-ended'
-          ? `La captura se cerró antes de terminar; se descargó lo grabado hasta ese momento (${name}).`
-          : reason === 'window-closed'
-            ? `Se cerró la vista de grabación; se descargó lo grabado hasta ese momento (${name}).`
-            : `Grabación lista: ${name}`,
-      );
+      setRec({ phase: 'idle', message: null, captureSize: null, lastFile: { url: urlObj, name, size: blob.size, mime: blob.type } });
+      actions.notify('info', `Grabación lista: ${name}`);
     };
     if (recorder && recorder.state !== 'inactive') {
       recorder.onstop = finish;
@@ -177,100 +204,45 @@ async function run(
   };
 
   active = {
-    stop: (reason) => {
+    stop: () => {
+      if (finished) return;
       if (!startedRecording) {
         // aún en preparación: cancelar sin archivo
-        if (finished) return;
         finished = true;
         cleanup();
-        setRec({ phase: 'idle', message: null });
+        setRec({ phase: 'idle', message: null, captureSize: null });
         return;
       }
-      finalize(reason);
+      finalize();
     },
   };
 
-  // 1) Permiso y selección de la fuente
+  setRec({ phase: 'preparing', message: 'Preparando la grabación…', captureSize: { w: W, h: H } });
+
+  // 1) Escena lista (capa 3D incluida) y primer fotograma limpio
   try {
-    display = await displayPromise;
-  } catch (e) {
-    cleanup();
-    const err = e as DOMException;
-    if (err.name === 'NotAllowedError') {
-      fail('Permiso denegado o selección cancelada. Pulsa «Grabar video» y elige la pestaña de la vista de grabación.');
-    } else if (err.name === 'NotFoundError') {
-      fail('No hay ninguna fuente de captura disponible.');
-    } else if (err.name === 'NotSupportedError') {
-      fail('Este navegador no admite la captura solicitada.');
-    } else fail(`No se pudo iniciar la captura: ${err.message || err.name}`);
-    return;
+    await runtime.whenReady();
+  } catch {
+    /* sin capa 3D: se graba igualmente la 2D */
   }
-  if (finished) {
-    display.getTracks().forEach((t) => t.stop());
-    return;
-  }
-
-  const vTrack = display.getVideoTracks()[0];
-  if (!vTrack) {
-    cleanup();
-    return fail('La captura no incluye pista de video.');
-  }
-  const settings: any = vTrack.getSettings();
-  if (settings.displaySurface && settings.displaySurface !== 'browser') {
-    cleanup();
-    return fail(
-      'Elegiste una ventana o pantalla completa, y saldría la interfaz del editor. Vuelve a grabar y elige la pestaña «MathMotion · vista de grabación».',
-    );
-  }
-  // Algunos navegadores exponen el título de la pestaña como etiqueta; si lo hacen y no es la vista limpia, se aborta.
-  const label = vTrack.label || '';
-  if (label && !/^web-contents-media-stream:|^screen:|^window:/i.test(label) && !/vista de grabaci/i.test(label)) {
-    cleanup();
-    return fail('La pestaña elegida no es «MathMotion · vista de grabación». Vuelve a grabar y selecciónala para no capturar el editor.');
-  }
-  // Cierre de la captura desde el botón «Dejar de compartir» del navegador
-  vTrack.addEventListener('ended', () => active?.stop('capture-ended'));
-  pollTimer = window.setInterval(() => {
-    if (win.closed) active?.stop('window-closed');
-  }, 500);
-
-  setRec({ phase: 'preparing', message: 'Comprobando que la vista de grabación esté lista…' });
-
-  // 2) La vista de grabación debe confirmar que aplicó el proyecto (incluida la capa 3D)
-  const token = Math.random().toString(36).slice(2);
-  const project = store.getState().project;
-  const ready = await new Promise<boolean>((resolve) => {
-    let done = false;
-    const timer = window.setInterval(() => channel.postMessage({ type: 'project', token, project } satisfies EditorToStage), 400);
-    const timeout = window.setTimeout(() => {
-      finish(false);
-    }, 10_000);
-    const finish = (v: boolean) => {
-      if (done) return;
-      done = true;
-      window.clearInterval(timer);
-      window.clearTimeout(timeout);
-      channel.removeEventListener('message', onMsg);
-      resolve(v);
-    };
-    const onMsg = (e: MessageEvent<StageToEditor>) => {
-      if (e.data.type === 'applied' && e.data.token === token) finish(true);
-      if (e.data.type === 'hello') channel.postMessage({ type: 'project', token, project } satisfies EditorToStage);
-    };
-    channel.addEventListener('message', onMsg);
-    channel.postMessage({ type: 'project', token, project } satisfies EditorToStage);
-  });
   if (finished) return;
-  if (!ready) {
+  playback.restart();
+  playback.setSpeed(1);
+  grab();
+  const t0 = performance.now();
+  while (!hasFrame && performance.now() - t0 < 5000) await new Promise((r) => setTimeout(r, 16));
+  if (finished) return;
+  if (!hasFrame) {
     cleanup();
-    return fail('La vista de grabación no respondió a tiempo. Ciérrala e inténtalo de nuevo.');
+    return fail('No se pudo dibujar el escenario en el canvas de grabación.');
   }
 
-  // 3) Audio común + video de la pestaña elegida
-  const dest = audio.createRecordingDestination();
-  const mixed = new MediaStream([vTrack, ...dest.stream.getAudioTracks()]);
-  const q = QUALITY[quality];
+  // 2) Canvas oculto → vídeo, más la mezcla de audio común
   try {
+    stream = out.captureStream(60);
+    const dest = audio.createRecordingDestination();
+    const mixed = new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+    const q = QUALITY[quality];
     recorder = new MediaRecorder(mixed, { mimeType: mime, videoBitsPerSecond: q.video, audioBitsPerSecond: q.audio });
   } catch (e) {
     cleanup();
@@ -279,24 +251,26 @@ async function run(
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.onerror = () => active?.stop('manual');
 
-  // 4) Reproducir desde 0 s a velocidad 1×
-  playback.restart();
-  playback.setSpeed(1);
-  channel.postMessage({ type: 'time', t: 0 } satisfies EditorToStage);
-  await new Promise((r) => setTimeout(r, 400)); // deja que la vista dibuje el primer fotograma
-  if (finished) return;
-  playback.onTick = (t) => channel.postMessage({ type: 'time', t } satisfies EditorToStage);
-  playback.onComplete = () => {
-    // pequeña cola para que el último fotograma quede en el archivo
-    window.setTimeout(() => active?.stop('complete'), 700);
+  // Vuelca el último fotograma en cada refresco: el vídeo mantiene su ritmo aunque la escena sea estática.
+  const pump = () => {
+    octx.drawImage(frame, 0, 0);
+    raf = requestAnimationFrame(pump);
   };
+  raf = requestAnimationFrame(pump);
+
+  // 3) Grabar: escena animada desde 0 s, o escena estática de STATIC_SECONDS
   recorder.start(1000);
   startedRecording = true;
-  const s: any = vTrack.getSettings();
-  setRec({
-    phase: 'recording',
-    message: 'Grabando…',
-    captureSize: s.width && s.height ? { w: s.width, h: s.height } : null,
-  });
+  setRec({ phase: 'recording', message: 'Grabando…', captureSize: { w: W, h: H } });
+  if (isStatic) {
+    endTimer = window.setTimeout(() => active?.stop('complete'), STATIC_SECONDS * 1000);
+    return;
+  }
+  playback.onTick = () => grab(); // justo después de dibujar cada fotograma
+  playback.onComplete = () => {
+    grab();
+    // pequeña cola para que el último fotograma quede en el archivo
+    endTimer = window.setTimeout(() => active?.stop('complete'), 700);
+  };
   playback.play();
 }

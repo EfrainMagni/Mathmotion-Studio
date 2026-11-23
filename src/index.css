@@ -28,7 +28,7 @@ body {
 .studio-drawing svg { flex: none; }
 
 /* Objetos 2D del escenario: el contenedor no captura el puntero; solo la geometría pintada. */
-.mm-obj { font-size: 16px; position: absolute; left: 0; top: 0; transform-origin: 50% 50%; pointer-events: none; will-change: transform; }
+.mm-obj { font-size: 16px; position: absolute; left: 0; top: 0; transform-origin: 50% 50%; pointer-events: none; }
 .mm-obj > svg { display: block; width: 100%; height: 100%; pointer-events: none; }
 .mm-obj > svg * { pointer-events: auto; }
 .mm-obj[data-kind='formula'] { pointer-events: auto; }

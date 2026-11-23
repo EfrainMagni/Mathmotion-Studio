@@ -188,6 +188,42 @@ export class SceneRuntime {
     this.k = k;
   }
 
+  /**
+   * Instantánea síncrona del escenario para la grabación directa a canvas: un único SVG con las
+   * capas 2D (posición, rotación, escala, opacidad y brillo ya aplicados) más las capas de efectos,
+   * y los `<canvas>` WebGL de la capa 3D, que deben copiarse en el mismo turno en que se dibujaron.
+   */
+  snapshotScene(W: number, H: number): { svg: string; gl: HTMLCanvasElement[] } {
+    const ser = new XMLSerializer();
+    const parts: string[] = [];
+    for (const wrapper of Array.from(this.els.layer.children) as HTMLElement[]) {
+      const svg = wrapper.firstElementChild as SVGSVGElement | null;
+      if (!svg || !wrapper.classList.contains('mm-obj')) continue;
+      const cs = getComputedStyle(wrapper);
+      const op = parseFloat(wrapper.style.opacity || '1');
+      if (cs.display === 'none' || op <= 0) continue;
+      const bw = parseFloat(wrapper.style.width) || wrapper.offsetWidth;
+      const bh = parseFloat(wrapper.style.height) || wrapper.offsetHeight;
+      // En pantalla el CSS (100 % × 100 %) manda sobre estos atributos; en la copia hacen falta.
+      svg.setAttribute('width', String(bw));
+      svg.setAttribute('height', String(bh));
+      if (wrapper.dataset.kind === 'formula') svg.setAttribute('overflow', 'visible');
+      const m = new DOMMatrix(cs.transform === 'none' ? undefined : cs.transform);
+      const ox = bw / 2;
+      const oy = bh / 2;
+      const filter = wrapper.style.filter ? `filter:${wrapper.style.filter};` : '';
+      parts.push(
+        `<g transform="translate(${ox} ${oy}) matrix(${m.a} ${m.b} ${m.c} ${m.d} ${m.e} ${m.f}) translate(${-ox} ${-oy})" ` +
+          `opacity="${op}" style="color:${cs.color};${filter}">${ser.serializeToString(svg)}</g>`,
+      );
+    }
+    for (const child of Array.from(this.els.fx.children)) parts.push(ser.serializeToString(child));
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ` +
+      `width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${parts.join('')}</svg>`;
+    return { svg, gl: Array.from(this.els.host3d.querySelectorAll('canvas')) };
+  }
+
   // ------------------------------------------------------------------ proyecto
 
   setProject(p: Project) {

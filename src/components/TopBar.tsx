@@ -72,7 +72,7 @@ export function TopBar() {
     }
   }
 
-  const supported = !!pickMime() && !!navigator.mediaDevices?.getDisplayMedia;
+  const supported = !!pickMime() && 'captureStream' in HTMLCanvasElement.prototype;
 
   return (
     <header className="studio-toolbar flex min-h-8 shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-bezel bg-ink-700 px-2 py-1">
@@ -177,7 +177,7 @@ export function TopBar() {
             className="inline-flex items-center gap-1.5 rounded-md bg-rose-500 px-2 py-0.5 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-40"
             onClick={beginRecording}
             disabled={!supported || working}
-            title={supported ? 'Abre una vista limpia y graba la clase con voz y efectos' : 'Este navegador no admite la grabación de pantalla'}
+            title={supported ? 'Graba el lienzo limpio (sin interfaz) con voz y efectos; sin clips graba 3 s de escena estática' : 'Este navegador no admite la grabación del lienzo'}
           >
             <Video size={14} /> Grabar video
           </button>
