@@ -1,7 +1,7 @@
 import { STAGE_SIZES, is2D, type Box, type Clip, type Obj2D, type Obj3D, type Project, type Shape3D, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
 import { SELECTABLE_SHAPES } from './svgImport';
-import { clipGlyphs, findGlyphElements, glyphChar, matchGlyphs, mixColor } from './glyphs';
+import { clipGlyphs, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor } from './glyphs';
 import { Scene3D, defaultState3D, type State3D } from './three3d';
 
 /**
@@ -72,6 +72,8 @@ interface GlyphRec {
   el: Element;
   parent: SVGGraphicsElement;
   char: string;
+  /** Clave de emparejamiento de TransformMatchingTex (carácter o forma). */
+  key: string;
 }
 
 /** Geometría base de un glifo (medida sin animaciones). Las cajas están en px del objeto. */
@@ -153,6 +155,12 @@ interface Ring {
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 export const easeInOut = (p: number) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+/** `smooth` de Manim (sigmoide con inflexión 10). */
+export const smooth = (p: number) => {
+  const sig = (x: number) => 1 / (1 + Math.exp(-x));
+  const err = sig(-5);
+  return Math.min(1, Math.max(0, (sig(10 * (p - 0.5)) - err) / (1 - 2 * err)));
+};
 export const easeOut = (p: number) => 1 - Math.pow(1 - p, 3);
 const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 const str = (v: unknown, d: string) => (typeof v === 'string' && v ? v : d);
@@ -368,7 +376,7 @@ export class SceneRuntime {
     const glyphs: GlyphRec[] = o.kind === 'formula' && !o.vector
       ? findGlyphElements(svg).map((el, index) => {
           el.setAttribute('data-mm-glyph', String(index));
-          return { index, el, parent: el.parentNode as SVGGraphicsElement, char: glyphChar(el) };
+          return { index, el, parent: el.parentNode as SVGGraphicsElement, char: glyphChar(el), key: glyphKey(el) };
         })
       : [];
     return { id: o.id, kind: o.kind, markup: o.markup, wrapper, svg, rootId: o.id, lastCss: '', glyphs, geo: null };
@@ -815,7 +823,7 @@ export class SceneRuntime {
       this.geomCache = new WeakMap();
     }
 
-    const { states, rings, camAz, glyphStates, frames, ghostStates, ghostGlyphs } = this.computeStates(p.clips, t);
+    const { states, rings, camAz, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds } = this.computeStates(p.clips, t);
 
     // Pivotes: se miden con el DOM en estado base para que el resultado no dependa del historial.
     const childIds = new Set<string>();
@@ -1008,11 +1016,13 @@ export class SceneRuntime {
       const filter = st && st.glow > 0
         ? `drop-shadow(0 0 ${(8 + 34 * st.glow).toFixed(1)}px ${st.glowColor}) brightness(${(1 + 0.2 * st.glow).toFixed(3)})`
         : '';
-      const sig = `${css}|${op}|${filter}`;
+      const inert = hiddenIds.has(o.id);
+      const sig = `${css}|${op}|${filter}|${inert}`;
       if (sig !== rec.lastCss) {
         rec.lastCss = sig;
         rec.wrapper.style.transform = css;
         rec.wrapper.style.opacity = op;
+        rec.wrapper.style.pointerEvents = inert ? 'none' : '';
         rec.wrapper.style.filter = filter;
       }
     }
@@ -1146,6 +1156,7 @@ export class SceneRuntime {
     /** Estados de las copias visuales (clips con «Mantener ecuación origen»). */
     const ghostStates = new Map<string, NState>();
     const ghostGlyphs = new Map<string, Map<number, GState>>();
+    const hiddenIds = new Set<string>();
     let camAz = 0;
     const glyphState = (objId: string, index: number, ghost = false): GState => {
       const store = ghost ? ghostGlyphs : glyphStates;
@@ -1193,6 +1204,20 @@ export class SceneRuntime {
     };
     const is3d = (id: string) => this.project!.objects.some((o) => o.id === id && o.kind === 'shape3d');
     const sorted = clips.slice().sort((a, b) => a.start - b.start);
+    // Destinos de transformaciones sin entrada propia anterior: ocultos hasta que empieza la transformación.
+    const revealAt = new Map<string, number>();
+    for (const c of sorted) {
+      if (c.type !== 'transform' && c.type !== 'transformMatch') continue;
+      const to = c.parameters.to;
+      if (typeof to !== 'string' || to === c.targetId || revealAt.has(to)) continue;
+      const entrance = sorted.some((k) => k.targetId === to && (k.type === 'draw' || k.type === 'appear') && k.start < c.start);
+      if (!entrance) revealAt.set(to, c.start);
+    }
+    for (const [id, start] of revealAt) {
+      if (t >= start || !this.nodes.has(id)) continue;
+      get(id).opacity *= 0;
+      hiddenIds.add(id);
+    }
     for (const c of sorted) {
       if (!this.nodes.has(c.targetId) && !is3d(c.targetId)) continue;
       const raw = (t - c.start) / c.duration;
@@ -1318,6 +1343,8 @@ export class SceneRuntime {
                   if (keep) for (const i of glyphsOf(fa)) if (!aIdx.includes(i)) glyphState(fa.id, i, true).opacity = 0;
                 }
                 for (const i of bIdx) glyphState(fb.id, i).opacity *= raw < 0 ? 0 : e;
+                // El resto de B aparece junto con la transformación si B estaba oculto.
+                if (revealAt.has(fb.id)) for (const i of glyphsOf(fb)) if (!bIdx.includes(i)) glyphState(fb.id, i).opacity *= raw < 0 ? 0 : e;
               }
             } else {
               // Objeto completo: posición, escala, rotación y opacidad hacia la pose de B.
@@ -1375,17 +1402,18 @@ export class SceneRuntime {
             if (!keep) get(A.id).opacity *= 0;
             break;
           }
-          const e = easeInOut(p);
+          const e = smooth(p);
           const key = `${A.id}|${B.id}|${recA.markup.length}|${recB.markup.length}`;
           let pairs = this.matches.get(key);
           if (!pairs) {
-            pairs = matchGlyphs(recA.glyphs.map((g) => g.char), recB.glyphs.map((g) => g.char));
+            pairs = matchGlyphs(recA.glyphs.map((g) => g.key), recB.glyphs.map((g) => g.key));
             this.matches.set(key, pairs);
           }
           const usedA = new Set<number>();
           const usedB = new Set<number>();
           const baseA = this.baseColor(recA, this.project!.styles[A.id]?.fill);
           const baseB = this.baseColor(recB, this.project!.styles[B.id]?.fill);
+          // Emparejados (LCS): posición, escala y color interpolados de A a B con `smooth`.
           for (const [ai, bi] of pairs) {
             usedA.add(ai);
             usedB.add(bi);
@@ -1399,13 +1427,37 @@ export class SceneRuntime {
             if (from !== to && e > 0) glyphState(A.id, ai, keep).mix.push([to, e]);
             glyphState(B.id, bi).opacity *= 0;
           }
-          for (const i of glyphsOf(A)) if (!usedA.has(i)) glyphState(A.id, i, keep).opacity *= 1 - e;
-          for (const i of glyphsOf(B)) if (!usedB.has(i)) glyphState(B.id, i).opacity *= e;
+          // No emparejados: FadeOut con leve contracción hacia los glifos nuevos; FadeIn con leve expansión desde los anteriores.
+          const lostA = glyphsOf(A).filter((i) => !usedA.has(i) && i < geoA.length);
+          const newB = glyphsOf(B).filter((i) => !usedB.has(i) && i < geoB.length);
+          const allA = glyphsOf(A).filter((i) => i < geoA.length);
+          const allB = glyphsOf(B).filter((i) => i < geoB.length);
+          const centerOf = (o: Obj2D, geo: GlyphGeo[], idx: number[], fallback: number[]) => {
+            const list = idx.length ? idx : fallback;
+            return list.length ? this.stageBounds(o, geo, list) : null;
+          };
+          const toward = centerOf(B, geoB, newB, allB);
+          const from0 = centerOf(A, geoA, lostA, allA);
+          const DRIFT = 0.25;
+          for (const i of lostA) {
+            if (toward) {
+              const own = this.stageBounds(A, geoA, [i]);
+              moveGroup(A, geoA, [i], 1 - 0.3 * e, 0, this.stageVec(A, (toward.cx - own.cx) * DRIFT * e, (toward.cy - own.cy) * DRIFT * e), keep);
+            }
+            glyphState(A.id, i, keep).opacity *= 1 - e;
+          }
+          for (const j of newB) {
+            if (from0) {
+              const own = this.stageBounds(B, geoB, [j]);
+              moveGroup(B, geoB, [j], 0.7 + 0.3 * e, 0, this.stageVec(B, (from0.cx - own.cx) * DRIFT * (1 - e), (from0.cy - own.cy) * DRIFT * (1 - e)));
+            }
+            glyphState(B.id, j).opacity *= e;
+          }
           break;
         }
       }
     }
-    return { states, rings, camAz, glyphStates, frames, ghostStates, ghostGlyphs };
+    return { states, rings, camAz, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds };
   }
 
   private drawRings(rings: Ring[], frames: Frame[] = []) {
