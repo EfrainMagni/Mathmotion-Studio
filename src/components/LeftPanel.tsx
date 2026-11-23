@@ -304,7 +304,8 @@ function LatexSection() {
         bw,
         bh,
         tex,
-        fit: Math.min((w * 0.7) / bw, (h * 0.35) / bh),
+        // Más grande por defecto: ocupa hasta el 85 % del ancho y el 55 % del alto del lienzo.
+        fit: Math.min((w * 0.85) / bw, (h * 0.55) / bh),
       });
     } catch (e) {
       setStatus('error');
