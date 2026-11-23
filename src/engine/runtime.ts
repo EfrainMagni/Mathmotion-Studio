@@ -168,6 +168,8 @@ export class SceneRuntime {
   private alive = true;
   private k = 1;
   private applied = new Map<Element, Props>();
+  /** Copias visuales de la ecuación origen (opción «Mantener ecuación origen»). */
+  private ghosts = new Map<string, { src: ObjRec; wrapper: HTMLDivElement; svg: SVGSVGElement }>();
   private origInline = new WeakMap<Element, Map<string, string>>();
   private baseOp = new WeakMap<Element, number>();
   private geomCache = new WeakMap<Element, GeomInfo>();
@@ -813,7 +815,7 @@ export class SceneRuntime {
       this.geomCache = new WeakMap();
     }
 
-    const { states, rings, camAz, glyphStates, frames } = this.computeStates(p.clips, t);
+    const { states, rings, camAz, glyphStates, frames, ghostStates, ghostGlyphs } = this.computeStates(p.clips, t);
 
     // Pivotes: se miden con el DOM en estado base para que el resultado no dependa del historial.
     const childIds = new Set<string>();
@@ -912,24 +914,22 @@ export class SceneRuntime {
     }
 
     // 2b) glifos de fórmulas: estilo propio + clips de énfasis y transformación
-    for (const o of p.objects) {
-      if (!is2D(o) || o.kind !== 'formula') continue;
-      const rec = this.objs.get(o.id);
-      const effects = glyphStates.get(o.id);
-      if (!rec || !rec.glyphs.length || (!o.glyphStyles && !effects)) continue;
+    const glyphFx = (o: Obj2D, rec: ObjRec, effects: Map<number, GState> | undefined, elOf: (g: GlyphRec) => Element | null) => {
       const geo = this.geoOf(rec);
       const base = this.baseColor(rec, p.styles[o.id]?.fill);
       for (const g of rec.glyphs) {
+        const gel = elOf(g);
+        if (!gel) continue;
         const style = o.glyphStyles?.[g.index];
         const fx = effects?.get(g.index);
         if (!style && !fx) continue;
-        const pr = P(g.el);
+        const pr = P(gel);
         const opacity = (style?.opacity ?? 1) * (fx?.opacity ?? 1);
-        if (opacity !== 1) mul(g.el, 'opacity', opacity, this.baseOpacity(g.el));
+        if (opacity !== 1) mul(gel, 'opacity', opacity, this.baseOpacity(gel));
         if (style?.color !== undefined || fx?.mix.length) {
           let color = style?.color ?? base;
           for (const [target, amount] of fx?.mix ?? []) color = mixColor(color, target, amount);
-          const paint = g.el.matches(PAINT_SEL) ? [g.el] : Array.from(g.el.querySelectorAll(PAINT_SEL));
+          const paint = gel.matches(PAINT_SEL) ? [gel] : Array.from(gel.querySelectorAll(PAINT_SEL));
           for (const el of paint) P(el).fill = color;
         }
         const sc = (style?.scale ?? 1) * (fx?.sc ?? 1);
@@ -956,7 +956,42 @@ export class SceneRuntime {
           pr.filter = `drop-shadow(0 0 ${((4 + 22 * fx.glow) * local).toFixed(2)}px ${fx.glowColor}) brightness(${(1 + 0.2 * fx.glow).toFixed(3)})`;
         }
       }
+    };
+    for (const o of p.objects) {
+      if (!is2D(o) || o.kind !== 'formula') continue;
+      const rec = this.objs.get(o.id);
+      const effects = glyphStates.get(o.id);
+      if (!rec || !rec.glyphs.length || (!o.glyphStyles && !effects)) continue;
+      glyphFx(o, rec, effects, (g) => g.el);
     }
+
+    // 2c) copias visuales de la ecuación origen («Mantener ecuación origen»)
+    const liveGhosts = new Set<string>();
+    for (const o of p.objects) {
+      if (!is2D(o)) continue;
+      const rec = this.objs.get(o.id);
+      const objFx = ghostStates.get(o.id);
+      const glyphFxMap = ghostGlyphs.get(o.id);
+      if (!rec || (!objFx && !glyphFxMap)) continue;
+      const ghost = this.ghostOf(rec, o);
+      liveGhosts.add(o.id);
+      if (ghost.wrapper.previousElementSibling !== rec.wrapper) rec.wrapper.after(ghost.wrapper);
+      ghost.wrapper.style.width = rec.wrapper.style.width;
+      ghost.wrapper.style.height = rec.wrapper.style.height;
+      const rootFill = p.styles[o.id]?.fill;
+      if (rootFill !== undefined) for (const el of Array.from(ghost.svg.querySelectorAll(PAINT_SEL))) P(el).fill = rootFill;
+      if (glyphFxMap || o.glyphStyles) {
+        glyphFx(o, rec, glyphFxMap, (g) => ghost.svg.querySelector(`[data-mm-glyph="${g.index}"]`));
+      }
+      const st = states.get(o.id);
+      const css =
+        `translate(${(o.x - o.bw / 2 + (st?.dx ?? 0) + (objFx?.dx ?? 0)).toFixed(3)}px,${(o.y - o.bh / 2 + (st?.dy ?? 0) + (objFx?.dy ?? 0)).toFixed(3)}px) ` +
+        `rotate(${(o.rotation + (st?.rot ?? 0) + (objFx?.rot ?? 0)).toFixed(3)}deg) ` +
+        `scale(${(o.scale * (st?.scale ?? 1) * (objFx?.scale ?? 1)).toFixed(5)})`;
+      ghost.wrapper.style.transform = css;
+      ghost.wrapper.style.opacity = String((st?.opacity ?? 1) * (p.styles[o.id]?.opacity ?? 1) * (objFx?.opacity ?? 1));
+    }
+    for (const [id, ghost] of this.ghosts) if (!liveGhosts.has(id)) ghost.wrapper.remove();
 
     // 3) contenedores raíz (posición, escala, rotación, opacidad, resplandor)
     for (const o of p.objects) {
@@ -1053,6 +1088,30 @@ export class SceneRuntime {
     }
   }
 
+  /** Copia limpia del objeto origen, fija en su sitio; la animación solo mueve esta copia. */
+  private ghostOf(rec: ObjRec, o: Obj2D) {
+    let g = this.ghosts.get(o.id);
+    if (g && g.src !== rec) {
+      g.wrapper.remove();
+      this.ghosts.delete(o.id);
+      g = undefined;
+    }
+    if (!g) {
+      const doc = new DOMParser().parseFromString(o.markup, 'image/svg+xml');
+      const svg = document.importNode(doc.documentElement, true) as unknown as SVGSVGElement;
+      svg.querySelectorAll('[data-mm-id]').forEach((el) => el.removeAttribute('data-mm-id'));
+      if (o.kind === 'formula' && !o.vector) findGlyphElements(svg).forEach((el, index) => el.setAttribute('data-mm-glyph', String(index)));
+      const wrapper = document.createElement('div');
+      wrapper.className = 'mm-obj';
+      wrapper.dataset.kind = o.kind;
+      wrapper.style.pointerEvents = 'none';
+      wrapper.appendChild(svg);
+      g = { src: rec, wrapper, svg };
+      this.ghosts.set(o.id, g);
+    }
+    return g;
+  }
+
   private commit(next: Map<Element, Props>) {
     for (const [el, old] of this.applied) {
       const cur = next.get(el);
@@ -1084,17 +1143,21 @@ export class SceneRuntime {
     const rings: Ring[] = [];
     const frames: Frame[] = [];
     const glyphStates = new Map<string, Map<number, GState>>();
+    /** Estados de las copias visuales (clips con «Mantener ecuación origen»). */
+    const ghostStates = new Map<string, NState>();
+    const ghostGlyphs = new Map<string, Map<number, GState>>();
     let camAz = 0;
-    const glyphState = (objId: string, index: number): GState => {
-      let list = glyphStates.get(objId);
-      if (!list) glyphStates.set(objId, (list = new Map()));
+    const glyphState = (objId: string, index: number, ghost = false): GState => {
+      const store = ghost ? ghostGlyphs : glyphStates;
+      let list = store.get(objId);
+      if (!list) store.set(objId, (list = new Map()));
       let g = list.get(index);
       if (!g) list.set(index, (g = { opacity: 1, dx: 0, dy: 0, sc: 1, rot: 0, mix: [], glow: 0, glowColor: '#fde047' }));
       return g;
     };
     const glyphsOf = (o: Obj2D) => this.objs.get(o.id)!.glyphs.map((g) => g.index);
     /** Escala, gira y desplaza un grupo de glifos alrededor de su propio centro. */
-    const moveGroup = (o: Obj2D, geo: GlyphGeo[], idx: number[], k: number, rotDeg: number, tw: { x: number; y: number }) => {
+    const moveGroup = (o: Obj2D, geo: GlyphGeo[], idx: number[], k: number, rotDeg: number, tw: { x: number; y: number }, ghost = false) => {
       let x0 = Infinity;
       let y0 = Infinity;
       let x1 = -Infinity;
@@ -1112,18 +1175,19 @@ export class SceneRuntime {
       for (const i of idx) {
         const rx = geo[i].center.x - cx;
         const ry = geo[i].center.y - cy;
-        const g = glyphState(o.id, i);
+        const g = glyphState(o.id, i, ghost);
         g.dx += k * (rx * Math.cos(th) - ry * Math.sin(th)) - rx + tw.x;
         g.dy += k * (rx * Math.sin(th) + ry * Math.cos(th)) - ry + tw.y;
         g.sc *= k;
         g.rot += rotDeg;
       }
     };
-    const get = (id: string): NState => {
-      let s = states.get(id);
+    const get = (id: string, ghost = false): NState => {
+      const store = ghost ? ghostStates : states;
+      let s = store.get(id);
       if (!s) {
         s = { opacity: 1, dx: 0, dy: 0, scale: 1, rot: 0, rot3: { x: 0, y: 0, z: 0 }, glow: 0, glowColor: '#fde047', draw: null, lag: null };
-        states.set(id, s);
+        store.set(id, s);
       }
       return s;
     };
@@ -1232,6 +1296,9 @@ export class SceneRuntime {
           const geoA = recA ? this.geoOf(recA) : null;
           const srcIdx = fa ? clipGlyphs(fa, par) : null;
           if (A && B) {
+            // «Mantener ecuación origen»: A queda fija y solo se anima una copia visual.
+            const keep = par.keep === true;
+            const ghostOn = !keep || live;
             const fb = this.formulaOf(B.id);
             const recB = fb ? this.objs.get(fb.id) : undefined;
             const geoB = recB ? this.geoOf(recB) : null;
@@ -1245,18 +1312,23 @@ export class SceneRuntime {
                 const sb = this.stageBounds(fb, geoB, bIdx);
                 const ratio = Math.sqrt((sb.w * sb.h) / Math.max(1e-6, sa.w * sa.h));
                 const k = 1 + ((Number.isFinite(ratio) && ratio > 0 ? ratio : 1) - 1) * e;
-                moveGroup(fa, geoA, aIdx, k, 0, this.stageVec(fa, (sb.cx - sa.cx) * e, (sb.cy - sa.cy) * e));
-                for (const i of aIdx) glyphState(fa.id, i).opacity *= 1 - e;
+                if (ghostOn) {
+                  moveGroup(fa, geoA, aIdx, k, 0, this.stageVec(fa, (sb.cx - sa.cx) * e, (sb.cy - sa.cy) * e), keep);
+                  for (const i of aIdx) glyphState(fa.id, i, keep).opacity *= 1 - e;
+                  if (keep) for (const i of glyphsOf(fa)) if (!aIdx.includes(i)) glyphState(fa.id, i, true).opacity = 0;
+                }
                 for (const i of bIdx) glyphState(fb.id, i).opacity *= raw < 0 ? 0 : e;
               }
             } else {
               // Objeto completo: posición, escala, rotación y opacidad hacia la pose de B.
-              const s = get(A.id);
-              s.dx += (B.x - A.x) * e;
-              s.dy += (B.y - A.y) * e;
-              s.rot += (B.rotation - A.rotation) * e;
-              s.scale *= 1 + (B.scale / A.scale - 1) * e;
-              s.opacity *= 1 - e;
+              if (ghostOn) {
+                const s = get(A.id, keep);
+                s.dx += (B.x - A.x) * e;
+                s.dy += (B.y - A.y) * e;
+                s.rot += (B.rotation - A.rotation) * e;
+                s.scale *= 1 + (B.scale / A.scale - 1) * e;
+                s.opacity *= 1 - e;
+              }
               get(B.id).opacity *= raw < 0 ? 0 : e;
             }
             break;
@@ -1298,8 +1370,9 @@ export class SceneRuntime {
             get(B.id).opacity *= 0;
             break;
           }
+          const keep = par.keep === true;
           if (raw >= 1) {
-            get(A.id).opacity *= 0;
+            if (!keep) get(A.id).opacity *= 0;
             break;
           }
           const e = easeInOut(p);
@@ -1320,19 +1393,19 @@ export class SceneRuntime {
             const sb = this.stageBounds(B, geoB, [bi]);
             const ratio = Math.sqrt((sb.w * sb.h) / Math.max(1e-6, sa.w * sa.h));
             const k = 1 + ((Number.isFinite(ratio) && ratio > 0 ? ratio : 1) - 1) * e;
-            moveGroup(A, geoA, [ai], k, 0, this.stageVec(A, (sb.cx - sa.cx) * e, (sb.cy - sa.cy) * e));
+            moveGroup(A, geoA, [ai], k, 0, this.stageVec(A, (sb.cx - sa.cx) * e, (sb.cy - sa.cy) * e), keep);
             const from = A.glyphStyles?.[ai]?.color ?? baseA;
             const to = B.glyphStyles?.[bi]?.color ?? baseB;
-            if (from !== to && e > 0) glyphState(A.id, ai).mix.push([to, e]);
+            if (from !== to && e > 0) glyphState(A.id, ai, keep).mix.push([to, e]);
             glyphState(B.id, bi).opacity *= 0;
           }
-          for (const i of glyphsOf(A)) if (!usedA.has(i)) glyphState(A.id, i).opacity *= 1 - e;
+          for (const i of glyphsOf(A)) if (!usedA.has(i)) glyphState(A.id, i, keep).opacity *= 1 - e;
           for (const i of glyphsOf(B)) if (!usedB.has(i)) glyphState(B.id, i).opacity *= e;
           break;
         }
       }
     }
-    return { states, rings, camAz, glyphStates, frames };
+    return { states, rings, camAz, glyphStates, frames, ghostStates, ghostGlyphs };
   }
 
   private drawRings(rings: Ring[], frames: Frame[] = []) {
@@ -1465,6 +1538,8 @@ export class SceneRuntime {
     this.scene3d?.dispose();
     this.scene3d = null;
     for (const rec of this.objs.values()) rec.wrapper.remove();
+    for (const ghost of this.ghosts.values()) ghost.wrapper.remove();
+    this.ghosts.clear();
     this.objs.clear();
     this.nodes.clear();
   }

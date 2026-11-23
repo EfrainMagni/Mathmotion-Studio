@@ -65,20 +65,30 @@ export function NumberInput({
   className?: string;
   ariaLabel?: string;
 }) {
+  // Mientras se escribe se conserva el texto tal cual («0.», «0.4»); el límite se aplica al confirmar.
+  const [draft, setDraft] = useState<string | null>(null);
+  const lo = min ?? -Infinity;
+  const hi = max ?? Infinity;
   return (
     <input
       type="number"
       aria-label={ariaLabel}
       className={className ?? input}
-      value={Number.isFinite(value) ? Math.round(value * 1000) / 1000 : ''}
+      value={draft ?? (Number.isFinite(value) ? Math.round(value * 1000) / 1000 : '')}
       min={min}
       max={max}
       step={step}
       disabled={disabled}
       onChange={(e) => {
+        setDraft(e.target.value);
         const v = parseFloat(e.target.value);
-        if (!Number.isFinite(v)) return;
-        onChange(Math.min(max ?? Infinity, Math.max(min ?? -Infinity, v)));
+        if (Number.isFinite(v) && v >= lo && v <= hi) onChange(v);
+      }}
+      onBlur={() => {
+        if (draft === null) return;
+        const v = parseFloat(draft);
+        if (Number.isFinite(v)) onChange(Math.min(hi, Math.max(lo, v)));
+        setDraft(null);
       }}
     />
   );

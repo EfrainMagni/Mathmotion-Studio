@@ -227,6 +227,8 @@ interface EquationEvent {
   /** Clave de serialización: los clips sobre el mismo alcance se encadenan. */
   key: string;
   overlay: boolean;
+  /** «Mantener ecuación origen»: la copia se anima y el destino se restaura al terminar. */
+  keep?: boolean;
   /** Mobjects destino que solo aparecen cuando empieza la transformación. */
   reveal: string[];
 }
@@ -262,7 +264,9 @@ function equationAnimation(
         const term = termId ? target.terms?.find((entry) => entry.id === termId) : undefined;
         const destCode = term && glyphGroup(target.id, targetInfo, term.glyphs) ? `${target.id}_${term.id}` : target.id;
         const type = params.replace ? 'ReplacementTransform' : 'Transform';
-        return { key, overlay: false, reveal: [destCode], code: `${type}(${selection}, ${destCode}, ${duration})` };
+        // «Mantener ecuación origen»: se anima una copia y el origen permanece en escena.
+        const keep = params.keep === true;
+        return { key, overlay: keep, keep, reveal: [destCode], code: `${type}(${selection}${keep ? '.copy()' : ''}, ${destCode}, ${duration})` };
       }
       const chain: string[] = [];
       const factor = typeof params.scale === 'number' ? params.scale : 1;
@@ -282,7 +286,11 @@ function equationAnimation(
       if (!target || target.kind !== 'formula' || target.vector || object.kind !== 'formula' || !object.tex || !target.tex) return null;
       const exact = !!own.tokens && !!info(target).tokens;
       if (!exact) notes.add('TransformMatchingTex usa TransformMatchingShapes en ecuaciones complejas (empareja por forma de glifo).');
-      return { key: object.id, overlay: false, reveal: [target.id], code: `${exact ? 'TransformMatchingTex' : 'TransformMatchingShapes'}(${object.id}, ${target.id}, ${duration})` };
+      const keep = params.keep === true;
+      return {
+        key: object.id, overlay: keep, keep, reveal: [target.id],
+        code: `${exact ? 'TransformMatchingTex' : 'TransformMatchingShapes'}(${object.id}${keep ? '.copy()' : ''}, ${target.id}, ${duration})`,
+      };
     }
     default:
       return null;
@@ -320,6 +328,9 @@ const TIMELINE_HELPER = `def play_timeline(scene, objects, events, duration):
                 animation.finish()
                 if opts.get("overlay"):
                     scene.remove(animation.mobject)
+                for other, final in opts.get("finals", []):
+                    # Mantener ecuación origen: la copia desaparece y el destino queda visible.
+                    other.become(final)
             else:
                 remaining.append((end, start, animation, opts))
         active[:] = remaining
@@ -335,6 +346,9 @@ const TIMELINE_HELPER = `def play_timeline(scene, objects, events, duration):
             for other in opts.get("reveal", []):
                 if other in hidden:
                     other.become(hidden.pop(other))
+            if opts.get("keep"):
+                opts = dict(opts)
+                opts["finals"] = [(other, other.copy()) for other in opts.get("reveal", [])]
             animation = build()
             if opts.get("overlay"):
                 scene.add(animation.mobject)
@@ -357,7 +371,7 @@ export function generateManim(project: Project): { script: string; notes: string
   const notes = new Set<string>();
   const byId = new Map(project.objects.map((object) => [object.id, object]));
   const ends = new Map<string, number>();
-  const events: { start: number; time: number; id: string; code: string; entrance: boolean; overlay: boolean; reveal: string[] }[] = [];
+  const events: { start: number; time: number; id: string; code: string; entrance: boolean; overlay: boolean; keep?: boolean; reveal: string[] }[] = [];
   const infos = new Map<string, TexInfo>();
   const infoOf = (object: Obj2D) => {
     let info = infos.get(object.id);
@@ -376,7 +390,7 @@ export function generateManim(project: Project): { script: string; notes: string
       const start = Math.max(clip.start, ends.get(built.key) ?? 0);
       if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
       ends.set(built.key, start + clip.duration);
-      events.push({ start, time: clip.duration, id: object.id, code: built.code, entrance: false, overlay: built.overlay, reveal: built.reveal });
+      events.push({ start, time: clip.duration, id: object.id, code: built.code, entrance: false, overlay: built.overlay, keep: built.keep, reveal: built.reveal });
       continue;
     }
     const orbit = clip.type === 'orbit';
@@ -412,7 +426,7 @@ export function generateManim(project: Project): { script: string; notes: string
   if (events.length) {
     if (hasOrbit) body.push('orbit_camera = self.camera.theta_tracker');
     const options = (event: (typeof events)[number]) => {
-      const entries = [event.overlay && '"overlay": True', event.reveal.length && `"reveal": [${event.reveal.join(', ')}]`].filter(Boolean);
+      const entries = [event.overlay && '"overlay": True', event.keep && '"keep": True', event.reveal.length && `"reveal": [${event.reveal.join(', ')}]`].filter(Boolean);
       return `{${entries.join(', ')}}`;
     };
     body.push('events = [', ...events.map((event) => `    (${n(event.start)}, ${n(event.time)}, ${event.id}, ${event.entrance ? 'True' : 'False'}, lambda: ${event.code}, ${options(event)}),`),

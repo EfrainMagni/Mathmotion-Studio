@@ -15,6 +15,10 @@ export const BACKGROUND_COLOR: Record<StageBackground, string> = {
 
 export const FPS = 30;
 
+/** Rango de escala libre del inspector (ecuaciones, formas y glifos). */
+export const SCALE_MIN = 0.05;
+export const SCALE_MAX = 10;
+
 export type Shape3D = 'axes' | 'paraboloid' | 'sphere' | 'vector';
 export const SHAPE3D_LABEL: Record<Shape3D, string> = {
   axes: 'Ejes cartesianos',
