@@ -1,4 +1,5 @@
-import { STAGE_SIZES, is2D, type Box, type Clip, type Obj2D, type Obj3D, type Project, type Shape3D } from '../types';
+import { STAGE_SIZES, is2D, type Box, type Clip, type Obj2D, type Obj3D, type Project, type Shape3D, type Vertex } from '../types';
+import { vertexAttributes, vertexGeometry } from './vertices';
 import { SELECTABLE_SHAPES } from './svgImport';
 import { Scene3D, defaultState3D, type State3D } from './three3d';
 
@@ -117,6 +118,7 @@ export class SceneRuntime {
   private origInline = new WeakMap<Element, Map<string, string>>();
   private baseOp = new WeakMap<Element, number>();
   private geomCache = new WeakMap<Element, GeomInfo>();
+  private vertexEdits = new Map<string, { element: Element; original: Element; points: Vertex[]; keys: string[] }>();
   private pivots = new WeakMap<Element, { x: number; y: number }>();
   private measureKey = '';
   private ringsDrawn = false;
@@ -168,9 +170,42 @@ export class SceneRuntime {
     this.els.stage.style.height = `${h}px`;
     this.scene3d?.resize(w, h);
 
+    this.syncVertexEdits(p.styles);
     this.renderAt(this.time);
     if (treeChanged) this.hooks.onTree?.();
     void this.sync3D();
+  }
+
+  private syncVertexEdits(styles: Project['styles']) {
+    const invalidate = (element: Element) => {
+      this.geomCache.delete(element);
+      for (let node: Element | null = element; node && node.localName !== 'svg'; node = node.parentElement) {
+        this.pivots.delete(node);
+      }
+    };
+    for (const [id, edit] of this.vertexEdits) {
+      const live = this.nodes.get(id)?.el === edit.element;
+      if (live && styles[id]?.vertices === edit.points) continue;
+      if (live) {
+        for (const key of edit.keys) {
+          const original = edit.original.getAttribute(key);
+          if (original === null) edit.element.removeAttribute(key);
+          else edit.element.setAttribute(key, original);
+        }
+        invalidate(edit.element);
+      }
+      this.vertexEdits.delete(id);
+    }
+    for (const [id, style] of Object.entries(styles)) {
+      const element = this.nodes.get(id)?.el;
+      if (!style.vertices || !element || this.vertexEdits.has(id)) continue;
+      const attributes = vertexAttributes(element, style.vertices);
+      if (!attributes) continue;
+      const original = element.cloneNode(false) as Element;
+      for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+      this.vertexEdits.set(id, { element, original, points: style.vertices, keys: Object.keys(attributes) });
+      invalidate(element);
+    }
   }
 
   private mount(o: Obj2D): ObjRec {
@@ -319,6 +354,38 @@ export class SceneRuntime {
     return objId;
   }
 
+  getVertexTarget(id: string) {
+    const node = this.nodes.get(id);
+    if (!node) return null;
+    const object = this.project?.objects.find((entry) => entry.id === node.objId);
+    if (!object || !is2D(object) || object.kind === 'formula') return null;
+    const svg = this.objs.get(node.objId)?.svg;
+    const native = object.vector?.tool === 'polygon' || object.vector?.tool === 'rectangle';
+    if (native) {
+      const element = svg?.querySelector<SVGGraphicsElement>('polygon, rect');
+      const matrix = element?.getScreenCTM();
+      if (!matrix) return null;
+      const points = object.vector?.vertices ?? [
+        { x: 0, y: 0 }, { x: object.bw, y: 0 }, { x: object.bw, y: object.bh }, { x: 0, y: object.bh },
+      ];
+      return { id: object.id, native: object, points, matrix };
+    }
+    if (object.vector) return null;
+    const element = (node.isRoot ? svg : node.el) as SVGGraphicsElement | undefined;
+    if (!element) return null;
+    const candidates = [element, ...element.querySelectorAll<SVGGraphicsElement>('polygon, polyline, line, path')];
+    const editable = candidates.flatMap((candidate) => {
+      const target = candidate.getAttribute('data-mm-id');
+      if (!target || !this.nodes.has(target)) return [];
+      const points = vertexGeometry(candidate);
+      return points && points.length <= 2048 ? [{ target, candidate, points }] : [];
+    });
+    if (editable.length !== 1) return null;
+    const leaf = editable[0];
+    const matrix = leaf.candidate.getScreenCTM();
+    return matrix ? { id: leaf.target, native: null, points: leaf.points, matrix } : null;
+  }
+
   stageDeltaForNode(id: string, x: number, y: number) {
     const parent = this.nodes.get(id)?.el.parentElement as SVGGraphicsElement | undefined;
     const inv = parent?.getScreenCTM?.()?.inverse();
@@ -334,7 +401,9 @@ export class SceneRuntime {
   getBox(id: string): Box | null {
     const n = this.nodes.get(id);
     if (n) {
-      const el = n.isRoot ? this.objs.get(id)?.svg ?? n.el : n.el;
+      const svg = n.isRoot ? this.objs.get(id)?.svg : undefined;
+      const polygon = this.project?.objects.some((object) => object.id === id && is2D(object) && object.vector?.tool === 'polygon');
+      const el = (polygon && svg?.querySelector('polygon')) || svg || n.el;
       const r = el.getBoundingClientRect();
       const sr = this.els.stage.getBoundingClientRect();
       if (!sr.width || !sr.height) return null;

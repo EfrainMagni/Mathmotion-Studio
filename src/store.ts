@@ -20,6 +20,7 @@ import {
   type VoiceMeta,
   type VectorGeometry,
   type VectorTool,
+  type Vertex,
   SHAPE3D_LABEL,
 } from './types';
 
@@ -40,6 +41,10 @@ export interface UIState {
   speed: 0.5 | 1 | 1.5;
   cameraMode: boolean;
   vectorTool: VectorTool | null;
+  pointerTool: 'select' | 'direct' | 'hand';
+  polygonSides: number;
+  polygonRadius: number;
+  polygonRequest: Vertex | 'options' | null;
   vectorText: string;
   showGuides: boolean;
   recordQuality: 'light' | 'standard';
@@ -78,6 +83,10 @@ function defaultUI(): UIState {
     speed: 1,
     cameraMode: false,
     vectorTool: null,
+    pointerTool: 'select',
+    polygonSides: 5,
+    polygonRadius: 160,
+    polygonRequest: null,
     vectorText: 'Texto',
     showGuides: true,
     recordQuality: 'light',
@@ -151,7 +160,7 @@ export const store = {
       project: p,
       ui: {
         ...state.ui, selection: null, selectedClip: null, time: 0,
-        playing: false, cameraMode: false, vectorTool: null, notice: null,
+        playing: false, cameraMode: false, vectorTool: null, pointerTool: 'select', polygonRequest: null, notice: null,
       },
     };
     listeners.forEach((l) => l());
@@ -261,11 +270,11 @@ export const actions = {
     });
   },
 
-  editVector(object: Obj2D, patch: Partial<VectorGeometry>) {
+  editVector(object: Obj2D, patch: Partial<VectorGeometry>, group?: symbol) {
     if (!object.vector) return;
     const vector = { ...object.vector, ...patch };
     const sourceSvg = vectorSvg(vector, object.bw, object.bh);
-    actions.updateObject(object.id, { vector, sourceSvg, markup: prepareSvg(sourceSvg, object.id).markup });
+    actions.updateObject(object.id, { vector, sourceSvg, markup: prepareSvg(sourceSvg, object.id).markup }, group);
   },
 
   orderObject(id: string, front: boolean) {

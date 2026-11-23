@@ -3,6 +3,7 @@ import { is2D, type Project } from '../types';
 import { prepareSvg } from './svgImport';
 
 const number = z.number();
+const vertex = z.object({ x: number, y: number });
 const positive = number.positive();
 const nonnegative = number.nonnegative();
 const objectId = z.string().regex(/^o[1-9]\d*$/);
@@ -12,10 +13,11 @@ const baseObject = { id: objectId, name: z.string(), scale: positive, rotation: 
 const object2D = z.object({
   ...baseObject, kind: z.enum(['svg', 'formula']), sourceSvg: z.string(),
   vector: z.object({
-    tool: z.enum(['rectangle', 'ellipse', 'line', 'arrow', 'text']),
+    tool: z.enum(['rectangle', 'ellipse', 'line', 'arrow', 'text', 'polygon']),
     reverseX: z.boolean().optional(), reverseY: z.boolean().optional(),
     tip: z.enum(['triangle', 'open', 'both', 'none']).optional(), text: z.string().optional(),
-  }).optional(),
+    vertices: z.array(vertex).min(3).max(20).optional(),
+  }).refine((vector) => vector.tool !== 'polygon' || !!vector.vertices).optional(),
   x: number, y: number, bw: positive, bh: positive, tex: z.string().optional(),
 });
 const obj3D = z.object({
@@ -26,6 +28,7 @@ const paint = z.string().refine((value) =>
 const style = z.object({
   fill: paint.optional(), stroke: paint.optional(), strokeWidth: nonnegative.optional(),
   lineStyle: z.enum(['solid', 'dotted']).optional(), opacity: number.min(0).max(1).optional(),
+  vertices: z.array(vertex).min(2).max(2048).optional(),
   scale: positive.optional(), tx: number.optional(), ty: number.optional(),
 });
 const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()])).superRefine((input, ctx) => {

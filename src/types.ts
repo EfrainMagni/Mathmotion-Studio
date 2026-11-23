@@ -8,8 +8,8 @@ export const STAGE_SIZES: Record<StageFormat, { w: number; h: number }> = {
 };
 
 export const BACKGROUND_COLOR: Record<StageBackground, string> = {
-  board: '#0b1120',
-  grid: '#0b1120',
+  board: '#141414',
+  grid: '#141414',
   light: '#f8fafc',
 };
 
@@ -55,14 +55,17 @@ export interface Clip {
   sound: SoundId | null;
 }
 
-export type VectorTool = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text';
+export type VectorTool = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'polygon';
 export type ArrowTip = 'triangle' | 'open' | 'both' | 'none';
+export interface Vertex { x: number; y: number }
+
 export interface VectorGeometry {
   tool: VectorTool;
   reverseX?: boolean;
   reverseY?: boolean;
   tip?: ArrowTip;
   text?: string;
+  vertices?: Vertex[];
 }
 
 export interface Obj2D {
@@ -104,6 +107,7 @@ export interface NodeStyle {
   strokeWidth?: number;
   lineStyle?: 'solid' | 'dotted';
   opacity?: number;
+  vertices?: Vertex[];
   /** Solo nodos hijos; la escala de un objeto raíz vive en el propio objeto. */
   scale?: number;
   tx?: number;

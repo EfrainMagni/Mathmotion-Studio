@@ -41,7 +41,7 @@ export function ManimExport({ disabled }: { disabled: boolean }) {
     <>
       <button className={btn} disabled={disabled} onClick={open}>Exportar código Manim (.py)</button>
       <dialog ref={dialog} aria-labelledby="manim-title"
-        className="m-auto max-h-[90vh] w-[min(90vw,850px)] rounded-xl border border-white/15 bg-ink-800 p-5 text-slate-100 backdrop:bg-black/65">
+        className="studio-dialog w-[min(90vw,850px)]">
         <div className="flex items-center justify-between gap-3">
           <h2 id="manim-title" className="text-base font-semibold">Exportar código Manim</h2>
           <button className={btn} autoFocus onClick={() => dialog.current?.close()}>Cerrar</button>
@@ -50,7 +50,7 @@ export function ManimExport({ disabled }: { disabled: boolean }) {
           <>
             <p className="my-3 text-xs text-slate-300"><code>manim escena.py EscenaMathMotion</code></p>
             <textarea ref={preview} aria-label="Vista previa del código Python" value={exported.script} readOnly
-              spellCheck={false} wrap="off" className="h-[46vh] w-full rounded-md border border-white/10 bg-ink-950 p-3 font-mono text-xs" />
+              spellCheck={false} wrap="off" className="h-[46vh] w-full rounded-md border border-bezel bg-ink-950 p-3 font-mono text-xs" />
             {exported.notes.length > 0 && (
               <ul className="my-2 list-inside list-disc text-xs text-slate-300">
                 {exported.notes.map((note) => <li key={note}>{note}</li>)}

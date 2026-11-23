@@ -22,6 +22,12 @@ Requiere Node 18+ y un navegador basado en Chromium (la grabación usa `getDispl
 4. En la línea de tiempo mueve, edita numéricamente o elimina clips; arrastra el cabezal; ←/→ avanzan un fotograma (30 fps) cuando no hay un objeto seleccionado. Espacio reproduce.
 5. Objetos 3D: se insertan desde el panel; activa el **modo cámara** en la barra superior para orbitar.
 
+## Polígonos y edición de vértices
+
+Elige **Polígono** y arrastra desde el centro para definir el radio y la orientación. Un clic abre el diálogo de creación para fijar radio y número de lados, de 3 a 20. **Opciones de polígono** ajusta los valores para el siguiente dibujo.
+
+Pulsa **A** o usa **Selección Directa (Vértices)** en la barra del lienzo. Selecciona un polígono, un rectángulo o un contorno SVG con anclas y arrastra un ancla. Cada arrastre se puede deshacer en un paso. Los polígonos nativos se convierten en `Polygon(...)` al exportar a Manim. Las ediciones hechas dentro de un SVG importado se trasladan como geometría SVG incrustada.
+
 ## Dibujo vectorial y Manim
 
 Elige una herramienta en **Dibujo vectorial** y arrastra sobre el lienzo. Mantén Mayús para dibujar círculos o cuadrados. Para colocar texto, escribe en la barra lateral y haz clic o define su caja arrastrando. El inspector permite cambiar estilos, editar la punta de las flechas y alinear u ordenar los objetos.
@@ -56,6 +62,7 @@ El editor autoguarda el proyecto actual y su pista de voz en IndexedDB en este n
 npm run test:dom
 npm run test:project
 npm run test:vector
+npm run test:polygon
 ```
 
 Pruebas en Chromium del editor 2D y del flujo de autoguardado, recarga, descarga y reapertura de un proyecto. Usa `CHROME_PATH` si el navegador está instalado en una ruta distinta de la predeterminada. La prueba vectorial verifica la sintaxis Python y puede renderizar la escena con Manim si se define `MANIM_BIN`.

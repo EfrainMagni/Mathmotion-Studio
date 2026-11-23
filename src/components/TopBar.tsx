@@ -19,7 +19,7 @@ const BGS: { id: StageBackground; label: string }[] = [
 ];
 
 const seg = (on: boolean) =>
-  `px-2.5 py-1 text-xs font-medium transition-colors ${on ? 'bg-cyan-500 text-ink-950' : 'bg-ink-700 text-slate-200 hover:bg-ink-600'}`;
+  `px-1.5 text-xs font-medium transition-colors ${on ? 'bg-accent-soft text-accent-light' : 'bg-ink-700 text-slate-200 hover:bg-ink-600'}`;
 
 export function TopBar() {
   const format = useStore((s) => s.project.format);
@@ -75,13 +75,13 @@ export function TopBar() {
   const supported = !!pickMime() && !!navigator.mediaDevices?.getDisplayMedia;
 
   return (
-    <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-white/10 bg-ink-800 px-3 py-1.5">
-      <div className="flex items-center gap-2">
-        <div className="grid h-7 w-7 place-items-center rounded-md bg-cyan-500 text-sm font-black text-ink-950">∫</div>
-        <span className="text-sm font-semibold tracking-tight">MathMotion Studio</span>
+    <header className="studio-toolbar flex min-h-8 shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-bezel bg-ink-700 px-2 py-1">
+      <div className="flex items-center gap-1.5">
+        <div className="grid h-6 w-6 place-items-center rounded-md border border-bezel bg-ink-600 text-sm font-semibold text-slate-300">∫</div>
+        <span className="text-sm font-semibold tracking-tight">MathMotion<span className="hidden min-[1440px]:inline"> Studio</span></span>
       </div>
 
-      <div className="flex overflow-hidden rounded-md border border-white/10" role="group" aria-label="Proyecto">
+      <div className="flex overflow-hidden rounded-md border border-bezel" role="group" aria-label="Proyecto">
         <input
           ref={input}
           type="file"
@@ -104,7 +104,7 @@ export function TopBar() {
       </div>
       <ManimExport disabled={busy || working} />
 
-      <div className="flex overflow-hidden rounded-md border border-white/10" role="group" aria-label="Formato">
+      <div className="flex overflow-hidden rounded-md border border-bezel" role="group" aria-label="Formato">
         {FORMATS.map((f) => (
           <button key={f.id} className={seg(format === f.id)} disabled={busy} onClick={() => actions.setFormat(f.id)}>
             {f.label}
@@ -112,7 +112,7 @@ export function TopBar() {
         ))}
       </div>
 
-      <div className="flex overflow-hidden rounded-md border border-white/10" role="group" aria-label="Fondo">
+      <div className="flex overflow-hidden rounded-md border border-bezel" role="group" aria-label="Fondo">
         {BGS.map((b) => (
           <button key={b.id} className={seg(background === b.id)} disabled={busy} onClick={() => actions.setBackground(b.id)}>
             {b.label}
@@ -121,25 +121,27 @@ export function TopBar() {
       </div>
 
       <button
-        className={`inline-flex items-center gap-1.5 rounded-md border border-white/10 px-2.5 py-1 text-xs ${showGuides ? 'bg-ink-600' : 'bg-ink-700'} hover:bg-ink-600`}
+        className={`inline-flex items-center gap-1.5 rounded-md border border-bezel px-1.5 text-xs ${showGuides ? 'bg-ink-600' : 'bg-ink-700'} hover:bg-ink-600`}
         onClick={() => store.setUi({ showGuides: !showGuides })}
+        aria-label="Guías"
         aria-pressed={showGuides}
         title="Guías del lienzo (se ocultan al reproducir y grabar)"
       >
-        <Crosshair size={14} /> Guías
+        <Crosshair size={14} /> <span className="hidden min-[1350px]:inline">Guías</span>
       </button>
 
       <button
-        className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs disabled:opacity-40 ${cameraMode ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200' : 'border-white/10 bg-ink-700 hover:bg-ink-600'}`}
-        onClick={() => store.setUi({ cameraMode: !cameraMode, vectorTool: null })}
+        className={`inline-flex items-center gap-1.5 rounded-md border px-1.5 text-xs disabled:opacity-40 ${cameraMode ? 'border-accent/60 bg-accent-soft text-accent-light' : 'border-bezel bg-ink-700 hover:bg-ink-600'}`}
+        onClick={() => store.setUi({ cameraMode: !cameraMode, vectorTool: null, pointerTool: 'select' })}
         disabled={!has3d || busy}
+        aria-label="Modo cámara"
         aria-pressed={cameraMode}
         title={has3d ? 'Orbitar la cámara 3D con el ratón (desactiva la selección 2D)' : 'Inserta un objeto 3D para usar la cámara'}
       >
-        <Orbit size={14} /> Modo cámara
+        <Orbit size={14} /> <span className="hidden min-[1440px]:inline">Modo cámara</span>
       </button>
 
-      <div className="ml-auto flex items-center gap-3">
+      <div className="ml-auto flex items-center gap-1.5">
         {rec.message && (
           <span className="max-w-[420px] truncate text-xs text-amber-200" title={rec.message}>
             {rec.phase !== 'recording' && <Loader2 size={12} className="mr-1 inline animate-spin" />}
@@ -149,7 +151,7 @@ export function TopBar() {
         )}
         {rec.lastFile && rec.phase === 'idle' && (
           <a
-            className="inline-flex items-center gap-1 text-xs text-cyan-300 underline"
+            className="inline-flex items-center gap-1 text-xs text-accent-light underline"
             href={rec.lastFile.url}
             download={rec.lastFile.name}
             title={`${rec.lastFile.name} · ${(rec.lastFile.size / 1e6).toFixed(1)} MB`}
@@ -158,7 +160,7 @@ export function TopBar() {
           </a>
         )}
         <select
-          className="rounded-md border border-white/10 bg-ink-700 px-2 py-1 text-xs"
+          className="rounded-md border border-bezel bg-ink-700 px-2 py-1 text-xs"
           value={quality}
           disabled={busy}
           onChange={(e) => store.setUi({ recordQuality: e.target.value as 'light' | 'standard' })}
@@ -172,7 +174,7 @@ export function TopBar() {
         </select>
         {rec.phase === 'idle' ? (
           <button
-            className="inline-flex items-center gap-1.5 rounded-md bg-rose-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-md bg-rose-500 px-2 py-0.5 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-40"
             onClick={beginRecording}
             disabled={!supported || working}
             title={supported ? 'Abre una vista limpia y graba la clase con voz y efectos' : 'Este navegador no admite la grabación de pantalla'}
@@ -181,7 +183,7 @@ export function TopBar() {
           </button>
         ) : (
           <button
-            className="inline-flex items-center gap-1.5 rounded-md bg-slate-200 px-3 py-1.5 text-xs font-semibold text-ink-950 hover:bg-white"
+            className="inline-flex items-center gap-1.5 rounded-md bg-slate-200 px-2 py-0.5 text-xs font-semibold text-ink-950 hover:bg-white"
             onClick={stopRecording}
           >
             <Square size={14} /> {rec.phase === 'recording' ? 'Detener' : 'Cancelar'}

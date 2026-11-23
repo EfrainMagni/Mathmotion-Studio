@@ -1,10 +1,16 @@
 import { BACKGROUND_COLOR, STAGE_SIZES, is2D, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
+import { svgWithVertices } from './vertices';
 import { VECTOR_FILL, VECTOR_STROKE, VECTOR_STROKE_WIDTH } from './vector';
 
 const n = (value: number) => Number(value.toFixed(7)).toString();
 const quoted = (value: string) => JSON.stringify(value);
 const point = (x: number, y: number) => `np.array([${n(x)}, ${n(y)}, 0.0])`;
 const FRAME_HEIGHT = 8;
+
+function stagePoint(object: Obj2D, width: number, height: number) {
+  const unit = FRAME_HEIGHT / height;
+  return point((object.x - width / 2) * unit, (height / 2 - object.y) * unit);
+}
 const shape3d = {
   axes: 'ThreeDAxes(x_length=6.4, y_length=6.4, z_length=6.4)',
   sphere: 'Sphere(radius=1.4, resolution=(18, 24))',
@@ -28,6 +34,10 @@ function vectorConstructor(object: Obj2D, unit: number) {
   const vector = object.vector!;
   const w = object.bw * unit;
   const h = object.bh * unit;
+  if (vector.tool === 'polygon') {
+    const vertices = vector.vertices!.map(({ x, y }) => point((x - object.bw / 2) * unit, (object.bh / 2 - y) * unit));
+    return `Polygon(${vertices.join(', ')})`;
+  }
   if (vector.tool === 'rectangle') return `Rectangle(width=${n(w)}, height=${n(h)})`;
   if (vector.tool === 'ellipse') {
     return Math.abs(w - h) < 0.00001 ? `Circle(radius=${n(w / 2)})` : `Ellipse(width=${n(w)}, height=${n(h)})`;
@@ -38,14 +48,14 @@ function vectorConstructor(object: Obj2D, unit: number) {
   return `Line(${point(-dx, -dy)}, ${point(dx, dy)})`;
 }
 
-function objectCode(object: SceneObject, style: NodeStyle, width: number, height: number) {
+function objectCode(object: SceneObject, style: NodeStyle, width: number, height: number, styles: Project['styles']) {
   const name = object.id;
   const unit = FRAME_HEIGHT / height;
   let constructor: string;
   if (!is2D(object)) constructor = shape3d[object.shape];
   else if (object.vector) constructor = vectorConstructor(object, unit);
   else if (object.kind === 'formula' && object.tex) constructor = `MathTex(${quoted(object.tex)})`;
-  else constructor = `embedded_svg(${quoted(object.markup)})`;
+  else constructor = `embedded_svg(${quoted(svgWithVertices(object.markup, object.id, styles))})`;
 
   const commands = [`${name} = ${constructor}`];
   const vector = is2D(object) ? object.vector : undefined;
@@ -91,14 +101,16 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
     }
   }
   if (opacity !== 1) commands.push(`${name}.fade(${n(1 - opacity)})`);
-  if (object.scale !== 1) commands.push(`${name}.scale(${n(object.scale)})`);
-  if (object.rotation) commands.push(`${name}.rotate(${n(is2D(object) ? -object.rotation : object.rotation)} * DEGREES, axis=${is2D(object) ? 'OUT' : 'UP'})`);
-  if (is2D(object)) commands.push(`${name}.move_to(${point((object.x - width / 2) * unit, (height / 2 - object.y) * unit)})`);
+  const pivot = vector?.tool === 'polygon' ? ', about_point=ORIGIN' : '';
+  if (object.scale !== 1) commands.push(`${name}.scale(${n(object.scale)}${pivot})`);
+  if (object.rotation) commands.push(`${name}.rotate(${n(is2D(object) ? -object.rotation : object.rotation)} * DEGREES, axis=${is2D(object) ? 'OUT' : 'UP'}${pivot})`);
+  if (is2D(object)) commands.push(`${name}.${pivot ? 'shift' : 'move_to'}(${stagePoint(object, width, height)})`);
   else if (style.tx || style.ty) commands.push(`${name}.shift(${point((style.tx ?? 0) * unit, -(style.ty ?? 0) * unit)})`);
   return commands;
 }
 
-function animation(clip: Clip, object: SceneObject, unit: number) {
+function animation(clip: Clip, object: SceneObject, width: number, height: number) {
+  const unit = FRAME_HEIGHT / height;
   const id = object.id;
   const params = clip.parameters;
   const duration = `run_time=${n(clip.duration)}`;
@@ -117,7 +129,9 @@ function animation(clip: Clip, object: SceneObject, unit: number) {
       const degrees = params.mode === 'spin' && typeof params.speed === 'number'
         ? params.speed * clip.duration : typeof params.angle === 'number' ? params.angle : 360;
       const axis = is2D(object) || params.axis === 'z' ? 'OUT' : params.axis === 'x' ? 'RIGHT' : 'UP';
-      return `Rotate(${id}, angle=${n(is2D(object) ? -degrees : degrees)} * DEGREES, axis=${axis}, ${duration})`;
+      const pivot = is2D(object) && object.vector?.tool === 'polygon'
+        ? `, about_point=${stagePoint(object, width, height)}` : '';
+      return `Rotate(${id}, angle=${n(is2D(object) ? -degrees : degrees)} * DEGREES, axis=${axis}${pivot}, ${duration})`;
     }
     case 'glow':
     case 'radar':
@@ -190,7 +204,7 @@ export function generateManim(project: Project): { script: string; notes: string
     const orbit = clip.type === 'orbit';
     if (orbit && !any3d) continue;
     const target = orbit ? 'orbit_camera' : object.id;
-    const code = animation(clip, object, FRAME_HEIGHT / h);
+    const code = animation(clip, object, w, h);
     if (clip.targetId !== object.id) notes.add('Los clips de nodos SVG se aplican al objeto completo.');
     if (clip.type === 'radar' || clip.type === 'glow') notes.add('Radar y brillo se aproximan con Indicate.');
     const start = Math.max(clip.start, ends.get(target) ?? 0);
@@ -206,10 +220,10 @@ export function generateManim(project: Project): { script: string; notes: string
   if (project.objects.some((object) => !is2D(object) && project.styles[object.id]?.lineStyle === 'dotted')) {
     notes.add('Los contornos 3D punteados se exportan como contornos sólidos.');
   }
-  if (Object.keys(project.styles).some((id) => id.includes('.'))) notes.add('Los estilos del inspector aplicados a nodos SVG no se trasladan a Manim.');
+  if (Object.entries(project.styles).some(([id, style]) => id.includes('.') && Object.keys(style).some((key) => key !== 'vertices'))) notes.add('Los estilos del inspector aplicados a nodos SVG no se trasladan a Manim.');
 
   const body = project.objects.flatMap((object, index) =>
-    [...objectCode(object, project.styles[object.id] ?? {}, w, h), `${object.id}.set_z_index(${any3d && is2D(object) ? project.objects.length + index : index})`, '']);
+    [...objectCode(object, project.styles[object.id] ?? {}, w, h, project.styles), `${object.id}.set_z_index(${any3d && is2D(object) ? project.objects.length + index : index})`, '']);
   if (any3d) {
     body.unshift(`self.set_camera_orientation(phi=${n(90 - project.camera.el)} * DEGREES, theta=${n(project.camera.az - 90)} * DEGREES, zoom=${n(9 / project.camera.dist)})`, '');
     const flat = project.objects.filter(is2D).map((object) => object.id);

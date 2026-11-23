@@ -5,19 +5,10 @@ import { CLIP_LABEL, FPS, SOUND_IDS, SOUND_LABEL, sceneDuration, type Clip, type
 import { engine } from '../engine';
 import { NumberInput, btn, input } from './ui';
 
-const LABEL_W = 150;
-const LANE_H = 34;
-const RULER_H = 24;
+const LABEL_W = 116;
+const LANE_H = 30;
+const RULER_H = 20;
 const SPEEDS = [0.5, 1, 1.5] as const;
-const CLIP_COLOR: Record<Clip['type'], string> = {
-  draw: 'bg-sky-600/80 border-sky-300',
-  radar: 'bg-teal-600/80 border-teal-300',
-  glow: 'bg-amber-600/80 border-amber-300',
-  appear: 'bg-violet-600/80 border-violet-300',
-  rotate: 'bg-rose-600/80 border-rose-300',
-  orbit: 'bg-fuchsia-600/80 border-fuchsia-300',
-};
-
 const fmt = (n: number) => n.toFixed(2);
 
 function Transport() {
@@ -38,7 +29,7 @@ function Transport() {
         <StepBack size={14} />
       </button>
       <button
-        className="inline-flex h-8 w-10 items-center justify-center rounded-md bg-cyan-500 text-ink-950 hover:bg-cyan-400 disabled:opacity-40"
+        className="inline-flex h-6 w-8 items-center justify-center rounded-md bg-ink-600 text-slate-300 hover:bg-accent-soft disabled:opacity-40"
         disabled={busy}
         onClick={() => pb()?.toggle()}
         title={playing ? 'Pausa (Espacio)' : 'Reproducir (Espacio)'}
@@ -49,12 +40,12 @@ function Transport() {
       <button className={btn} disabled={busy} onClick={() => pb()?.step(1)} title="Fotograma siguiente (→)" aria-label="Fotograma siguiente">
         <StepForward size={14} />
       </button>
-      <div className="ml-1 flex overflow-hidden rounded-md border border-white/10" role="group" aria-label="Velocidad">
+      <div className="ml-1 flex overflow-hidden rounded-md border border-bezel" role="group" aria-label="Velocidad">
         {SPEEDS.map((s) => (
           <button
             key={s}
             disabled={busy}
-            className={`px-2 py-1 text-xs ${speed === s ? 'bg-cyan-500 text-ink-950' : 'bg-ink-700 hover:bg-ink-600'}`}
+            className={`min-h-6 px-2 text-xs ${speed === s ? 'bg-accent-soft text-accent-light' : 'bg-ink-700 hover:bg-ink-600'}`}
             onClick={() => {
               store.setUi({ speed: s });
               pb()?.setSpeed(s);
@@ -178,8 +169,8 @@ export function Timeline() {
   for (let s = 0; s <= span; s += 0.5) ticks.push(s);
 
   return (
-    <div className="flex h-[250px] shrink-0 flex-col border-t border-white/10 bg-ink-800">
-      <div className="flex items-center justify-between gap-4 border-b border-white/5 px-3 py-1.5">
+    <div className="flex h-[184px] shrink-0 flex-col border-t border-bezel bg-ink-800">
+      <div className="flex items-center justify-between gap-2 border-b border-bezel bg-ink-700 px-2 py-1">
         <Transport />
         <ClipEditor />
         <div className="flex items-center gap-1">
@@ -192,9 +183,9 @@ export function Timeline() {
         <div className="relative" style={{ width: LABEL_W + width, minHeight: '100%' }}>
           {/* Regla */}
           <div className="sticky top-0 z-20 flex" style={{ height: RULER_H }}>
-            <div className="sticky left-0 z-30 shrink-0 border-b border-r border-white/10 bg-ink-800" style={{ width: LABEL_W }} />
+            <div className="sticky left-0 z-30 shrink-0 border-b border-r border-bezel bg-ink-800" style={{ width: LABEL_W }} />
             <div
-              className="relative cursor-col-resize border-b border-white/10 bg-ink-900"
+              className="relative cursor-col-resize border-b border-bezel bg-ink-900"
               style={{ width }}
               onPointerDown={(e) => {
                 if (busy) return;
@@ -207,7 +198,7 @@ export function Timeline() {
               onPointerCancel={() => (scrubbing.current = false)}
             >
               {ticks.map((s) => (
-                <div key={s} className="absolute top-0 border-l border-white/15" style={{ left: s * pps, height: s % 1 === 0 ? RULER_H : 8 }}>
+                <div key={s} className="absolute top-0 border-l border-bezel" style={{ left: s * pps, height: s % 1 === 0 ? RULER_H : 8 }}>
                   {s % 1 === 0 && <span className="ml-1 text-[10px] text-slate-400">{s}s</span>}
                 </div>
               ))}
@@ -220,13 +211,13 @@ export function Timeline() {
               selectedClip={selectedClip} onDown={startBlockDrag} onMove={moveBlockDrag} onUp={endBlockDrag} />
           ))}
           <div className="flex" style={{ height: LANE_H }}>
-            <div className="sticky left-0 z-10 flex shrink-0 items-center gap-1 border-b border-r border-white/10 bg-ink-800 px-2 text-xs text-emerald-300" style={{ width: LABEL_W }}>
+            <div className="sticky left-0 z-10 flex shrink-0 items-center gap-1 border-b border-r border-bezel bg-ink-800 px-2 text-xs text-slate-300" style={{ width: LABEL_W }}>
               <Volume2 size={12} /> Voz
             </div>
-            <div className="relative border-b border-white/5" style={{ width }}>
+            <div className="relative border-b border-bezel" style={{ width }}>
               {voice ? (
                 <div
-                  className="absolute top-1 flex cursor-grab items-center gap-1 overflow-hidden rounded border border-emerald-300 bg-emerald-700/70 px-1.5 text-[11px]"
+                  className="absolute top-1 flex cursor-grab items-center gap-1 overflow-hidden rounded border border-bezel bg-ink-600 px-1.5 text-[11px]"
                   style={{ left: voice.start * pps, width: Math.max(24, voice.duration * pps), height: LANE_H - 8 }}
                   onPointerDown={(e) => startBlockDrag(e, 'voice', voice.start)}
                   onPointerMove={moveBlockDrag}
@@ -234,10 +225,10 @@ export function Timeline() {
                   title={`${voice.name} · inicio ${fmt(voice.start)} s · duración ${fmt(voice.duration)} s`}
                 >
                   <span className="truncate">{voice.name}</span>
-                  <span className="ml-auto shrink-0 font-mono text-[10px] text-emerald-100">{fmt(voice.start)}s · {fmt(voice.duration)}s</span>
+                  <span className="ml-auto shrink-0 font-mono text-[10px] text-slate-400">{fmt(voice.start)}s · {fmt(voice.duration)}s</span>
                 </div>
               ) : (
-                <span className="px-2 text-[11px] leading-[34px] text-slate-600">Sin pista de voz</span>
+                <span className="px-2 text-[11px] leading-[30px] text-slate-600">Sin pista de voz</span>
               )}
             </div>
           </div>
@@ -248,8 +239,8 @@ export function Timeline() {
           )}
 
           {/* Cabezal */}
-          <div className="pointer-events-none absolute top-0 z-40 w-px bg-rose-400" style={{ left: LABEL_W + time * pps, height: '100%' }}>
-            <div className="absolute -left-[5px] top-0 h-3 w-[11px] rounded-b bg-rose-400" />
+          <div className="pointer-events-none absolute top-0 z-40 w-px bg-accent" style={{ left: LABEL_W + time * pps, height: '100%' }}>
+            <div className="absolute -left-[5px] top-0 h-3 w-[11px] rounded-b bg-accent" />
           </div>
         </div>
       </div>
@@ -280,15 +271,15 @@ function Lane({
 }) {
   return (
     <div className="flex" style={{ height: LANE_H }} data-lane={id}>
-      <div className="sticky left-0 z-10 flex shrink-0 items-center border-b border-r border-white/10 bg-ink-800 px-2 text-xs text-slate-300" style={{ width: LABEL_W }} title={label}>
+      <div className="sticky left-0 z-10 flex shrink-0 items-center border-b border-r border-bezel bg-ink-800 px-2 text-xs text-slate-300" style={{ width: LABEL_W }} title={label}>
         <span className="truncate">{label}</span>
       </div>
-      <div className="relative border-b border-white/5" style={{ width }}>
+      <div className="relative border-b border-bezel" style={{ width }}>
         {clips.map((c) => (
           <div
             key={c.id}
             data-clip={c.id}
-            className={`absolute top-1 flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-[10px] leading-tight ${CLIP_COLOR[c.type]} ${selectedClip === c.id ? 'ring-2 ring-white' : ''}`}
+            className={`absolute top-1 flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-[10px] leading-tight ${selectedClip === c.id ? 'border-accent bg-accent-soft' : 'border-bezel bg-ink-600'}`}
             style={{ left: c.start * pps, width: Math.max(26, c.duration * pps), height: LANE_H - 8 }}
             onPointerDown={(e) => onDown(e, c.id, c.start)}
             onPointerMove={onMove}
