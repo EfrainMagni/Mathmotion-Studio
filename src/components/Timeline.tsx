@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { CLIP_LABEL, FPS, SOUND_IDS, SOUND_LABEL, sceneDuration, type Clip, type SoundId } from '../types';
+import { CLIP_LABEL, FPS, SOUND_IDS, SOUND_LABEL, is2D, sceneDuration, type Clip, type Project, type SoundId } from '../types';
 import { engine } from '../engine';
 import { NumberInput, btn, input } from './ui';
 
@@ -10,6 +10,18 @@ const LANE_H = 30;
 const RULER_H = 20;
 const SPEEDS = [0.5, 1, 1.5] as const;
 const fmt = (n: number) => n.toFixed(2);
+
+/** Alcance legible de un clip: término, glifos o destino (para bloques y descripciones). */
+function clipSubject(clip: Clip, objects: Project['objects']): string {
+  const p = clip.parameters;
+  const source = objects.find((o) => o.id === clip.targetId.split('.')[0]);
+  const term = typeof p.term === 'string' && source && is2D(source) ? source.terms?.find((t) => t.id === p.term) : undefined;
+  const parts: string[] = [];
+  if (term) parts.push(`«${term.name}»`);
+  else if (typeof p.glyphs === 'string' && p.glyphs) parts.push(`#${p.glyphs}`);
+  if (typeof p.to === 'string') parts.push(`→ ${objects.find((o) => o.id === p.to)?.name ?? p.to}`);
+  return parts.join(' ');
+}
 
 function Transport() {
   const playing = useStore((s) => s.ui.playing);
@@ -64,6 +76,7 @@ function Transport() {
 
 function ClipEditor() {
   const clip = useStore((s) => s.project.clips.find((c) => c.id === s.ui.selectedClip) ?? null);
+  const objects = useStore((s) => s.project.objects);
   const runtimeName = (id: string) => engine.runtime?.nameOf(id) ?? id;
   if (!clip) {
     return <div className="text-xs text-slate-500">Selecciona un bloque para editar inicio, duración y sonido.</div>;
@@ -71,8 +84,32 @@ function ClipEditor() {
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="max-w-[200px] truncate font-medium text-slate-200" title={runtimeName(clip.targetId)}>
-        {CLIP_LABEL[clip.type]} · {runtimeName(clip.targetId)}
+        {CLIP_LABEL[clip.type]} · {runtimeName(clip.targetId)} {clipSubject(clip, objects)}
       </span>
+      {clip.type === 'draw' && (
+        <label className="flex items-center gap-1" title="lag_ratio de Write (vacío = automático)">
+          Lag
+          <input type="number" min={0} step={0.05} placeholder="auto" aria-label="lag_ratio" className={`${input} w-14`}
+            value={typeof clip.parameters.lagRatio === 'number' ? clip.parameters.lagRatio : ''}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              const { lagRatio: _previous, ...rest } = clip.parameters;
+              actions.updateClip(clip.id, { parameters: Number.isFinite(v) ? { ...rest, lagRatio: Math.max(0, v) } : rest });
+            }} />
+        </label>
+      )}
+      {clip.type === 'indicate' && (
+        <label className="flex items-center gap-1">
+          Escala
+          <NumberInput className={`${input} w-14`} value={typeof clip.parameters.scale === 'number' ? clip.parameters.scale : 1.3} min={0.1} step={0.1}
+            onChange={(v) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, scale: v } })} ariaLabel="Escala del énfasis" />
+        </label>
+      )}
+      {(clip.type === 'indicate' || clip.type === 'circumscribe' || clip.type === 'focus') && (
+        <input type="color" className="h-6 w-8 cursor-pointer rounded border border-bezel bg-transparent" aria-label="Color del énfasis"
+          value={/^#[\da-f]{6}$/i.test(String(clip.parameters.color)) ? String(clip.parameters.color) : '#ffff00'}
+          onChange={(e) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, color: e.target.value } })} />
+      )}
       <label className="flex items-center gap-1">
         Inicio
         <NumberInput className={`${input} w-16`} value={clip.start} min={0} step={0.1} onChange={(v) => actions.updateClip(clip.id, { start: v })} ariaLabel="Inicio (s)" />
@@ -109,6 +146,7 @@ export function Timeline() {
   const selectedClip = useStore((s) => s.ui.selectedClip);
   const busy = useStore((s) => s.ui.recording.phase !== 'idle');
   useStore((s) => s.ui.treeVersion);
+  const objects = project.objects;
   const [pps, setPps] = useState(90);
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ id: string | 'voice'; sx: number; start: number; group: symbol } | null>(null);
@@ -207,7 +245,7 @@ export function Timeline() {
 
           {/* Pistas */}
           {lanes.map((id) => (
-            <Lane key={id} id={id} label={engine.runtime?.nameOf(id) ?? id} clips={clips.filter((c) => c.targetId === id)} pps={pps} width={width}
+            <Lane key={id} id={id} label={engine.runtime?.nameOf(id) ?? id} clips={clips.filter((c) => c.targetId === id)} objects={objects} pps={pps} width={width}
               selectedClip={selectedClip} onDown={startBlockDrag} onMove={moveBlockDrag} onUp={endBlockDrag} />
           ))}
           <div className="flex" style={{ height: LANE_H }}>
@@ -252,6 +290,7 @@ function Lane({
   id,
   label,
   clips,
+  objects,
   pps,
   width,
   selectedClip,
@@ -262,6 +301,7 @@ function Lane({
   id: string;
   label: string;
   clips: Clip[];
+  objects: Project['objects'];
   pps: number;
   width: number;
   selectedClip: string | null;
@@ -284,9 +324,9 @@ function Lane({
             onPointerDown={(e) => onDown(e, c.id, c.start)}
             onPointerMove={onMove}
             onPointerUp={onUp}
-            title={`${CLIP_LABEL[c.type]} · inicio ${fmt(c.start)} s · duración ${fmt(c.duration)} s${c.sound ? ` · ♪ ${SOUND_LABEL[c.sound]}` : ''}`}
+            title={`${CLIP_LABEL[c.type]} ${clipSubject(c, objects)} · inicio ${fmt(c.start)} s · duración ${fmt(c.duration)} s${c.sound ? ` · ♪ ${SOUND_LABEL[c.sound]}` : ''}`}
           >
-            <span className="truncate font-semibold">{CLIP_LABEL[c.type]}</span>
+            <span className="truncate font-semibold">{CLIP_LABEL[c.type]} {clipSubject(c, objects)}</span>
             <span className="truncate font-mono text-[9px] opacity-90">
               {fmt(c.start)}s · {fmt(c.duration)}s{c.sound ? ` · ♪ ${SOUND_LABEL[c.sound]}` : ''}
             </span>

@@ -1,5 +1,6 @@
 import { BACKGROUND_COLOR, STAGE_SIZES, is2D, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
 import { svgWithVertices } from './vertices';
+import { clipGlyphs, findGlyphElements, glyphRuns } from './glyphs';
 import { VECTOR_FILL, VECTOR_STROKE, VECTOR_STROKE_WIDTH } from './vector';
 
 const n = (value: number) => Number(value.toFixed(7)).toString();
@@ -48,13 +49,85 @@ function vectorConstructor(object: Obj2D, unit: number) {
   return `Line(${point(-dx, -dy)}, ${point(dx, dy)})`;
 }
 
+/**
+ * Indexación de glifos en Manim. Si la fórmula es «simple» (un glifo por carácter) se construye
+ * con una parte de MathTex por glifo: `eq[5]` es el glifo 5 y TransformMatchingTex empareja símbolos
+ * iguales. En otro caso es un único MathTex y los glifos cuelgan de `eq[0]` (índices aproximados).
+ */
+interface TexInfo {
+  tokens: string[] | null;
+  count: number;
+}
+
+const SIMPLE_TEX = /^[A-Za-z0-9+\-=<>()[\]|,.;:!/*\s]+$/;
+
+function texInfo(object: Obj2D): TexInfo {
+  let count = 0;
+  if (typeof DOMParser !== 'undefined') {
+    try {
+      count = findGlyphElements(new DOMParser().parseFromString(object.sourceSvg, 'image/svg+xml').documentElement).length;
+    } catch {
+      count = 0;
+    }
+  }
+  const tex = object.tex ?? '';
+  if (SIMPLE_TEX.test(tex)) {
+    const tokens = [...tex.replace(/\s+/g, '')];
+    if (tokens.length === count) return { tokens, count };
+  }
+  return { tokens: null, count };
+}
+
+function glyphGroup(name: string, info: TexInfo, indices: number[]): string | null {
+  const base = info.tokens ? name : `${name}[0]`;
+  const refs = glyphRuns(indices.filter((index) => index < info.count))
+    .map(([a, b]) => (a === b ? `${base}[${a}]` : `${base}[${a}:${b + 1}]`));
+  if (!refs.length) return null;
+  return refs.length === 1 ? refs[0] : `VGroup(${refs.join(', ')})`;
+}
+
+/** Expresión Python del alcance de un clip: toda la ecuación, un término o glifos sueltos. */
+function selectionCode(object: Obj2D, params: Clip['parameters'], info: TexInfo): string {
+  const indices = clipGlyphs(object, params);
+  if (!indices) return object.id;
+  const term = typeof params.term === 'string' ? object.terms?.find((entry) => entry.id === params.term) : undefined;
+  if (term && glyphGroup(object.id, info, term.glyphs)) return `${object.id}_${term.id}`;
+  return glyphGroup(object.id, info, indices) ?? object.id;
+}
+
+/** Estilos por glifo y términos con nombre, como `eq[0:2].set_color(...)`. */
+function glyphCommands(object: Obj2D, info: TexInfo) {
+  const commands: string[] = [];
+  const groups = new Map<string, { indices: number[]; style: NonNullable<Obj2D['glyphStyles']>[string] }>();
+  for (const [key, style] of Object.entries(object.glyphStyles ?? {})) {
+    const id = JSON.stringify(style);
+    const group = groups.get(id) ?? { indices: [], style };
+    group.indices.push(Number(key));
+    groups.set(id, group);
+  }
+  for (const { indices, style } of groups.values()) {
+    const ref = glyphGroup(object.id, info, indices);
+    if (!ref) continue;
+    const color = cssColor(style.color);
+    if (color) commands.push(`${ref}.set_color(${quoted(color)})`);
+    if (style.opacity !== undefined && style.opacity !== 1) commands.push(`${ref}.set_opacity(${n(style.opacity)})`);
+    if (style.scale !== undefined && style.scale !== 1) commands.push(`${ref}.scale(${n(style.scale)})`);
+  }
+  for (const term of object.terms ?? []) {
+    const ref = glyphGroup(object.id, info, term.glyphs);
+    if (ref) commands.push(`${object.id}_${term.id} = ${ref}  # término ${quoted(term.name.replace(/[\r\n]+/g, ' '))}`);
+  }
+  return commands;
+}
+
 function objectCode(object: SceneObject, style: NodeStyle, width: number, height: number, styles: Project['styles']) {
   const name = object.id;
   const unit = FRAME_HEIGHT / height;
+  const info = is2D(object) && object.kind === 'formula' && object.tex && !object.vector ? texInfo(object) : null;
   let constructor: string;
   if (!is2D(object)) constructor = shape3d[object.shape];
   else if (object.vector) constructor = vectorConstructor(object, unit);
-  else if (object.kind === 'formula' && object.tex) constructor = `MathTex(${quoted(object.tex)})`;
+  else if (object.kind === 'formula' && object.tex) constructor = `MathTex(${info?.tokens ? info.tokens.map(quoted).join(', ') : quoted(object.tex)})`;
   else constructor = `embedded_svg(${quoted(svgWithVertices(object.markup, object.id, styles))})`;
 
   const commands = [`${name} = ${constructor}`];
@@ -106,6 +179,7 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
   if (object.rotation) commands.push(`${name}.rotate(${n(is2D(object) ? -object.rotation : object.rotation)} * DEGREES, axis=${is2D(object) ? 'OUT' : 'UP'}${pivot})`);
   if (is2D(object)) commands.push(`${name}.${pivot ? 'shift' : 'move_to'}(${stagePoint(object, width, height)})`);
   else if (style.tx || style.ty) commands.push(`${name}.shift(${point((style.tx ?? 0) * unit, -(style.ty ?? 0) * unit)})`);
+  if (is2D(object) && info) commands.push(...glyphCommands(object, info));
   return commands;
 }
 
@@ -117,7 +191,8 @@ function animation(clip: Clip, object: SceneObject, width: number, height: numbe
   switch (clip.type) {
     case 'draw': {
       const write = is2D(object) && (object.kind === 'formula' || object.vector?.tool === 'text');
-      return `${write ? 'Write' : 'Create'}(${id}, ${duration})`;
+      const lag = write && typeof params.lagRatio === 'number' && params.lagRatio >= 0 ? `, lag_ratio=${n(params.lagRatio)}` : '';
+      return `${write ? 'Write' : 'Create'}(${id}${lag}, ${duration})`;
     }
     case 'appear': {
       const direction: Record<string, string> = { left: 'RIGHT', right: 'LEFT', up: 'DOWN', down: 'UP' };
@@ -140,6 +215,77 @@ function animation(clip: Clip, object: SceneObject, width: number, height: numbe
       const angle = typeof params.angle === 'number' ? params.angle : 180;
       return `ApplyMethod(orbit_camera.increment_value, ${n(angle)} * DEGREES, ${duration})`;
     }
+    default:
+      return undefined;
+  }
+}
+
+const EQUATION_CLIPS = new Set<Clip['type']>(['indicate', 'circumscribe', 'focus', 'transform', 'transformMatch']);
+
+interface EquationEvent {
+  code: string;
+  /** Clave de serialización: los clips sobre el mismo alcance se encadenan. */
+  key: string;
+  overlay: boolean;
+  /** Mobjects destino que solo aparecen cuando empieza la transformación. */
+  reveal: string[];
+}
+
+/** Énfasis y transformaciones de ecuaciones (Indicate, Circumscribe, FocusOn, Transform…). */
+function equationAnimation(
+  clip: Clip, object: Obj2D, project: Project, info: (object: Obj2D) => TexInfo, notes: Set<string>, unit: number,
+): EquationEvent | null {
+  const params = clip.parameters;
+  const duration = `run_time=${n(clip.duration)}`;
+  const own = object.kind === 'formula' && !object.vector ? info(object) : { tokens: null, count: 0 };
+  const selection = selectionCode(object, params, own);
+  if (own.count && !own.tokens && clipGlyphs(object, params)) notes.add('Ecuaciones complejas: los índices de glifos pueden diferir de los de MathTex (verifica con eq[0][i]).');
+  const key = `${object.id}|${selection}`;
+  const color = cssColor(typeof params.color === 'string' ? params.color : undefined) ?? '#ffff00';
+  const destination = typeof params.to === 'string' && params.to !== object.id ? project.objects.find((entry) => entry.id === params.to) : undefined;
+  const target = destination && is2D(destination) ? destination : undefined;
+
+  switch (clip.type) {
+    case 'indicate':
+      return { key, overlay: false, reveal: [], code: `Indicate(${selection}, scale_factor=${n(typeof params.scale === 'number' ? params.scale : 1.3)}, color=${quoted(color)}, ${duration})` };
+    case 'circumscribe':
+      return { key, overlay: true, reveal: [], code: `Circumscribe(${selection}, color=${quoted(color)}, ${duration})` };
+    case 'focus':
+      return {
+        key, overlay: true, reveal: [],
+        code: `FocusOn(${selection}, color=${quoted(cssColor(typeof params.color === 'string' ? params.color : undefined) ?? '#888888')}, opacity=${n(typeof params.opacity === 'number' ? params.opacity : 0.2)}, ${duration})`,
+      };
+    case 'transform': {
+      if (target) {
+        const targetInfo = target.kind === 'formula' && !target.vector ? info(target) : { tokens: null, count: 0 };
+        const termId = typeof params.toTerm === 'string' ? params.toTerm : '';
+        const term = termId ? target.terms?.find((entry) => entry.id === termId) : undefined;
+        const destCode = term && glyphGroup(target.id, targetInfo, term.glyphs) ? `${target.id}_${term.id}` : target.id;
+        const type = params.replace ? 'ReplacementTransform' : 'Transform';
+        return { key, overlay: false, reveal: [destCode], code: `${type}(${selection}, ${destCode}, ${duration})` };
+      }
+      const chain: string[] = [];
+      const factor = typeof params.scale === 'number' ? params.scale : 1;
+      const turn = typeof params.rotation === 'number' ? params.rotation : 0;
+      const dx = typeof params.dx === 'number' ? params.dx : 0;
+      const dy = typeof params.dy === 'number' ? params.dy : 0;
+      const opacity = typeof params.opacity === 'number' ? params.opacity : 1;
+      const tint = cssColor(typeof params.color === 'string' ? params.color : undefined);
+      if (factor !== 1) chain.push(`.scale(${n(factor)})`);
+      if (turn) chain.push(`.rotate(${n(-turn)} * DEGREES)`);
+      if (dx || dy) chain.push(`.shift(${point(dx * unit, -dy * unit)})`);
+      if (tint) chain.push(`.set_color(${quoted(tint)})`);
+      if (opacity !== 1) chain.push(`.set_opacity(${n(opacity)})`);
+      return { key, overlay: false, reveal: [], code: `Transform(${selection}, ${selection}.copy()${chain.join('')}, ${duration})` };
+    }
+    case 'transformMatch': {
+      if (!target || target.kind !== 'formula' || target.vector || object.kind !== 'formula' || !object.tex || !target.tex) return null;
+      const exact = !!own.tokens && !!info(target).tokens;
+      if (!exact) notes.add('TransformMatchingTex usa TransformMatchingShapes en ecuaciones complejas (empareja por forma de glifo).');
+      return { key: object.id, overlay: false, reveal: [target.id], code: `${exact ? 'TransformMatchingTex' : 'TransformMatchingShapes'}(${object.id}, ${target.id}, ${duration})` };
+    }
+    default:
+      return null;
   }
 }
 
@@ -154,37 +300,51 @@ const TIMELINE_HELPER = `def play_timeline(scene, objects, events, duration):
     # Los eventos de distintos objetos avanzan en paralelo.
     hidden = {}
     seen = set()
-    for start, length, mob, entrance, build in events:
+    for start, length, mob, entrance, build, opts in events:
         if mob not in seen and entrance:
             hidden[mob] = mob.copy()
             mob.set_opacity(0)
         seen.add(mob)
+        for other in opts.get("reveal", []):
+            # Destino de una transformación: solo aparece cuando esta empieza.
+            if other not in hidden:
+                hidden[other] = other.copy()
+                other.set_opacity(0)
     active = []
     cursor = 0
 
     def finish_until(time):
         remaining = []
-        for end, start, animation in active:
+        for end, start, animation, opts in active:
             if end <= time + 1e-9:
                 animation.finish()
+                if opts.get("overlay"):
+                    scene.remove(animation.mobject)
             else:
-                remaining.append((end, start, animation))
+                remaining.append((end, start, animation, opts))
         active[:] = remaining
 
     def update(_group, alpha):
         nonlocal cursor
         time = alpha * duration
         while cursor < len(events) and events[cursor][0] <= time + 1e-9:
-            start, length, mob, entrance, build = events[cursor]
+            start, length, mob, entrance, build, opts = events[cursor]
             finish_until(start)
             if mob in hidden:
                 mob.become(hidden.pop(mob))
+            for other in opts.get("reveal", []):
+                if other in hidden:
+                    other.become(hidden.pop(other))
             animation = build()
+            if opts.get("overlay"):
+                scene.add(animation.mobject)
             animation.begin()
-            active.append((start + length, start, animation))
+            for other in opts.get("reveal", []):
+                other.set_opacity(0)
+            active.append((start + length, start, animation, opts))
             cursor += 1
         finish_until(time)
-        for end, start, animation in active:
+        for end, start, animation, opts in active:
             animation.interpolate(max(0, min(1, (time - start) / (end - start))))
 
     scene.play(UpdateFromAlphaFunc(Group(*objects), update, run_time=duration, rate_func=linear))
@@ -197,10 +357,28 @@ export function generateManim(project: Project): { script: string; notes: string
   const notes = new Set<string>();
   const byId = new Map(project.objects.map((object) => [object.id, object]));
   const ends = new Map<string, number>();
-  const events = [];
+  const events: { start: number; time: number; id: string; code: string; entrance: boolean; overlay: boolean; reveal: string[] }[] = [];
+  const infos = new Map<string, TexInfo>();
+  const infoOf = (object: Obj2D) => {
+    let info = infos.get(object.id);
+    if (!info) infos.set(object.id, (info = texInfo(object)));
+    return info;
+  };
   for (const clip of [...project.clips].sort((a, b) => a.start - b.start)) {
     const object = byId.get(clip.targetId.split('.')[0]);
     if (!object) continue;
+    if (EQUATION_CLIPS.has(clip.type)) {
+      const built = is2D(object) && clip.targetId === object.id ? equationAnimation(clip, object, project, infoOf, notes, FRAME_HEIGHT / h) : null;
+      if (!built) {
+        notes.add('Se omitieron clips de ecuaciones sin objeto de destino válido.');
+        continue;
+      }
+      const start = Math.max(clip.start, ends.get(built.key) ?? 0);
+      if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
+      ends.set(built.key, start + clip.duration);
+      events.push({ start, time: clip.duration, id: object.id, code: built.code, entrance: false, overlay: built.overlay, reveal: built.reveal });
+      continue;
+    }
     const orbit = clip.type === 'orbit';
     if (orbit && !any3d) continue;
     const target = orbit ? 'orbit_camera' : object.id;
@@ -210,7 +388,7 @@ export function generateManim(project: Project): { script: string; notes: string
     const start = Math.max(clip.start, ends.get(target) ?? 0);
     if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
     ends.set(target, start + clip.duration);
-    events.push({ start, time: clip.duration, id: target, code, entrance: clip.type === 'draw' || clip.type === 'appear' });
+    events.push({ start, time: clip.duration, id: target, code: code!, entrance: clip.type === 'draw' || clip.type === 'appear', overlay: false, reveal: [] });
   }
   events.sort((a, b) => a.start - b.start);
   const hasOrbit = ends.has('orbit_camera');
@@ -233,7 +411,11 @@ export function generateManim(project: Project): { script: string; notes: string
   const length = [...ends.values()].reduce((max, end) => Math.max(max, end), sceneDuration(project));
   if (events.length) {
     if (hasOrbit) body.push('orbit_camera = self.camera.theta_tracker');
-    body.push('events = [', ...events.map((event) => `    (${n(event.start)}, ${n(event.time)}, ${event.id}, ${event.entrance ? 'True' : 'False'}, lambda: ${event.code}),`),
+    const options = (event: (typeof events)[number]) => {
+      const entries = [event.overlay && '"overlay": True', event.reveal.length && `"reveal": [${event.reveal.join(', ')}]`].filter(Boolean);
+      return `{${entries.join(', ')}}`;
+    };
+    body.push('events = [', ...events.map((event) => `    (${n(event.start)}, ${n(event.time)}, ${event.id}, ${event.entrance ? 'True' : 'False'}, lambda: ${event.code}, ${options(event)}),`),
       ']', `play_timeline(self, [${ids.join(', ')}], events, ${n(length)})`);
   } else {
     if (ids.length) body.push(`self.add(${ids.join(', ')})`);

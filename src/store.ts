@@ -9,6 +9,7 @@ import {
   type Clip,
   type ClipParams,
   type ClipType,
+  type GlyphStyle,
   type NodeStyle,
   type Obj2D,
   type Project,
@@ -54,6 +55,10 @@ export interface UIState {
   webglMessage: string | null;
   /** Se incrementa cuando cambia el árbol de nodos SVG montado. */
   treeVersion: number;
+  /** Fórmula en «Modo Edición de Términos» (sus glifos son seleccionables). */
+  termEdit: string | null;
+  /** Índices de los glifos seleccionados dentro de `termEdit`. */
+  glyphSel: number[];
 }
 
 export interface State {
@@ -95,6 +100,8 @@ function defaultUI(): UIState {
     webgl: 'idle',
     webglMessage: null,
     treeVersion: 0,
+    termEdit: null,
+    glyphSel: [],
   };
 }
 
@@ -108,13 +115,16 @@ let history = new History<Project>();
 function restoreHistory(direction: 'undo' | 'redo') {
   const project = history[direction](state.project);
   if (!project) return;
-  const { selection, selectedClip } = state.ui;
+  const { selection, selectedClip, termEdit } = state.ui;
+  const editing = project.objects.some((object) => object.id === termEdit);
   state = {
     project,
     ui: {
       ...state.ui,
       selection: project.objects.some((object) => object.id === selection?.split('.')[0]) ? selection : null,
       selectedClip: project.clips.some((clip) => clip.id === selectedClip) ? selectedClip : null,
+      termEdit: editing ? termEdit : null,
+      glyphSel: editing ? state.ui.glyphSel : [],
     },
   };
   listeners.forEach((listener) => listener());
@@ -161,6 +171,7 @@ export const store = {
       ui: {
         ...state.ui, selection: null, selectedClip: null, time: 0,
         playing: false, cameraMode: false, vectorTool: null, pointerTool: 'select', polygonRequest: null, notice: null,
+        termEdit: null, glyphSel: [],
       },
     };
     listeners.forEach((l) => l());
@@ -197,6 +208,12 @@ export function defaultClipParams(type: ClipType): ClipParams {
       return { mode: 'angle', angle: 360, speed: 90, axis: 'y' };
     case 'orbit':
       return { angle: 180 };
+    case 'indicate':
+      return { scale: 1.3, color: '#ffff00' };
+    case 'circumscribe':
+      return { color: '#ffff00' };
+    case 'focus':
+      return { color: '#888888', opacity: 0.2 };
     default:
       return {};
   }
@@ -250,7 +267,7 @@ export const actions = {
       ...p,
       objects: p.objects.filter((o) => o.id !== id),
       styles: stripNodeKeys(p.styles, id),
-      clips: p.clips.filter((c) => c.targetId !== id && !c.targetId.startsWith(id + '.')),
+      clips: p.clips.filter((c) => c.targetId !== id && !c.targetId.startsWith(id + '.') && c.parameters.to !== id),
     }));
     const ui = store.getState().ui;
     const affected = (s: string | null) => s !== null && (s === id || s.startsWith(id + '.'));
@@ -258,6 +275,7 @@ export const actions = {
     store.setUi({
       selection: affected(ui.selection) ? null : ui.selection,
       selectedClip: clipStill ? ui.selectedClip : null,
+      ...(ui.termEdit === id ? { termEdit: null, glyphSel: [] } : {}),
     });
   },
 
@@ -393,7 +411,79 @@ export const actions = {
   },
 
   select(id: string | null) {
-    store.setUi({ selection: id, selectedClip: null });
+    const { termEdit } = store.getState().ui;
+    store.setUi({
+      selection: id,
+      selectedClip: null,
+      ...(termEdit && id?.split('.')[0] !== termEdit ? { termEdit: null, glyphSel: [] } : {}),
+    });
+  },
+
+  /** Entra en el modo de edición de términos de una fórmula. */
+  enterTermEdit(objectId: string) {
+    store.setUi({ selection: objectId, selectedClip: null, termEdit: objectId, glyphSel: [] });
+  },
+
+  exitTermEdit() {
+    store.setUi({ termEdit: null, glyphSel: [] });
+  },
+
+  selectGlyphs(indices: number[]) {
+    const next = [...new Set(indices)].sort((a, b) => a - b);
+    const current = store.getState().ui.glyphSel;
+    if (next.length === current.length && next.every((value, i) => value === current[i])) return;
+    store.setUi({ glyphSel: next });
+  },
+
+  /** Aplica propiedades a varios glifos de una fórmula. `undefined` elimina el override. */
+  setGlyphStyle(objectId: string, indices: number[], patch: Partial<GlyphStyle>, group?: symbol) {
+    store.setProject((p) => {
+      const object = p.objects.find((entry) => entry.id === objectId);
+      if (!object || !is2D(object) || !indices.length) return p;
+      const styles = { ...object.glyphStyles };
+      for (const index of indices) {
+        const cur: GlyphStyle = { ...styles[index] };
+        for (const key of Object.keys(patch) as (keyof GlyphStyle)[]) {
+          const value = patch[key];
+          if (value === undefined) delete cur[key];
+          else (cur as Record<string, unknown>)[key] = value;
+        }
+        if (Object.keys(cur).length) styles[index] = cur;
+        else delete styles[index];
+      }
+      const before = object.glyphStyles ?? {};
+      const same = Object.keys(styles).length === Object.keys(before).length &&
+        Object.entries(styles).every(([key, value]) => JSON.stringify(before[key]) === JSON.stringify(value));
+      if (same) return p;
+      const updated: Obj2D = { ...object, glyphStyles: Object.keys(styles).length ? styles : undefined };
+      return { ...p, objects: p.objects.map((entry) => entry === object ? updated : entry) };
+    }, group);
+  },
+
+  /** Guarda la selección de glifos como término con nombre. Devuelve su id. */
+  saveTerm(objectId: string, name: string, indices: number[]): string | null {
+    const label = name.trim().slice(0, 60);
+    if (!label || !indices.length) return null;
+    let id: string | null = null;
+    store.setProject((p) => {
+      const object = p.objects.find((entry) => entry.id === objectId);
+      if (!object || !is2D(object)) return p;
+      const terms = object.terms ?? [];
+      id = `t${terms.reduce((max, term) => Math.max(max, Number(term.id.slice(1))), 0) + 1}`;
+      const updated: Obj2D = { ...object, terms: [...terms, { id, name: label, glyphs: [...new Set(indices)].sort((a, b) => a - b) }] };
+      return { ...p, objects: p.objects.map((entry) => entry === object ? updated : entry) };
+    });
+    return id;
+  },
+
+  removeTerm(objectId: string, termId: string) {
+    store.setProject((p) => {
+      const object = p.objects.find((entry) => entry.id === objectId);
+      if (!object || !is2D(object) || !object.terms?.some((term) => term.id === termId)) return p;
+      const terms = object.terms.filter((term) => term.id !== termId);
+      const updated: Obj2D = { ...object, terms: terms.length ? terms : undefined };
+      return { ...p, objects: p.objects.map((entry) => entry === object ? updated : entry) };
+    });
   },
 
   notify(kind: 'error' | 'info', text: string) {
