@@ -37,6 +37,18 @@ export function glyphChar(el: Element): string {
   return el.localName.toLowerCase() === 'rect' ? '—' : '';
 }
 
+/** Clave de emparejamiento: el carácter y, si no lo hay, la forma SVG del glifo (trazo o referencia). */
+export function glyphKey(el: Element): string {
+  const char = glyphChar(el);
+  if (char) return char;
+  const shape = el.hasAttribute('d') ? el : el.querySelector('[d]');
+  const d = shape?.getAttribute('d');
+  if (d) return `~${d.replace(/\s+/g, '')}`;
+  const use = el.localName.toLowerCase() === 'use' ? el : el.querySelector('use');
+  const href = use?.getAttribute('href') ?? use?.getAttribute('xlink:href');
+  return href ? `#${href}` : '';
+}
+
 /**
  * Hojas visuales de la fórmula en orden de documento: elementos con `data-c`
  * o primitivas de dibujo sin ancestro `data-c`. El índice en la lista es el índice del glifo.
