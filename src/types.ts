@@ -32,7 +32,9 @@ export const SOUND_LABEL: Record<SoundId, string> = {
 };
 export const SOUND_IDS = Object.keys(SOUND_LABEL) as SoundId[];
 
-export type ClipType = 'draw' | 'radar' | 'glow' | 'appear' | 'rotate' | 'orbit';
+export type ClipType =
+  | 'draw' | 'radar' | 'glow' | 'appear' | 'rotate' | 'orbit'
+  | 'indicate' | 'circumscribe' | 'focus' | 'transform' | 'transformMatch';
 export const CLIP_LABEL: Record<ClipType, string> = {
   draw: 'Escribir / Dibujar',
   radar: 'Radar',
@@ -40,6 +42,11 @@ export const CLIP_LABEL: Record<ClipType, string> = {
   appear: 'Aparecer / Deslizar',
   rotate: 'Rotar',
   orbit: 'Orbitar cámara',
+  indicate: 'Indicate',
+  circumscribe: 'Circumscribe',
+  focus: 'FocusOn',
+  transform: 'Transform',
+  transformMatch: 'TransformMatchingTex',
 };
 
 export type ClipParams = Record<string, number | string | boolean>;
@@ -68,6 +75,20 @@ export interface VectorGeometry {
   vertices?: Vertex[];
 }
 
+/** Propiedades propias de un glifo de fórmula (clave: índice del glifo). */
+export interface GlyphStyle {
+  color?: string;
+  scale?: number;
+  opacity?: number;
+}
+
+/** Selección de glifos con nombre, para animarla de forma independiente. */
+export interface Term {
+  id: string;
+  name: string;
+  glyphs: number[];
+}
+
 export interface Obj2D {
   id: string;
   kind: 'svg' | 'formula';
@@ -86,6 +107,10 @@ export interface Obj2D {
   vector?: VectorGeometry;
   /** SVG original o generado por MathJax, para reconstruir el objeto al abrir un archivo. */
   sourceSvg: string;
+  /** Solo fórmulas: estilo por glifo (índice → propiedades). */
+  glyphStyles?: Record<string, GlyphStyle>;
+  /** Solo fórmulas: términos con nombre. */
+  terms?: Term[];
 }
 
 export interface Obj3D {

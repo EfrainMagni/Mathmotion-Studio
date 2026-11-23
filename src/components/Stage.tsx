@@ -15,6 +15,17 @@ type Drag =
 
 type Sketch = { start: Vertex; end: Vertex; vector: VectorGeometry; constrain: boolean; polygonSides: number };
 
+const NO_BOXES: (Box | null)[] = [];
+const DOUBLE_CLICK_MS = 400;
+
+function sameBoxes(a: (Box | null)[], b: (Box | null)[]) {
+  return a.length === b.length && a.every((box, i) => {
+    const other = b[i];
+    if (!box || !other) return box === other;
+    return Math.abs(box.x - other.x) < 0.1 && Math.abs(box.y - other.y) < 0.1 && Math.abs(box.w - other.w) < 0.1 && Math.abs(box.h - other.h) < 0.1;
+  });
+}
+
 function transformVertex(matrix: DOMMatrix, x: number, y: number): Vertex {
   return { x: matrix.a * x + matrix.c * y + matrix.e, y: matrix.b * x + matrix.d * y + matrix.f };
 }
@@ -59,6 +70,8 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const cameraMode = useStore((s) => s.ui.cameraMode);
   const showGuides = useStore((s) => s.ui.showGuides);
   const selection = useStore((s) => s.ui.selection);
+  const termEdit = useStore((s) => s.ui.termEdit);
+  const glyphSel = useStore((s) => s.ui.glyphSel);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -73,6 +86,8 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const [activeAnchor, setActiveAnchor] = useState<number | null>(null);
   const [k, setK] = useState(0.4);
   const [box, setBox] = useState<Box | null>(null);
+  const [glyphBoxes, setGlyphBoxes] = useState<(Box | null)[]>(NO_BOXES);
+  const lastClick = useRef<{ id: string; t: number } | null>(null);
 
   const { w: W, h: H } = STAGE_SIZES[format];
   const hideUi = playing || recPhase === 'recording' || recPhase === 'preparing' || recPhase === 'finishing';
@@ -102,6 +117,8 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
 
     const updateBox = () => {
       const s = store.getState();
+      const glyphs = s.ui.termEdit && !s.ui.playing ? rt.getGlyphBoxes(s.ui.termEdit) : NO_BOXES;
+      setGlyphBoxes((prev) => (sameBoxes(prev, glyphs) ? prev : glyphs));
       if (s.ui.playing || !s.ui.selection) {
         setBox((b) => (b === null ? b : null));
         return;
@@ -228,6 +245,21 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       return;
     }
 
+    // Modo Edición de Términos: los clics eligen glifos de la ecuación (Mayús suma o quita).
+    if (ui.termEdit) {
+      const index = rt.glyphAt(ui.termEdit, e.clientX, e.clientY);
+      if (index !== null) {
+        const current = ui.glyphSel;
+        actions.selectGlyphs(e.shiftKey ? (current.includes(index) ? current.filter((i) => i !== index) : [...current, index]) : [index]);
+        return;
+      }
+      if (rt.resolveTarget(e.target, true) === ui.termEdit) {
+        if (!e.shiftKey) actions.selectGlyphs([]);
+        return;
+      }
+      actions.exitTermEdit();
+    }
+
     const id = rt.resolveTarget(e.target, e.shiftKey);
     if (!id) {
       actions.select(null);
@@ -235,6 +267,18 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       return;
     }
     actions.select(id);
+    // Doble clic (o herramienta Selección Directa) sobre una ecuación: edición de términos.
+    const formula = project.objects.find((o) => o.id === id && is2D(o) && o.kind === 'formula' && !o.vector);
+    const previous = lastClick.current;
+    lastClick.current = formula ? { id, t: e.timeStamp } : null;
+    if (formula && (ui.pointerTool === 'direct' || (previous && previous.id === id && e.timeStamp - previous.t < DOUBLE_CLICK_MS))) {
+      lastClick.current = null;
+      actions.enterTermEdit(id);
+      const index = rt.glyphAt(id, e.clientX, e.clientY);
+      if (index !== null) actions.selectGlyphs([index]);
+      dragRef.current = null;
+      return;
+    }
     if (ui.pointerTool === 'direct') return;
     const info = rt.getNodeInfo(id);
     if (!info) return;
@@ -400,6 +444,19 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
                   }}
                 />
               )}
+              {termEdit && glyphBoxes.map((b, i) => {
+                if (!b) return null;
+                const chosen = glyphSel.includes(i);
+                const u = 1 / k;
+                return (
+                  <div key={`g${i}`} data-glyph-outline={i} data-selected={chosen || undefined} className="absolute"
+                    style={{
+                      left: b.x - 2 * u, top: b.y - 2 * u, width: b.w + 4 * u, height: b.h + 4 * u, borderRadius: 2 * u,
+                      border: `${u}px solid ${chosen ? '#5c9ef4' : 'rgba(255,255,255,0.14)'}`,
+                      background: chosen ? 'rgba(92,158,244,0.14)' : undefined,
+                    }} />
+                );
+              })}
               {direct && anchors.map((vertex, index) => (
                 <span key={index} data-vertex-index={index} title={`Vértice ${index + 1}`}
                   className={`pointer-events-auto absolute cursor-move border border-accent ${activeAnchor === index ? 'bg-accent' : 'bg-white'}`}

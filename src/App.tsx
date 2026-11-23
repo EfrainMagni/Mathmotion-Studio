@@ -166,10 +166,15 @@ export function App() {
         store.setUi({ pointerTool: 'direct', vectorTool: null, cameraMode: false });
         return;
       }
+      if (event.key === 'Escape' && ui.termEdit) {
+        event.preventDefault();
+        actions.exitTermEdit();
+        return;
+      }
       if (event.key === 'Delete' || (event.key === 'Backspace' && selectedClip)) {
         if (ui.playing) return;
         if (selectedClip) actions.removeClip(selectedClip);
-        else if (object) actions.removeObject(object.id);
+        else if (object && !ui.termEdit) actions.removeObject(object.id);
         else return;
         event.preventDefault();
         return;

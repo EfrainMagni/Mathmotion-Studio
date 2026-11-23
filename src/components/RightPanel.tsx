@@ -1,9 +1,10 @@
-import { useState } from 'react';
-import { Orbit, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Orbit, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
 import { SOUND_IDS, SOUND_LABEL, STAGE_SIZES, is2D, type ClipType, type SoundId } from '../types';
 import { engine } from '../engine';
-import { Field, NumberInput, Section, btn, input } from './ui';
+import { formatGlyphList, parseGlyphList } from '../engine/glyphs';
+import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
 
 function toHex(css: string | undefined): string | null {
   if (!css) return null;
@@ -363,11 +364,249 @@ function Animations() {
   );
 }
 
+/** Fórmula seleccionada (objeto raíz) o null. */
+function useFormula() {
+  const selection = useStore((s) => s.ui.selection);
+  const objects = useStore((s) => s.project.objects);
+  const object = objects.find((o) => o.id === selection?.split('.')[0]);
+  return object && is2D(object) && object.kind === 'formula' && !object.vector ? object : null;
+}
+
+function GlyphPanel() {
+  const obj = useFormula();
+  const termEdit = useStore((s) => s.ui.termEdit);
+  const glyphSel = useStore((s) => s.ui.glyphSel);
+  useStore((s) => s.ui.treeVersion);
+  const [name, setName] = useState('');
+  const group = useRef(Symbol());
+  if (!obj) return null;
+
+  const glyphs = engine.runtime?.getGlyphs(obj.id) ?? [];
+  const editing = termEdit === obj.id;
+  const sel = editing ? glyphSel : [];
+  const first = sel.length ? obj.glyphStyles?.[sel[0]] ?? {} : {};
+  const pick = (indices: number[]) => {
+    if (!editing) actions.enterTermEdit(obj.id);
+    actions.selectGlyphs(indices);
+  };
+  const edit = (patch: Parameters<typeof actions.setGlyphStyle>[2]) => actions.setGlyphStyle(obj.id, sel, patch, group.current);
+  const renew = () => {
+    group.current = Symbol();
+  };
+
+  return (
+    <Section title="Términos de la ecuación">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-slate-500">{glyphs.length} glifos · doble clic en el lienzo</span>
+        <button className={editing ? btnPrimary : btn} aria-pressed={editing}
+          onClick={() => (editing ? actions.exitTermEdit() : actions.enterTermEdit(obj.id))}
+          title="Modo Edición de Términos (Esc para salir)">
+          {editing ? 'Salir' : 'Editar términos'}
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-0.5" role="group" aria-label="Glifos de la ecuación">
+        {glyphs.map((g) => {
+          const on = sel.includes(g.index);
+          return (
+            <button key={g.index} data-glyph-chip={g.index} aria-pressed={on} title={`#${g.index} · ${g.glyphId}`}
+              className={`h-5 min-w-5 rounded border px-1 font-mono text-[11px] ${on ? 'border-accent bg-accent-soft text-accent-light' : 'border-bezel bg-ink-700 text-slate-200 hover:bg-ink-600'}`}
+              onClick={(e) => pick(e.shiftKey ? (on ? sel.filter((i) => i !== g.index) : [...sel, g.index]) : [g.index])}>
+              {g.char || '·'}
+            </button>
+          );
+        })}
+      </div>
+
+      <Field label="Glifos">
+        <input key={formatGlyphList(sel)} className={`${input} w-28 font-mono`} defaultValue={formatGlyphList(sel)} placeholder="0-1,4"
+          aria-label="Índices de glifos"
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+          onBlur={(e) => pick(parseGlyphList(e.target.value).filter((i) => i < glyphs.length))} />
+      </Field>
+
+      {sel.length > 0 && (
+        <>
+          <Field label="Color">
+            <input type="color" className="h-6 w-9 cursor-pointer rounded border border-bezel bg-transparent"
+              value={toHex(first.color) ?? '#f8fafc'} aria-label="Color de los glifos"
+              onBlur={renew} onChange={(e) => edit({ color: e.target.value })} />
+            {first.color !== undefined && (
+              <button className="text-[11px] text-accent-light underline" onClick={() => edit({ color: undefined })}>original</button>
+            )}
+          </Field>
+          <Field label="Escala local">
+            <NumberInput className={`${input} w-20`} value={first.scale ?? 1} min={0.1} max={10} step={0.05}
+              onChange={(v) => edit({ scale: v === 1 ? undefined : v })} ariaLabel="Escala local" />
+          </Field>
+          <Field label="Opacidad (%)">
+            <NumberInput className={`${input} w-20`} value={(first.opacity ?? 1) * 100} min={0} max={100} step={5}
+              onChange={(v) => edit({ opacity: v >= 100 ? undefined : v / 100 })} ariaLabel="Opacidad de los glifos" />
+          </Field>
+          <button className={btn} onClick={() => edit({ color: undefined, scale: undefined, opacity: undefined })}>
+            Restablecer glifos
+          </button>
+          <div className="flex gap-1.5">
+            <input className={input} value={name} maxLength={60} placeholder="Nombre del término (ej. 4x)"
+              aria-label="Nombre del término" onChange={(e) => setName(e.target.value)} />
+            <button className={btn} disabled={!name.trim()}
+              onClick={() => actions.saveTerm(obj.id, name, sel) && setName('')}>
+              Guardar
+            </button>
+          </div>
+        </>
+      )}
+
+      {!!obj.terms?.length && (
+        <ul className="space-y-0.5" aria-label="Términos con nombre">
+          {obj.terms.map((term) => (
+            <li key={term.id} className="flex items-center gap-1 text-xs" data-term={term.id}>
+              <button className="min-w-0 flex-1 truncate rounded px-1 text-left hover:bg-white/5" onClick={() => pick(term.glyphs)}
+                title={`Seleccionar glifos ${formatGlyphList(term.glyphs)}`}>
+                <span className="font-medium text-slate-100">{term.name}</span>{' '}
+                <span className="font-mono text-[10px] text-slate-500">{formatGlyphList(term.glyphs)}</span>
+              </button>
+              <button className="p-0.5 text-slate-400 hover:text-rose-300" aria-label={`Eliminar término ${term.name}`}
+                onClick={() => actions.removeTerm(obj.id, term.id)}>
+                <Trash2 size={12} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
+function EquationAnimations() {
+  const obj = useFormula();
+  const objects = useStore((s) => s.project.objects);
+  const time = useStore((s) => s.ui.time);
+  const termEdit = useStore((s) => s.ui.termEdit);
+  const glyphSel = useStore((s) => s.ui.glyphSel);
+  const [duration, setDuration] = useState(1);
+  const [scope, setScope] = useState('all');
+  const [lag, setLag] = useState(0.1);
+  const [factor, setFactor] = useState(1.3);
+  const [color, setColor] = useState('#ffff00');
+  const [dest, setDest] = useState('');
+  const [destTerm, setDestTerm] = useState('');
+  const [dx, setDx] = useState(0);
+  const [dy, setDy] = useState(0);
+  const [moveScale, setMoveScale] = useState(1);
+  const [turn, setTurn] = useState(0);
+  const [fade, setFade] = useState(100);
+  const [tint, setTint] = useState(false);
+  if (!obj) return null;
+
+  const sel = termEdit === obj.id ? glyphSel : [];
+  const start = Math.round(time * 100) / 100;
+  const target = objects.find((o) => o.id === dest && o.id !== obj.id && is2D(o));
+  const targetFormula = target && is2D(target) && target.kind === 'formula' && !target.vector ? target : null;
+  const term = scope.startsWith('term:') ? obj.terms?.find((entry) => entry.id === scope.slice(5)) : undefined;
+  const chosen = scope === 'sel' && sel.length ? sel : term ? term.glyphs : null;
+  const scopeParams = (): Record<string, number | string | boolean> => {
+    if (scope === 'sel' && sel.length) return { glyphs: formatGlyphList(sel) };
+    return term ? { term: term.id, glyphs: formatGlyphList(term.glyphs) } : {};
+  };
+  const add = (type: ClipType, parameters: Record<string, number | string | boolean> = {}) =>
+    actions.addClip({ targetId: obj.id, type, start, duration, parameters, sound: null });
+  const transform = (replace: boolean) => add('transform', target
+    ? { ...scopeParams(), to: target.id, replace, ...(destTerm ? { toTerm: destTerm } : {}) }
+    : { ...scopeParams(), replace, dx, dy, scale: moveScale, rotation: turn, opacity: fade / 100, ...(tint ? { color } : {}) });
+
+  return (
+    <Section title="Ecuaciones (Manim)">
+      <p className="text-[11px] leading-snug text-slate-500">
+        Crean un clip en el cabezal ({start.toFixed(2)} s). El énfasis afecta solo al alcance elegido.
+      </p>
+      <Field label="Duración (s)">
+        <NumberInput className={`${input} w-20`} value={duration} min={0.1} step={0.1} onChange={setDuration} />
+      </Field>
+      <Field label="Alcance">
+        <select className={input} value={scope} onChange={(e) => setScope(e.target.value)} aria-label="Alcance de la animación">
+          <option value="all">Toda la ecuación</option>
+          <option value="sel" disabled={!sel.length}>Selección actual ({sel.length})</option>
+          {obj.terms?.map((entry) => <option key={entry.id} value={`term:${entry.id}`}>Término «{entry.name}»</option>)}
+        </select>
+      </Field>
+
+      <div className="space-y-1.5 rounded border border-bezel p-2">
+        <button className={`${btn} w-full justify-start`} onClick={() => add('draw', { lagRatio: lag })}>
+          <PenTool size={14} /> Write por glifo
+        </button>
+        <Field label="lag_ratio">
+          <NumberInput className={`${input} w-16`} value={lag} min={0} max={5} step={0.05} onChange={setLag} ariaLabel="lag_ratio" />
+        </Field>
+      </div>
+
+      <div className="space-y-1.5 rounded border border-bezel p-2">
+        <button className={`${btn} w-full justify-start`} onClick={() => add('indicate', { ...scopeParams(), scale: factor, color })}>
+          <Sparkles size={14} /> Indicate
+        </button>
+        <button className={`${btn} w-full justify-start`} onClick={() => add('circumscribe', { ...scopeParams(), color })}>
+          <Radio size={14} /> Circumscribe
+        </button>
+        <button className={`${btn} w-full justify-start`} onClick={() => add('focus', { ...scopeParams(), color: '#888888', opacity: 0.2 })}>
+          <Maximize size={14} /> FocusOn
+        </button>
+        <Field label="Escala">
+          <NumberInput className={`${input} w-16`} value={factor} min={0.1} max={10} step={0.1} onChange={setFactor} ariaLabel="Escala del énfasis" />
+        </Field>
+        <Field label="Color">
+          <input type="color" className="h-6 w-9 cursor-pointer rounded border border-bezel bg-transparent" value={color}
+            onChange={(e) => setColor(e.target.value)} aria-label="Color del énfasis" />
+        </Field>
+      </div>
+
+      <div className="space-y-1.5 rounded border border-bezel p-2">
+        <Field label="Destino">
+          <select className={input} value={dest} onChange={(e) => { setDest(e.target.value); setDestTerm(''); }} aria-label="Objeto destino">
+            <option value="">Estado (sin objeto)</option>
+            {objects.filter((o) => o.id !== obj.id && is2D(o)).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+        </Field>
+        {targetFormula?.terms?.length ? (
+          <Field label="Término destino">
+            <select className={input} value={destTerm} onChange={(e) => setDestTerm(e.target.value)} aria-label="Término destino">
+              <option value="">Toda la ecuación</option>
+              {targetFormula.terms.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+            </select>
+          </Field>
+        ) : null}
+        {!target && (
+          <div className="grid grid-cols-2 gap-1.5 text-[11px] text-slate-400">
+            <label>Δx<NumberInput className={input} value={dx} step={10} onChange={setDx} ariaLabel="Desplazamiento X" /></label>
+            <label>Δy<NumberInput className={input} value={dy} step={10} onChange={setDy} ariaLabel="Desplazamiento Y" /></label>
+            <label>Escala<NumberInput className={input} value={moveScale} min={0.1} step={0.1} onChange={setMoveScale} ariaLabel="Escala destino" /></label>
+            <label>Giro (°)<NumberInput className={input} value={turn} step={15} onChange={setTurn} ariaLabel="Giro destino" /></label>
+            <label>Opacidad %<NumberInput className={input} value={fade} min={0} max={100} step={10} onChange={setFade} ariaLabel="Opacidad destino" /></label>
+            <label className="flex items-end gap-1 pb-1"><input type="checkbox" checked={tint} onChange={(e) => setTint(e.target.checked)} /> Color</label>
+          </div>
+        )}
+        <button className={`${btn} w-full justify-start`} onClick={() => transform(false)}>
+          <MoveRight size={14} /> Transform
+        </button>
+        <button className={`${btn} w-full justify-start`} disabled={!target} title={target ? undefined : 'Elige un objeto destino'} onClick={() => transform(true)}>
+          <MoveRight size={14} /> ReplacementTransform
+        </button>
+        <button className={`${btn} w-full justify-start`} disabled={!targetFormula || !!chosen}
+          title={targetFormula ? chosen ? 'TransformMatchingTex usa la ecuación completa' : undefined : 'Elige otra ecuación como destino'}
+          onClick={() => add('transformMatch', { to: targetFormula!.id })}>
+          <RotateCw size={14} /> TransformMatchingTex
+        </button>
+      </div>
+    </Section>
+  );
+}
+
 export function RightPanel() {
   return (
     <aside className="scroll-thin w-[248px] shrink-0 overflow-y-auto border-l border-bezel bg-ink-800">
       <Inspector />
+      <GlyphPanel />
       <Animations />
+      <EquationAnimations />
     </aside>
   );
 }

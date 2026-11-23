@@ -9,6 +9,12 @@ const nonnegative = number.nonnegative();
 const objectId = z.string().regex(/^o[1-9]\d*$/);
 const targetId = z.string().regex(/^o[1-9]\d*(\.[1-9]\d*)?$/);
 const clipId = z.string().regex(/^c[1-9]\d*$/);
+const paint = z.string().refine((value) =>
+  /^(none|currentColor|transparent|#[\da-f]{3,8}|rgba?\([\d\s.,%/+-]+\)|hsla?\([\d\s.,%/+-]+\))$/i.test(value));
+const glyphStyle = z.object({ color: paint.optional(), scale: positive.optional(), opacity: number.min(0).max(1).optional() });
+const term = z.object({
+  id: z.string().regex(/^t[1-9]\d*$/), name: z.string().max(60), glyphs: z.array(z.int().nonnegative()).max(2000),
+});
 const baseObject = { id: objectId, name: z.string(), scale: positive, rotation: number };
 const object2D = z.object({
   ...baseObject, kind: z.enum(['svg', 'formula']), sourceSvg: z.string(),
@@ -19,12 +25,11 @@ const object2D = z.object({
     vertices: z.array(vertex).min(3).max(20).optional(),
   }).refine((vector) => vector.tool !== 'polygon' || !!vector.vertices).optional(),
   x: number, y: number, bw: positive, bh: positive, tex: z.string().optional(),
+  glyphStyles: z.record(z.string().regex(/^\d+$/), glyphStyle).optional(), terms: z.array(term).optional(),
 });
 const obj3D = z.object({
   ...baseObject, kind: z.literal('shape3d'), shape: z.enum(['axes', 'paraboloid', 'sphere', 'vector']),
 });
-const paint = z.string().refine((value) =>
-  /^(none|currentColor|transparent|#[\da-f]{3,8}|rgba?\([\d\s.,%/+-]+\)|hsla?\([\d\s.,%/+-]+\))$/i.test(value));
 const style = z.object({
   fill: paint.optional(), stroke: paint.optional(), strokeWidth: nonnegative.optional(),
   lineStyle: z.enum(['solid', 'dotted']).optional(), opacity: number.min(0).max(1).optional(),
@@ -34,7 +39,11 @@ const style = z.object({
 const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()])).superRefine((input, ctx) => {
   if (
     (input.color !== undefined && !paint.safeParse(input.color).success) ||
-    (input.axis !== undefined && input.axis !== 'x' && input.axis !== 'y' && input.axis !== 'z')
+    (input.axis !== undefined && input.axis !== 'x' && input.axis !== 'y' && input.axis !== 'z') ||
+    (input.to !== undefined && !objectId.safeParse(input.to).success) ||
+    (input.term !== undefined && !/^t[1-9]\d*$/.test(String(input.term))) ||
+    (input.toTerm !== undefined && !/^t[1-9]\d*$/.test(String(input.toTerm))) ||
+    (input.glyphs !== undefined && !/^[\d,\s-]*$/.test(String(input.glyphs)))
   ) ctx.addIssue({ code: 'custom', message: 'Parámetros de animación no válidos.' });
 });
 const voice = z.object({
@@ -47,7 +56,10 @@ const project = z.object({
   objects: z.array(z.union([object2D, obj3D])),
   styles: z.record(targetId, style),
   clips: z.array(z.object({
-    id: clipId, targetId, type: z.enum(['draw', 'radar', 'glow', 'appear', 'rotate', 'orbit']),
+    id: clipId, targetId, type: z.enum([
+      'draw', 'radar', 'glow', 'appear', 'rotate', 'orbit',
+      'indicate', 'circumscribe', 'focus', 'transform', 'transformMatch',
+    ]),
     start: nonnegative, duration: positive, sound: z.enum(['chalk', 'pop', 'radar', 'sparkle']).nullable(),
     parameters,
   })),

@@ -4,6 +4,8 @@
  */
 import { SAMPLE_SVG, inlineUses, prepareSvg } from '../src/engine/svgImport';
 import { SceneRuntime, type TreeNode } from '../src/engine/runtime';
+import { matchGlyphs } from '../src/engine/glyphs';
+import { generateManim } from '../src/engine/manim';
 import type { Clip, NodeStyle, Obj2D, Project } from '../src/types';
 
 interface Result {
@@ -432,5 +434,182 @@ export async function run(): Promise<Result[]> {
 
   rt3.dispose();
   rt.dispose();
+  await glyphTests();
   return results;
+}
+
+// ---- 10. Glifos de ecuaciones (MathTex), énfasis y transformaciones ----------------------------
+
+const HEX: Record<string, string> = { '4': '34', x: '1D465', '+': '2B', '5': '35', '=': '3D', '2': '32', '9': '39' };
+
+/** SVG con la misma estructura que MathJax (fontCache none): un `path[data-c]` por glifo y eje y invertido. */
+function mathSvg(chars: string[]): string {
+  const paths = chars.map((char, i) => {
+    const shape = char === '+' || char === '=' ? 'M0 150H400V450H0Z' : 'M0 0H400V600H0Z';
+    return `<g data-mml-node="${/\d/.test(char) ? 'mn' : 'mi'}" transform="translate(${i * 600},0)"><path data-c="${HEX[char]}" d="${shape}"/></g>`;
+  });
+  const width = chars.length * 600;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -750 ${width} 1100" width="100%" height="100%" style="color:#f8fafc"><g stroke="currentColor" fill="currentColor" stroke-width="0" transform="scale(1,-1)"><g data-mml-node="math">${paths.join('')}</g></g></svg>`;
+}
+
+function mkFormula(id: string, tex: string, x: number, y: number): Obj2D {
+  const chars = [...tex];
+  const source = mathSvg(chars);
+  const prepared = prepareSvg(source, id);
+  return { id, kind: 'formula', name: id, markup: prepared.markup, sourceSvg: source, tex, bw: prepared.viewBox[2], bh: prepared.viewBox[3], x, y, scale: 0.25, rotation: 0 };
+}
+
+const glyphEl = (objId: string, index: number) => document.querySelector(`[data-mm-obj="${objId}"] [data-mm-glyph="${index}"]`) as SVGElement;
+const rectOf = (el: Element) => el.getBoundingClientRect();
+const unionOf = (els: Element[]) => {
+  const rects = els.map(rectOf);
+  const l = Math.min(...rects.map((r) => r.left));
+  const t = Math.min(...rects.map((r) => r.top));
+  const r = Math.max(...rects.map((r) => r.right));
+  const b = Math.max(...rects.map((r) => r.bottom));
+  return { x: (l + r) / 2, y: (t + b) / 2, w: r - l, h: b - t };
+};
+const paintOf = (el: Element) => (el.matches('path') ? el : el.querySelector('path')!) as SVGElement;
+const fillOf = (el: Element) => getComputedStyle(paintOf(el)).fill;
+
+async function glyphTests() {
+  const A = mkFormula('o1', '4x+5x=2', 960, 300);
+  const B = mkFormula('o2', '9x=2', 960, 800);
+  const { rt, fx } = mkStage(1);
+
+  rt.setProject(mkProject([A, B]));
+  const info = rt.getGlyphs('o1');
+  check('glifos: un índice por carácter con su contenido', info.map((g) => g.char).join('') === '4x+5x=2' && info.every((g, i) => g.index === i && g.glyphId === `o1.g${i}`), JSON.stringify(info.map((g) => g.char)));
+  check('glifos: caja local medida', info.every((g) => g.box.w > 0 && g.box.h > 0), JSON.stringify(info[0]));
+  const c3 = centerOf(glyphEl('o1', 3));
+  check('glifos: selección por clic (glyphAt)', rt.glyphAt('o1', c3.x, c3.y) === 3 && rt.glyphAt('o1', 5, 5) === null);
+
+  // estilo propio de cada glifo
+  const base = { x: centerOf(glyphEl('o1', 6)).x, w: rectOf(glyphEl('o1', 6)).width };
+  const baseCenter = centerOf(glyphEl('o1', 6));
+  const baseOpacity = getComputedStyle(glyphEl('o1', 0)).opacity;
+  rt.setProject(mkProject([{ ...A, glyphStyles: { '1': { color: '#ff0000' }, '6': { scale: 2 }, '0': { opacity: 0.5 } } }, B]));
+  check('glifos: color individual', fillOf(glyphEl('o1', 1)) === 'rgb(255, 0, 0)' && fillOf(glyphEl('o1', 0)) === 'rgb(248, 250, 252)', fillOf(glyphEl('o1', 1)));
+  const scaled = centerOf(glyphEl('o1', 6));
+  check('glifos: escala local sobre su propio centro (viewBox con desfase)', near(rectOf(glyphEl('o1', 6)).width, base.w * 2, 0.5) && near(scaled.x, baseCenter.x, 0.5) && near(scaled.y, baseCenter.y, 0.5), JSON.stringify([base, scaled, baseCenter]));
+  check('glifos: opacidad individual', getComputedStyle(glyphEl('o1', 0)).opacity === '0.5' && baseOpacity === '1');
+  rt.setProject(mkProject([A, B]));
+  const restored = centerOf(glyphEl('o1', 6));
+  check('glifos: quitar estilos restaura el estado base', near(restored.x, baseCenter.x, 0.01) && near(rectOf(glyphEl('o1', 6)).width, base.w, 0.01) && glyphEl('o1', 6).style.cssText === '', glyphEl('o1', 6).style.cssText);
+
+  // Indicate sobre un subconjunto de glifos
+  const group0 = unionOf([glyphEl('o1', 0), glyphEl('o1', 1)]);
+  const ind = mkClip('c1', 'o1', 'indicate', 0, 1, { glyphs: '0,1', scale: 1.3, color: '#ffff00' });
+  rt.setProject(mkProject([A, B], [ind]));
+  rt.renderAt(0.5);
+  const group1 = unionOf([glyphEl('o1', 0), glyphEl('o1', 1)]);
+  check('Indicate: el término crece 1.3× alrededor de su centro', near(group1.w, group0.w * 1.3, 0.6) && near(group1.h, group0.h * 1.3, 0.6) && near(group1.x, group0.x, 0.6) && near(group1.y, group0.y, 0.6), JSON.stringify([group0, group1]));
+  check('Indicate: brilla en amarillo solo en el término', fillOf(glyphEl('o1', 0)) === 'rgb(255, 255, 0)' && fillOf(glyphEl('o1', 4)) === 'rgb(248, 250, 252)', fillOf(glyphEl('o1', 0)));
+  check('Indicate: el resto de la ecuación no se mueve', near(centerOf(glyphEl('o1', 6)).x, baseCenter.x, 0.01));
+  rt.renderAt(1);
+  const group2 = unionOf([glyphEl('o1', 0), glyphEl('o1', 1)]);
+  check('Indicate: vuelve a su estado original', near(group2.w, group0.w, 0.01) && near(group2.x, group0.x, 0.01) && fillOf(glyphEl('o1', 0)) === 'rgb(248, 250, 252)');
+  rt.renderAt(0.5);
+  rt.renderAt(0);
+  check('Indicate: retroceder deja los glifos sin estilos residuales', glyphEl('o1', 0).style.cssText === '' && paintOf(glyphEl('o1', 0)).style.cssText === '');
+
+  // Término nombrado como alcance
+  const named = { ...A, terms: [{ id: 't1', name: '4x', glyphs: [0, 1] }] };
+  rt.setProject(mkProject([named, B], [mkClip('c1', 'o1', 'indicate', 0, 1, { term: 't1', scale: 1.5 })]));
+  rt.renderAt(0.5);
+  check('Indicate: un término con nombre resuelve sus glifos', near(unionOf([glyphEl('o1', 0), glyphEl('o1', 1)]).w, group0.w * 1.5, 0.8));
+  rt.renderAt(0);
+
+  // Circumscribe y FocusOn
+  rt.setProject(mkProject([A, B], [mkClip('c1', 'o1', 'circumscribe', 0, 1, { glyphs: '0,1' }), mkClip('c2', 'o1', 'focus', 2, 1, { glyphs: '6' })]));
+  rt.renderAt(0.5);
+  const frame = fx.querySelector('rect');
+  check('Circumscribe: marco luminoso sobre los glifos', !!frame && Number(frame.getAttribute('width')) > group0.w && frame.getAttribute('stroke') === '#ffff00', fx.innerHTML);
+  rt.renderAt(1.5);
+  check('Circumscribe: desaparece al terminar', fx.querySelectorAll('rect').length === 0);
+  rt.renderAt(2.2);
+  const r1 = Number(fx.querySelector('circle')?.getAttribute('r'));
+  rt.renderAt(2.8);
+  const r2 = Number(fx.querySelector('circle')?.getAttribute('r'));
+  check('FocusOn: el foco se encoge hacia el glifo', r1 > r2 && r2 > 0, `${r1} ${r2}`);
+  rt.renderAt(0);
+
+  // Write con lag_ratio por glifo
+  rt.setProject(mkProject([A], [mkClip('c1', 'o1', 'draw', 0, 1, { lagRatio: 1 })]));
+  rt.renderAt(0.4);
+  const first = paintOf(glyphEl('o1', 0));
+  const last = paintOf(glyphEl('o1', 6));
+  check('Write: lag_ratio escalona glifo por glifo', first.style.strokeDashoffset === '0px' || first.style.strokeDashoffset === '0' ? last.style.strokeOpacity === '0' : false, `${first.style.cssText} | ${last.style.cssText}`);
+  rt.renderAt(0);
+
+  // TransformMatchingTex
+  const match = mkClip('c1', 'o1', 'transformMatch', 1, 1, { to: 'o2' });
+  rt.setProject(mkProject([A, B], [match]));
+  const wrapA = document.querySelector('[data-mm-obj="o1"]') as HTMLElement;
+  const wrapB = document.querySelector('[data-mm-obj="o2"]') as HTMLElement;
+  rt.renderAt(0.5);
+  check('TransformMatchingTex: la ecuación destino no existe antes del clip', wrapB.style.opacity === '0' && wrapA.style.opacity === '1');
+  const pairs = matchGlyphs([...'4x+5x=2'], [...'9x=2']);
+  check('TransformMatchingTex: empareja x, = y 2', JSON.stringify(pairs) === '[[1,1],[5,2],[6,3]]', JSON.stringify(pairs));
+  const startX = centerOf(glyphEl('o1', 1));
+  const destX = centerOf(glyphEl('o2', 1));
+  rt.renderAt(1.5);
+  const midX = centerOf(glyphEl('o1', 1));
+  check('TransformMatchingTex: el símbolo igual se desliza a medio camino', near(midX.x, (startX.x + destX.x) / 2, 1.5) && near(midX.y, (startX.y + destX.y) / 2, 1.5), JSON.stringify([startX, midX, destX]));
+  check('TransformMatchingTex: términos que desaparecen se desvanecen y los nuevos aparecen', near(Number(getComputedStyle(glyphEl('o1', 0)).opacity), 0.5, 0.02) && near(Number(getComputedStyle(glyphEl('o2', 0)).opacity), 0.5, 0.02) && getComputedStyle(glyphEl('o2', 1)).opacity === '0', getComputedStyle(glyphEl('o1', 0)).opacity);
+  rt.renderAt(1.999);
+  const endX = centerOf(glyphEl('o1', 1));
+  check('TransformMatchingTex: justo antes del final el símbolo coincide con el destino', near(endX.x, destX.x, 1) && near(endX.y, destX.y, 1), JSON.stringify([endX, destX]));
+  rt.renderAt(2);
+  check('TransformMatchingTex: al terminar A desaparece y B queda visible', wrapA.style.opacity === '0' && wrapB.style.opacity === '1' && getComputedStyle(glyphEl('o2', 1)).opacity === '1', JSON.stringify([wrapA.style.opacity, wrapB.style.opacity, getComputedStyle(glyphEl('o2', 1)).opacity]));
+  rt.renderAt(0);
+  check('TransformMatchingTex: retroceder al inicio restaura A', near(centerOf(glyphEl('o1', 1)).x, startX.x, 0.01) && glyphEl('o1', 1).style.cssText === '', `${centerOf(glyphEl('o1', 1)).x} vs ${startX.x} | ${glyphEl('o1', 1).style.cssText}`);
+
+  // Transform hacia otro objeto (crossfade y pose)
+  rt.setProject(mkProject([A, B], [mkClip('c1', 'o1', 'transform', 1, 1, { to: 'o2', replace: true })]));
+  rt.renderAt(1.5);
+  const midBox = rectOf(wrapA);
+  rt.renderAt(0.5);
+  check('Transform: destino oculto antes del clip', wrapB.style.opacity === '0');
+  rt.renderAt(1.5);
+  check('Transform: a medio clip A viaja hacia B con opacidades cruzadas', near(Number(wrapA.style.opacity), 0.5, 0.01) && near(Number(wrapB.style.opacity), 0.5, 0.01) && near(midBox.top + midBox.height / 2, 550, 2), `${wrapA.style.opacity} ${wrapB.style.opacity} ${midBox.top}`);
+  rt.renderAt(2);
+  check('Transform: al terminar queda solo el destino', wrapA.style.opacity === '0' && wrapB.style.opacity === '1');
+
+  // Transform de un término a un término de otra ecuación
+  const dest = { ...B, terms: [{ id: 't1', name: '9', glyphs: [0] }] };
+  rt.setProject(mkProject([A, dest], [mkClip('c1', 'o1', 'transform', 1, 1, { glyphs: '0,1', to: 'o2', toTerm: 't1' })]));
+  const nineBefore = getComputedStyle(glyphEl('o2', 0)).opacity;
+  rt.renderAt(0.5);
+  const hiddenNine = getComputedStyle(glyphEl('o2', 0)).opacity;
+  const target = centerOf(glyphEl('o2', 0));
+  rt.renderAt(2);
+  const moved = unionOf([glyphEl('o1', 0), glyphEl('o1', 1)]);
+  check('Transform de término: el origen llega al término destino', near(moved.x, target.x, 1.5) && near(moved.y, target.y, 1.5) && getComputedStyle(glyphEl('o1', 0)).opacity === '0' && getComputedStyle(glyphEl('o2', 0)).opacity === nineBefore && hiddenNine === '0', JSON.stringify([moved, target, hiddenNine]));
+  rt.renderAt(0);
+
+  // Transform hacia un estado (posición, escala, giro, color y opacidad)
+  const two = unionOf([glyphEl('o1', 6)]);
+  rt.setProject(mkProject([A], [mkClip('c1', 'o1', 'transform', 0, 1, { glyphs: '6', dx: 100, dy: 40, scale: 2, rotation: 90, opacity: 0.5, color: '#00ff00' })]));
+  rt.renderAt(1);
+  const twoEnd = unionOf([glyphEl('o1', 6)]);
+  check('Transform de estado: posición y escala del término', near(twoEnd.x, two.x + 100, 1) && near(twoEnd.y, two.y + 40, 1) && near(twoEnd.h, two.w * 2, 1), JSON.stringify([two, twoEnd]));
+  check('Transform de estado: color y opacidad destino', fillOf(glyphEl('o1', 6)) === 'rgb(0, 255, 0)' && near(Number(getComputedStyle(glyphEl('o1', 6)).opacity), 0.5, 0.01));
+  rt.renderAt(0);
+  rt.dispose();
+
+  // Exportación a Manim
+  const manim = generateManim(mkProject(
+    [{ ...A, glyphStyles: { '0': { color: '#ff0000' }, '1': { color: '#ff0000' }, '6': { scale: 1.5 } }, terms: [{ id: 't1', name: '4x', glyphs: [0, 1] }] }, B],
+    [mkClip('c1', 'o1', 'indicate', 0, 1, { term: 't1', glyphs: '0-1', scale: 1.3, color: '#ffff00' }),
+      mkClip('c2', 'o1', 'indicate', 1, 1, { glyphs: '5' }),
+      mkClip('c3', 'o1', 'transformMatch', 2, 1, { to: 'o2' }),
+      mkClip('c4', 'o1', 'draw', 4, 1, { lagRatio: 0.2 })],
+  )).script;
+  check('Manim: MathTex con una parte por glifo', manim.includes('o1 = MathTex("4", "x", "+", "5", "x", "=", "2")'), manim.slice(0, 600));
+  check('Manim: estilos por glifo como eq[a:b].set_color(...)', manim.includes('o1[0:2].set_color("#ff0000")') && manim.includes('o1[6].scale(1.5)'));
+  check('Manim: término con nombre', manim.includes('o1_t1 = o1[0:2]  # término "4x"') && manim.includes('Indicate(o1_t1, scale_factor=1.3, color="#ffff00"'));
+  check('Manim: Indicate sobre un único glifo', manim.includes('Indicate(o1[5],'));
+  check('Manim: TransformMatchingTex(eq1, eq2)', manim.includes('TransformMatchingTex(o1, o2, run_time=1)') && manim.includes('"reveal": [o2]'));
+  check('Manim: Write con lag_ratio', manim.includes('Write(o1, lag_ratio=0.2, run_time=1)'));
 }
