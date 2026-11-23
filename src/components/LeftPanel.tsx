@@ -179,7 +179,7 @@ function SvgSection() {
     const prepared = prepareSvg(text, id);
     const { w, h } = STAGE_SIZES[store.getState().project.format];
     const [, , bw, bh] = prepared.viewBox;
-    actions.addObject2D({ id, kind: 'svg', name, markup: prepared.markup, bw, bh, fit: Math.min(w / bw, h / bh) });
+    actions.addObject2D({ id, kind: 'svg', name, markup: prepared.markup, sourceSvg: text, bw, bh, fit: Math.min(w / bw, h / bh) });
     setWarn(prepared.warnings);
   };
 
@@ -189,7 +189,10 @@ function SvgSection() {
     setError(null);
     setWarn([]);
     try {
-      addSvg(await file.text(), file.name.replace(/\.svg$/i, ''));
+      const generation = store.projectGeneration();
+      const text = await file.text();
+      if (generation !== store.projectGeneration()) return;
+      addSvg(text, file.name.replace(/\.svg$/i, ''));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -285,7 +288,9 @@ function LatexSection() {
     setInserting(true);
     try {
       const id = actions.reserveObjectId();
+      const generation = store.projectGeneration();
       const prepared = await formulaToPrepared(tex, id, color);
+      if (generation !== store.projectGeneration()) return;
       const { w, h } = STAGE_SIZES[store.getState().project.format];
       const [, , bw, bh] = prepared.viewBox;
       const n = store.getState().project.objects.filter((o) => o.kind === 'formula').length + 1;
@@ -294,6 +299,7 @@ function LatexSection() {
         kind: 'formula',
         name: `Fórmula ${n}`,
         markup: prepared.markup,
+        sourceSvg: prepared.sourceSvg,
         bw,
         bh,
         tex,
@@ -415,8 +421,11 @@ function AudioSection() {
     setErr(null);
     setLoading(true);
     try {
-      const r = await audio.loadVoiceFile(file);
-      actions.setVoice({ name: r.name, duration: r.duration, start: 0, volume: 1 });
+      const generation = store.projectGeneration();
+      const buffer = await audio.decodeVoice(file);
+      if (generation !== store.projectGeneration()) return;
+      audio.voiceBuffer = buffer;
+      actions.setVoice({ source: file, name: file.name, duration: buffer.duration, start: 0, volume: 1 });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -429,7 +438,12 @@ function AudioSection() {
     setErr(null);
     if (!micOn) {
       try {
+        const generation = store.projectGeneration();
         await audio.startMic(); // solicita permiso explícito al navegador
+        if (generation !== store.projectGeneration()) {
+          audio.cancelMic();
+          return;
+        }
         setMicOn(true);
         setElapsed(0);
       } catch (e) {
@@ -439,8 +453,11 @@ function AudioSection() {
       setMicOn(false);
       setLoading(true);
       try {
-        const r = await audio.stopMic();
-        actions.setVoice({ name: r.name, duration: r.duration, start: 0, volume: 1 });
+        const generation = store.projectGeneration();
+        const { source, name, buffer } = await audio.stopMic();
+        if (generation !== store.projectGeneration()) return;
+        audio.voiceBuffer = buffer;
+        actions.setVoice({ source, name, duration: buffer.duration, start: 0, volume: 1 });
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
       } finally {

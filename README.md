@@ -22,6 +22,12 @@ Requiere Node 18+ y un navegador basado en Chromium (la grabación usa `getDispl
 4. En la línea de tiempo mueve, edita numéricamente o elimina clips; arrastra el cabezal; ←/→ avanzan un fotograma (30 fps); Espacio reproduce.
 5. Objetos 3D: se insertan desde el panel; activa el **modo cámara** en la barra superior para orbitar.
 
+## Guardar y abrir proyectos
+
+El editor autoguarda el proyecto actual y su pista de voz en IndexedDB en este navegador. Al recargar, recupera la escena automáticamente. **Nuevo proyecto** limpia el lienzo y sustituye ese autoguardado.
+
+**Guardar proyecto** descarga un archivo `.mathmotion` que incluye la escena editable y el audio original en Base64. **Abrir proyecto** acepta archivos `.mathmotion` o `.json` generados por el editor. Guarda una copia en archivo si quieres conservar varias clases o moverlas a otro dispositivo.
+
 ## Grabar video
 
 1. Elige calidad (**Ligera ~1,2 Mbps** o Estándar ~4 Mbps) en la barra superior.
@@ -33,10 +39,11 @@ Requiere Node 18+ y un navegador basado en Chromium (la grabación usa `getDispl
 ## Pruebas
 
 ```bash
-TOOLS_PATH=<ruta a node_modules con playwright-core> node tests/dom-test.mjs
+npm run test:dom
+npm run test:project
 ```
 
-Pruebas de lógica en Chrome real (sanitizado SVG, transformaciones, arrastre, clips, retroceso).
+Pruebas en Chromium del editor 2D y del flujo de autoguardado, recarga, descarga y reapertura de un proyecto. Usa `CHROME_PATH` si el navegador está instalado en una ruta distinta de la predeterminada.
 
 ## Limitaciones conocidas
 

@@ -29,7 +29,7 @@ function mkProject(objects: Obj2D[], clips: Clip[] = [], styles: Record<string, 
 }
 
 function mkObj(id: string, markup: string, bw: number, bh: number, kind: 'svg' | 'formula' = 'svg', scale = 1): Obj2D {
-  return { id, kind, name: id, markup, bw, bh, x: 960, y: 540, scale, rotation: 0 };
+  return { id, kind, name: id, markup, sourceSvg: markup, bw, bh, x: 960, y: 540, scale, rotation: 0 };
 }
 
 function mkClip(id: string, targetId: string, type: Clip['type'], start: number, duration: number, parameters: Clip['parameters'] = {}): Clip {

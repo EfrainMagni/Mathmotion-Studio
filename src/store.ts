@@ -83,7 +83,10 @@ function defaultUI(): UIState {
 let state: State = { project: defaultProject(), ui: defaultUI() };
 const listeners = new Set<() => void>();
 
+let projectGeneration = 0;
+
 export const store = {
+  projectGeneration: () => projectGeneration,
   getState: () => state,
   subscribe(fn: () => void) {
     listeners.add(fn);
@@ -109,9 +112,17 @@ export const store = {
     state = { ...state, ui: { ...state.ui, ...patch } };
     listeners.forEach((l) => l());
   },
-  /** Sustituye el proyecto completo (vista de grabación). */
+  /** Sustituye el proyecto y limpia la selección y los controles de reproducción. */
   replaceProject(p: Project) {
-    state = { ...state, project: p };
+    projectGeneration++;
+    state = {
+      ...state,
+      project: p,
+      ui: {
+        ...state.ui, selection: null, selectedClip: null, time: 0,
+        playing: false, cameraMode: false, notice: null,
+      },
+    };
     listeners.forEach((l) => l());
   },
 };
