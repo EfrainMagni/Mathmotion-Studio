@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { Orbit, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { SOUND_IDS, SOUND_LABEL, STAGE_SIZES, is2D, type ClipType, type SoundId } from '../types';
+import { SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, is2D, type ClipType, type SoundId } from '../types';
 import { engine } from '../engine';
 import { formatGlyphList, parseGlyphList } from '../engine/glyphs';
 import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
@@ -187,7 +187,10 @@ function Inspector() {
       )}
 
       <Field label="Escala">
-        <NumberInput className={`${input} w-20`} value={scale} min={0.01} max={20} step={0.05} onChange={setScale} />
+        <input type="range" className="min-w-0 flex-1 accent-sky-400" aria-label="Escala (control deslizante)"
+          min={SCALE_MIN} max={SCALE_MAX} step={0.01} value={Math.min(SCALE_MAX, Math.max(SCALE_MIN, scale))}
+          onChange={(e) => setScale(parseFloat(e.target.value))} />
+        <NumberInput className={`${input} w-20`} value={scale} min={SCALE_MIN} max={SCALE_MAX} step={0.01} onChange={setScale} ariaLabel="Escala" />
       </Field>
 
       {info.isRoot && (
@@ -436,7 +439,7 @@ function GlyphPanel() {
             )}
           </Field>
           <Field label="Escala local">
-            <NumberInput className={`${input} w-20`} value={first.scale ?? 1} min={0.1} max={10} step={0.05}
+            <NumberInput className={`${input} w-20`} value={first.scale ?? 1} min={SCALE_MIN} max={SCALE_MAX} step={0.01}
               onChange={(v) => edit({ scale: v === 1 ? undefined : v })} ariaLabel="Escala local" />
           </Field>
           <Field label="Opacidad (%)">
@@ -496,6 +499,7 @@ function EquationAnimations() {
   const [moveScale, setMoveScale] = useState(1);
   const [turn, setTurn] = useState(0);
   const [fade, setFade] = useState(100);
+  const [keepSource, setKeepSource] = useState(false);
   const [tint, setTint] = useState(false);
   if (!obj) return null;
 
@@ -512,7 +516,7 @@ function EquationAnimations() {
   const add = (type: ClipType, parameters: Record<string, number | string | boolean> = {}) =>
     actions.addClip({ targetId: obj.id, type, start, duration, parameters, sound: null });
   const transform = (replace: boolean) => add('transform', target
-    ? { ...scopeParams(), to: target.id, replace, ...(destTerm ? { toTerm: destTerm } : {}) }
+    ? { ...scopeParams(), to: target.id, replace, ...(destTerm ? { toTerm: destTerm } : {}), ...(keepSource ? { keep: true } : {}) }
     : { ...scopeParams(), replace, dx, dy, scale: moveScale, rotation: turn, opacity: fade / 100, ...(tint ? { color } : {}) });
 
   return (
@@ -584,6 +588,11 @@ function EquationAnimations() {
             <label className="flex items-end gap-1 pb-1"><input type="checkbox" checked={tint} onChange={(e) => setTint(e.target.checked)} /> Color</label>
           </div>
         )}
+        <label className="flex items-center gap-1.5 text-[11px] text-slate-300"
+          title="La ecuación origen se queda fija y una copia viaja hacia el destino (Manim: origen.copy())">
+          <input type="checkbox" checked={keepSource} disabled={!target} onChange={(e) => setKeepSource(e.target.checked)} />
+          Mantener ecuación origen
+        </label>
         <button className={`${btn} w-full justify-start`} onClick={() => transform(false)}>
           <MoveRight size={14} /> Transform
         </button>
@@ -592,7 +601,7 @@ function EquationAnimations() {
         </button>
         <button className={`${btn} w-full justify-start`} disabled={!targetFormula || !!chosen}
           title={targetFormula ? chosen ? 'TransformMatchingTex usa la ecuación completa' : undefined : 'Elige otra ecuación como destino'}
-          onClick={() => add('transformMatch', { to: targetFormula!.id })}>
+          onClick={() => add('transformMatch', { to: targetFormula!.id, ...(keepSource ? { keep: true } : {}) })}>
           <RotateCw size={14} /> TransformMatchingTex
         </button>
       </div>

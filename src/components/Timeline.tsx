@@ -105,6 +105,16 @@ function ClipEditor() {
             onChange={(v) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, scale: v } })} ariaLabel="Escala del énfasis" />
         </label>
       )}
+      {(clip.type === 'transform' || clip.type === 'transformMatch') && typeof clip.parameters.to === 'string' && (
+        <label className="flex items-center gap-1" title="El origen queda fijo; una copia viaja al destino (origen.copy())">
+          <input type="checkbox" checked={clip.parameters.keep === true}
+            onChange={(e) => {
+              const { keep: _previous, ...rest } = clip.parameters;
+              actions.updateClip(clip.id, { parameters: e.target.checked ? { ...rest, keep: true } : rest });
+            }} />
+          Mantener ecuación origen
+        </label>
+      )}
       {(clip.type === 'indicate' || clip.type === 'circumscribe' || clip.type === 'focus') && (
         <input type="color" className="h-6 w-8 cursor-pointer rounded border border-bezel bg-transparent" aria-label="Color del énfasis"
           value={/^#[\da-f]{6}$/i.test(String(clip.parameters.color)) ? String(clip.parameters.color) : '#ffff00'}
