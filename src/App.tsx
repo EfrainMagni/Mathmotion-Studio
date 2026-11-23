@@ -65,6 +65,7 @@ const controlClass =
   'aria-pressed:bg-cyan-400/20 aria-pressed:text-cyan-200';
 
 export function App() {
+  const projectGeneration = useStore(() => store.projectGeneration());
   const viewportRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null);
@@ -193,7 +194,7 @@ export function App() {
       <Notice />
       <div className="flex min-h-0 flex-1">
         <div id="studio-left" className={!focus && panels.left ? 'contents' : 'hidden'}>
-          <LeftPanel />
+          <LeftPanel key={projectGeneration} />
         </div>
 
         <main className="relative min-h-0 min-w-0 flex-1 overflow-hidden">

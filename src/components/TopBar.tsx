@@ -1,5 +1,9 @@
+import { useRef, useState } from 'react';
+import { audio } from '../engine';
+import { parseProject, serializeProject } from '../engine/projectFiles';
+import { activateProject } from '../engine/projectStorage';
 import { Crosshair, Download, Loader2, Orbit, Square, Video } from 'lucide-react';
-import { actions, store, useStore } from '../store';
+import { actions, defaultProject, store, useStore } from '../store';
 import type { StageBackground, StageFormat } from '../types';
 import { QUALITY, beginRecording, pickMime, stopRecording } from '../engine/recorder';
 
@@ -25,13 +29,77 @@ export function TopBar() {
   const rec = useStore((s) => s.ui.recording);
   const has3d = useStore((s) => s.project.objects.some((o) => o.kind === 'shape3d'));
   const busy = rec.phase !== 'idle';
+  const [working, setWorking] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+
+  function confirmReplacement(message: string) {
+    const project = store.getState().project;
+    return (!project.objects.length && !project.clips.length && !project.voice) || window.confirm(message);
+  }
+
+  async function openProject(file?: File) {
+    if (!file) return;
+    setWorking(true);
+    try {
+      const project = parseProject(await file.text());
+      const buffer = project.voice ? await audio.decodeVoice(project.voice.source) : null;
+      if (store.getState().ui.recording.phase !== 'idle') return;
+      if (!confirmReplacement('¿Reemplazar el proyecto actual por el del archivo?')) return;
+      activateProject(project, buffer);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '';
+      actions.notify('error', `No se pudo abrir el proyecto. ${detail}`);
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function saveProject() {
+    setWorking(true);
+    try {
+      const text = await serializeProject(store.getState().project);
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'proyecto.mathmotion';
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      actions.notify('error', 'No se pudo guardar el archivo del proyecto.');
+    } finally {
+      setWorking(false);
+    }
+  }
+
   const supported = !!pickMime() && !!navigator.mediaDevices?.getDisplayMedia;
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-4 border-b border-white/10 bg-ink-800 px-3">
+    <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-white/10 bg-ink-800 px-3 py-1.5">
       <div className="flex items-center gap-2">
         <div className="grid h-7 w-7 place-items-center rounded-md bg-cyan-500 text-sm font-black text-ink-950">∫</div>
         <span className="text-sm font-semibold tracking-tight">MathMotion Studio</span>
+      </div>
+
+      <div className="flex overflow-hidden rounded-md border border-white/10" role="group" aria-label="Proyecto">
+        <input
+          ref={input}
+          type="file"
+          accept=".mathmotion,.json,application/json"
+          aria-label="Archivo de proyecto"
+          hidden
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = '';
+            void openProject(file);
+          }}
+        />
+        <button className={seg(false)} disabled={busy || working} onClick={() => {
+          if (confirmReplacement('¿Crear un proyecto nuevo y reemplazar el proyecto actual?')) {
+            activateProject(defaultProject(), null);
+          }
+        }}>Nuevo proyecto</button>
+        <button className={seg(false)} disabled={busy || working} onClick={() => input.current?.click()}>Abrir proyecto</button>
+        <button className={seg(false)} disabled={busy || working} onClick={() => void saveProject()}>Guardar proyecto</button>
       </div>
 
       <div className="flex overflow-hidden rounded-md border border-white/10" role="group" aria-label="Formato">
@@ -104,7 +172,7 @@ export function TopBar() {
           <button
             className="inline-flex items-center gap-1.5 rounded-md bg-rose-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-40"
             onClick={beginRecording}
-            disabled={!supported}
+            disabled={!supported || working}
             title={supported ? 'Abre una vista limpia y graba la clase con voz y efectos' : 'Este navegador no admite la grabación de pantalla'}
           >
             <Video size={14} /> Grabar video

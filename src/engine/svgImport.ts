@@ -244,7 +244,7 @@ function sanitizeAttributes(el: Element, name: string, ctx: Ctx): boolean {
     const lname = aname.toLowerCase();
     const value = attr.value;
 
-    if (lname.startsWith('on')) {
+    if (lname.startsWith('on') || (attr.namespaceURI === XML_NS && attr.localName === 'base')) {
       el.removeAttributeNode(attr);
       continue;
     }

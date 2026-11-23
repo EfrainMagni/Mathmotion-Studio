@@ -142,17 +142,13 @@ export class AudioEngine {
 
   // ---------- Voz ----------
 
-  async loadVoiceFile(file: File): Promise<{ duration: number; name: string }> {
-    const ctx = this.ensure();
-    const data = await file.arrayBuffer();
-    let buf: AudioBuffer;
+  async decodeVoice(source: Blob): Promise<AudioBuffer> {
     try {
-      buf = await ctx.decodeAudioData(data);
+      const decoder = this.ctx ?? new OfflineAudioContext(1, 1, 44100);
+      return await decoder.decodeAudioData(await source.arrayBuffer());
     } catch {
       throw new Error('No se pudo decodificar el audio. Prueba con MP3, WAV, OGG o M4A.');
     }
-    this.voiceBuffer = buf;
-    return { duration: buf.duration, name: file.name };
   }
 
   clearVoice() {
@@ -186,7 +182,7 @@ export class AudioEngine {
     this.mic = { rec, stream, chunks, startedAt: performance.now() };
   }
 
-  async stopMic(): Promise<{ duration: number; name: string }> {
+  async stopMic(): Promise<{ buffer: AudioBuffer; source: Blob; name: string }> {
     const m = this.mic;
     if (!m) throw new Error('No hay una grabación de voz en curso.');
     this.mic = null;
@@ -197,13 +193,8 @@ export class AudioEngine {
     m.stream.getTracks().forEach((t) => t.stop());
     const blob = new Blob(m.chunks, { type: m.rec.mimeType || 'audio/webm' });
     if (!blob.size) throw new Error('La grabación de voz quedó vacía.');
-    const ctx = this.ensure();
-    try {
-      this.voiceBuffer = await ctx.decodeAudioData(await blob.arrayBuffer());
-    } catch {
-      throw new Error('No se pudo procesar la grabación de voz.');
-    }
-    return { duration: this.voiceBuffer.duration, name: `Voz ${new Date().toLocaleTimeString()}` };
+    const buffer = await this.decodeVoice(blob);
+    return { buffer, source: blob, name: `Voz ${new Date().toLocaleTimeString()}` };
   }
 
   cancelMic() {

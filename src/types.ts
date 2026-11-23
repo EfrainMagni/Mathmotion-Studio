@@ -70,6 +70,8 @@ export interface Obj2D {
   scale: number;
   rotation: number;
   tex?: string;
+  /** SVG original o generado por MathJax, para reconstruir el objeto al abrir un archivo. */
+  sourceSvg: string;
 }
 
 export interface Obj3D {
@@ -102,6 +104,7 @@ export interface CameraState {
 }
 
 export interface VoiceMeta {
+  source: Blob;
   name: string;
   duration: number;
   start: number;
