@@ -1233,11 +1233,9 @@ export class SceneRuntime {
       const rec = fo && this.objs.get(objId);
       if (!fo || !rec) continue;
       const arrive = new Map<number, number>();
-      let last = 0;
       for (const d of directed) {
         if (d.spec.targetObjectId !== objId) continue;
         const end = d.clip.start + d.clip.duration;
-        last = Math.max(last, end);
         for (const j of d.dst) arrive.set(j, Math.min(arrive.get(j) ?? Infinity, end));
       }
       const plan = connectorPlan(directed, objId, rec.glyphs.map((g) => g.char), set);
@@ -1248,8 +1246,8 @@ export class SceneRuntime {
           if (t < end) glyphState(objId, g.index).opacity *= 0;
           continue;
         }
-        // Glifos que no vienen de otro objeto (+, paréntesis…): esperan a su propio Write/FadeIn;
-        // sin clip de entrada aparecen al llegar el último glifo dirigido.
+        // Glifos que no vienen de otro objeto (+, paréntesis…): permanecen ocultos hasta su propio clip de
+        // entrada (Write, FadeIn o Brotar); no aparecen solos al terminar los clips dirigidos.
         const own = sorted.some((k) => (k.type === 'draw' || k.type === 'appear') && k.targetId === objId
           && entranceScope(fo, k.parameters, set, rec.glyphs.length)?.includes(g.index));
         const via = own ? undefined : plan.get(g.index);
@@ -1261,7 +1259,7 @@ export class SceneRuntime {
           if (geoT && g.index < geoT.length && e < 1) moveGroup(fo, geoT, [g.index], 0.4 + 0.6 * e, 0, { x: 0, y: 0 });
           continue;
         }
-        if (!own && t < last) glyphState(objId, g.index).opacity *= 0;
+        if (!own) glyphState(objId, g.index).opacity *= 0;
       }
     }
     for (const c of sorted) {
@@ -1287,6 +1285,16 @@ export class SceneRuntime {
         case 'appear': {
           const fo = this.formulaOf(c.targetId);
           const scope = fo ? entranceScope(fo, par, targeted.get(fo.id), this.objs.get(fo.id)!.glyphs.length) : null;
+          if (fo && scope && par.mode === 'pop') {
+            // Brotar (GrowFromCenter): escala 0 → 1.2 → 1 desde su centro, con opacidad 0 → 1 (`smooth`).
+            const rec = this.objs.get(fo.id);
+            const geo = rec ? this.geoOf(rec) : null;
+            const idx = scope.filter((i) => !geo || i < geo.length);
+            const grow = p < 0.7 ? 1.2 * smooth(p / 0.7) : 1.2 - 0.2 * smooth((p - 0.7) / 0.3);
+            if (geo && idx.length) moveGroup(fo, geo, idx, Math.max(0.001, grow), 0, { x: 0, y: 0 });
+            for (const i of scope) glyphState(fo.id, i).opacity *= smooth(p);
+            break;
+          }
           if (fo && scope) {
             const eg = easeOut(p);
             const dirG = str(par.direction, 'up');

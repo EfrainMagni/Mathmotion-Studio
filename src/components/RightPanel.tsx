@@ -661,6 +661,14 @@ function EquationAnimations() {
     actions.selectGlyphs(remaining);
     setScope('sel');
   };
+  /** Brotar (Pop): un clip independiente por selección; encadena tras un Pop previo que cubra el cabezal. */
+  const pop = () => {
+    const parameters = scope === 'all' && sel.length ? { glyphs: formatGlyphList(sel) } : scopeParams();
+    const busy = clips.filter((k) => k.targetId === obj.id && k.type === 'appear' && k.parameters.mode === 'pop'
+      && k.start <= start + 1e-6 && k.start + k.duration > start + 1e-6);
+    const at = busy.reduce((max, k) => Math.max(max, k.start + k.duration), start);
+    actions.addClip({ targetId: obj.id, type: 'appear', start: Math.round(at * 100) / 100, duration, parameters: { ...parameters, mode: 'pop' }, sound: null });
+  };
   const transform = (replace: boolean) => add('transform', target
     ? { ...scopeParams(), to: target.id, replace, ...(destTerm ? { toTerm: destTerm } : {}), ...(keepSource ? { keep: true } : {}) }
     : { ...scopeParams(), replace, dx, dy, scale: moveScale, rotation: turn, opacity: fade / 100, ...(tint ? { color } : {}) });
@@ -689,6 +697,10 @@ function EquationAnimations() {
         <button className={`${btn} w-full justify-start`} onClick={() => add('appear', { ...scopeParams(), direction: 'up', distance: 40 })}
           title="FadeIn del alcance elegido (por ejemplo «+» o paréntesis de la ecuación destino)">
           <Sparkles size={14} /> FadeIn
+        </button>
+        <button className={`${btn} w-full justify-start`} disabled={!chosen && !sel.length} onClick={pop}
+          title={chosen || sel.length ? 'GrowFromCenter: el glifo seleccionado brota desde su centro (0 → 1.2 → 1)' : 'Selecciona glifos con los chips de «Términos de la ecuación»'}>
+          <Maximize size={14} /> Brotar (Pop)
         </button>
         <Field label="lag_ratio">
           <NumberInput className={`${input} w-16`} value={lag} min={0} max={5} step={0.05} onChange={setLag} ariaLabel="lag_ratio" />
