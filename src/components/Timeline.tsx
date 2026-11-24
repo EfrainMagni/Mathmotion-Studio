@@ -94,6 +94,13 @@ function ClipEditor() {
         {clipLabel(clip)} · {runtimeName(clip.targetId)} {clipSubject(clip, objects)}
       </span>
       {glyphTransformOf(clip) && (
+        <label className="flex items-center gap-1" title="Los conectores (·, +, =) sin glifo dirigido brotan en el último 40 % del clip que completa a sus vecinos">
+          <input type="checkbox" checked={clip.parameters.revealConnectors === true}
+            onChange={(e) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, revealConnectors: e.target.checked } })} />
+          Revelar conectores
+        </label>
+      )}
+      {glyphTransformOf(clip) && (
         <label className="flex items-center gap-1" title="Activo: una copia del glifo viaja (TransformFromCopy). Inactivo: el glifo origen se mueve (ReplacementTransform)">
           <input type="checkbox" checked={clip.parameters.keepSource !== false}
             onChange={(e) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, keepSource: e.target.checked } })} />

@@ -126,6 +126,7 @@ export function glyphTransformOf(clip: Pick<Clip, 'type' | 'targetId' | 'paramet
 
 /** Etiqueta del clip (distingue la transformación dirigida de glifos de un Transform normal). */
 export function clipLabel(clip: Pick<Clip, 'type' | 'targetId' | 'parameters'>): string {
+  if (clip.type === 'appear' && clip.parameters.mode === 'pop') return 'GrowFromCenter (Pop)';
   const spec = glyphTransformOf(clip);
   if (spec) return spec.keepSource ? 'TransformFromCopy' : 'ReplacementTransform (glifos)';
   return CLIP_LABEL[clip.type];
