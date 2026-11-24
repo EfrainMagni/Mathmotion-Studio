@@ -22,6 +22,11 @@ const object2D = z.object({
     tool: z.enum(['rectangle', 'ellipse', 'line', 'arrow', 'text', 'polygon']),
     reverseX: z.boolean().optional(), reverseY: z.boolean().optional(),
     tip: z.enum(['triangle', 'open', 'both', 'none']).optional(), text: z.string().optional(),
+    textStyle: z.object({
+      fontFamily: z.enum(['Inter', 'Space Grotesk', 'Lora', 'Playfair Display', 'Great Vibes', 'Dancing Script']),
+      fontWeight: z.union([z.literal(400), z.literal(600), z.literal(700)]), italic: z.boolean(),
+      align: z.enum(['left', 'center', 'right']), letterSpacing: z.number().min(-50).max(200),
+    }).optional(),
     vertices: z.array(vertex).min(3).max(20).optional(),
   }).refine((vector) => vector.tool !== 'polygon' || !!vector.vertices).optional(),
   x: number, y: number, bw: positive, bh: positive, tex: z.string().optional(),

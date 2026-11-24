@@ -1,6 +1,7 @@
 import { BACKGROUND_COLOR, STAGE_SIZES, sceneDuration } from '../types';
 import { actions, store } from '../store';
 import { audio, engine } from './index';
+import { embeddedFontCss, loadFonts, usedFonts } from './fonts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -108,6 +109,13 @@ async function run(
   let startedRecording = false;
   let busy = false;
   let hasFrame = false;
+  // Tipografías de los textos: se cargan antes de capturar y se incrustan en cada fotograma.
+  const { used: usedFontList } = usedFonts(project);
+  await loadFonts(usedFontList);
+  await document.fonts.ready;
+  const fontCss = await embeddedFontCss(project).catch(() => '');
+  const withFonts = (svg: string) =>
+    fontCss ? svg.replace(/^(<svg[^>]*>)/, `$1<defs><style>${fontCss}</style></defs>`) : svg;
   let tickTimer = 0;
   let endTimer = 0;
   const totalDuration = Math.max(sceneDuration(project), MIN_SECONDS);
@@ -156,10 +164,10 @@ async function run(
     (async () => {
       let img: HTMLImageElement;
       try {
-        img = await toImage(snap.svg);
+        img = await toImage(withFonts(snap.svg));
       } catch {
         // Respaldo: sin filtros, imágenes ni foreignObject, para que al menos las formas vectoriales se vean.
-        img = await toImage(runtime.snapshotScene(W, H, true).svg);
+        img = await toImage(withFonts(runtime.snapshotScene(W, H, true).svg));
       }
       fctx.drawImage(base, 0, 0);
       fctx.drawImage(img, 0, 0, W, H);
