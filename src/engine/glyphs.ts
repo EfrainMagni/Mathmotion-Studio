@@ -139,6 +139,39 @@ export function directedTargets(list: DirectedGlyphClip[]): Map<string, Set<numb
   return map;
 }
 
+const CONNECTOR_CHARS = new Set('·⋅∙∗*×+-−=<>≤≥≠≈≡()[]{}|,;:'.split(''));
+export const isConnectorChar = (char: string) => CONNECTOR_CHARS.has(char);
+
+/**
+ * Conectores de una ecuación destino que brotan con un clip dirigido (`revealConnectors`): glifo → clip.
+ * Un conector es un glifo operador/paréntesis sin glifo dirigido; lo revela el primer clip marcado que
+ * termina cuando sus vecinos dirigidos más próximos (izquierdo y derecho) ya llegaron o aterrizan en él.
+ */
+export function connectorPlan(
+  list: DirectedGlyphClip[], objectId: string, chars: string[], targeted: Set<number>,
+): Map<number, DirectedGlyphClip> {
+  const plan = new Map<number, DirectedGlyphClip>();
+  const mine = list.filter((d) => d.spec.targetObjectId === objectId);
+  const flagged = mine.filter((d) => d.spec.revealConnectors)
+    .sort((a, b) => a.clip.start + a.clip.duration - (b.clip.start + b.clip.duration));
+  if (!flagged.length) return plan;
+  const arrive = new Map<number, number>();
+  for (const d of mine) for (const j of d.dst) arrive.set(j, Math.min(arrive.get(j) ?? Infinity, d.clip.start + d.clip.duration));
+  chars.forEach((char, j) => {
+    if (targeted.has(j) || !isConnectorChar(char)) return;
+    let left = j - 1;
+    while (left >= 0 && !targeted.has(left)) left--;
+    let right = j + 1;
+    while (right < chars.length && !targeted.has(right)) right++;
+    const times = [left, right].filter((i) => i >= 0 && i < chars.length).map((i) => arrive.get(i) ?? 0);
+    if (!times.length) return;
+    const ready = Math.max(...times);
+    const via = flagged.find((d) => d.clip.start + d.clip.duration >= ready - 1e-9);
+    if (via) plan.set(j, via);
+  });
+  return plan;
+}
+
 /**
  * Alcance de un clip de entrada (Write/FadeIn) sobre una fórmula: la selección guardada o, si la fórmula
  * recibe glifos dirigidos, solo los glifos que no llegan desde otro objeto. `null` = toda la ecuación.
