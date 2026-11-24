@@ -1,6 +1,6 @@
 import { BACKGROUND_COLOR, STAGE_SIZES, is2D, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
 import { svgWithVertices } from './vertices';
-import { clipGlyphs, findGlyphElements, glyphRuns } from './glyphs';
+import { clipGlyphs, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphRuns } from './glyphs';
 import { VECTOR_FILL, VECTOR_STROKE, VECTOR_STROKE_WIDTH } from './vector';
 
 const n = (value: number) => Number(value.toFixed(7)).toString();
@@ -183,9 +183,9 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
   return commands;
 }
 
-function animation(clip: Clip, object: SceneObject, width: number, height: number) {
+function animation(clip: Clip, object: SceneObject, width: number, height: number, scoped?: string) {
   const unit = FRAME_HEIGHT / height;
-  const id = object.id;
+  const id = scoped ?? object.id;
   const params = clip.parameters;
   const duration = `run_time=${n(clip.duration)}`;
   switch (clip.type) {
@@ -378,9 +378,39 @@ export function generateManim(project: Project): { script: string; notes: string
     if (!info) infos.set(object.id, (info = texInfo(object)));
     return info;
   };
+  // Transformaciones dirigidas glifo → glifo: Manim recibe un TransformFromCopy por pareja de glifos.
+  const directed = directedGlyphClips(project.clips);
+  const directedOf = new Map(directed.map((entry) => [entry.clip, entry]));
+  const targeted = directedTargets(directed);
+  const isEntrance = (clip: Clip) => clip.type === 'draw' || clip.type === 'appear';
   for (const clip of [...project.clips].sort((a, b) => a.start - b.start)) {
     const object = byId.get(clip.targetId.split('.')[0]);
     if (!object) continue;
+    const dg = directedOf.get(clip);
+    if (dg) {
+      const from = byId.get(dg.spec.sourceObjectId);
+      const to = byId.get(dg.spec.targetObjectId);
+      if (!from || !to || !is2D(from) || !is2D(to)) {
+        notes.add('Se omitieron clips de ecuaciones sin objeto de destino válido.');
+        continue;
+      }
+      const fromInfo = infoOf(from);
+      const toInfo = infoOf(to);
+      if (!fromInfo.tokens || !toInfo.tokens) notes.add('Ecuaciones complejas: los índices de glifos pueden diferir de los de MathTex (verifica con eq[0][i]).');
+      const begin = Math.max(clip.start, ends.get(`dir:${clip.id}`) ?? 0);
+      ends.set(`dir:${clip.id}`, begin + clip.duration);
+      const run = `run_time=${n(clip.duration)}`;
+      dg.src.forEach((sourceIndex, pair) => {
+        const source = glyphGroup(from.id, fromInfo, [sourceIndex]);
+        const destination = glyphGroup(to.id, toInfo, [dg.dst[pair]]);
+        if (!source || !destination) return;
+        // TransformFromCopy anima el glifo destino desde una copia del origen; sin copia, el origen se reemplaza.
+        events.push(dg.spec.keepSource
+          ? { start: begin, time: clip.duration, id: destination, code: `TransformFromCopy(${source}, ${destination}, ${run})`, entrance: true, overlay: false, reveal: [] }
+          : { start: begin, time: clip.duration, id: source, code: `ReplacementTransform(${source}, ${destination}, ${run})`, entrance: false, overlay: false, reveal: [destination] });
+      });
+      continue;
+    }
     if (EQUATION_CLIPS.has(clip.type)) {
       const built = is2D(object) && clip.targetId === object.id ? equationAnimation(clip, object, project, infoOf, notes, FRAME_HEIGHT / h) : null;
       if (!built) {
@@ -395,14 +425,41 @@ export function generateManim(project: Project): { script: string; notes: string
     }
     const orbit = clip.type === 'orbit';
     if (orbit && !any3d) continue;
-    const target = orbit ? 'orbit_camera' : object.id;
-    const code = animation(clip, object, w, h);
+    let target = orbit ? 'orbit_camera' : object.id;
+    let scoped: string | undefined;
+    if (isEntrance(clip) && is2D(object) && object.kind === 'formula' && !object.vector && object.tex && clip.targetId === object.id) {
+      // Write / FadeIn sobre glifos concretos (o sobre los que no llegan desde otro objeto).
+      const info = infoOf(object);
+      const scope = entranceScope(object, clip.parameters, targeted.get(object.id), info.count);
+      if (scope) {
+        const ref = glyphGroup(object.id, info, scope);
+        if (!ref) continue;
+        if (!info.tokens) notes.add('Ecuaciones complejas: los índices de glifos pueden diferir de los de MathTex (verifica con eq[0][i]).');
+        scoped = target = ref;
+      }
+    }
+    const code = animation(clip, object, w, h, scoped);
     if (clip.targetId !== object.id) notes.add('Los clips de nodos SVG se aplican al objeto completo.');
     if (clip.type === 'radar' || clip.type === 'glow') notes.add('Radar y brillo se aproximan con Indicate.');
     const start = Math.max(clip.start, ends.get(target) ?? 0);
     if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
     ends.set(target, start + clip.duration);
     events.push({ start, time: clip.duration, id: target, code: code!, entrance: clip.type === 'draw' || clip.type === 'appear', overlay: false, reveal: [] });
+  }
+  // Glifos de una ecuación destino que no llegan de otro objeto ni tienen clip de entrada: aparecen al llegar el último.
+  for (const [objectId, set] of targeted) {
+    const object = byId.get(objectId);
+    if (!object || !is2D(object)) continue;
+    const info = infoOf(object);
+    const last = directed.filter((entry) => entry.spec.targetObjectId === objectId)
+      .reduce((max, entry) => Math.max(max, entry.clip.start + entry.clip.duration), 0);
+    const rest = Array.from({ length: info.count }, (_, index) => index).filter((index) => !set.has(index)
+      && !project.clips.some((clip) => isEntrance(clip) && clip.targetId === objectId
+        && entranceScope(object, clip.parameters, set, info.count)?.includes(index)));
+    const ref = rest.length ? glyphGroup(objectId, info, rest) : null;
+    if (!ref) continue;
+    ends.set(ref, last + 0.05);
+    events.push({ start: last, time: 0.05, id: ref, code: `FadeIn(${ref}, run_time=0.05)`, entrance: true, overlay: false, reveal: [] });
   }
   events.sort((a, b) => a.start - b.start);
   const hasOrbit = ends.has('orbit_camera');

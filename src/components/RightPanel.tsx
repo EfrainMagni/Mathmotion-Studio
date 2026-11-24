@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Italic, Orbit, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
 import {
-  DEFAULT_TEXT_STYLE, FONT_CATALOG, SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, is2D,
+  DEFAULT_TEXT_STYLE, FONT_CATALOG, SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
+  glyphTransformParams, is2D,
   type ClipType, type FontId, type FontWeight, type Obj2D, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
@@ -594,6 +595,9 @@ function EquationAnimations() {
   const time = useStore((s) => s.ui.time);
   const termEdit = useStore((s) => s.ui.termEdit);
   const glyphSel = useStore((s) => s.ui.glyphSel);
+  useStore((s) => s.ui.treeVersion);
+  const [destGlyphs, setDestGlyphs] = useState<number[]>([]);
+  const [copyMode, setCopyMode] = useState(true);
   const [duration, setDuration] = useState(1);
   const [scope, setScope] = useState('all');
   const [lag, setLag] = useState(0.1);
@@ -622,6 +626,24 @@ function EquationAnimations() {
   };
   const add = (type: ClipType, parameters: Record<string, number | string | boolean> = {}) =>
     actions.addClip({ targetId: obj.id, type, start, duration, parameters, sound: null });
+  const targetGlyphs = targetFormula ? engine.runtime?.getGlyphs(targetFormula.id) ?? [] : [];
+  const pairsReady = !!targetFormula && sel.length > 0 && sel.length === destGlyphs.length;
+  const charOf = (glyphs: { index: number; char: string }[], index: number) => glyphs.find((g) => g.index === index)?.char || '·';
+  const sourceGlyphs = engine.runtime?.getGlyphs(obj.id) ?? [];
+  const toggleDest = (index: number) =>
+    setDestGlyphs((list) => (list.includes(index) ? list.filter((i) => i !== index) : [...list, index]));
+  /** Glifo → glifo: sel[i] (origen, en orden) viaja a destGlyphs[i] (destino, en orden de marcado). */
+  const glyphTransform = () => {
+    if (!targetFormula || !pairsReady) return;
+    actions.addClip({
+      targetId: obj.id, type: 'transform', start, duration, sound: null,
+      parameters: glyphTransformParams({
+        sourceObjectId: obj.id, sourceGlyphIds: sel.map((i) => glyphIdOf(obj.id, i)),
+        targetObjectId: targetFormula.id, targetGlyphIds: destGlyphs.map((j) => glyphIdOf(targetFormula.id, j)),
+        keepSource: copyMode,
+      }),
+    });
+  };
   const transform = (replace: boolean) => add('transform', target
     ? { ...scopeParams(), to: target.id, replace, ...(destTerm ? { toTerm: destTerm } : {}), ...(keepSource ? { keep: true } : {}) }
     : { ...scopeParams(), replace, dx, dy, scale: moveScale, rotation: turn, opacity: fade / 100, ...(tint ? { color } : {}) });
@@ -643,8 +665,13 @@ function EquationAnimations() {
       </Field>
 
       <div className="space-y-1.5 rounded border border-bezel p-2">
-        <button className={`${btn} w-full justify-start`} onClick={() => add('draw', { lagRatio: lag })}>
+        <button className={`${btn} w-full justify-start`} onClick={() => add('draw', { ...scopeParams(), lagRatio: lag })}
+          title="Con alcance «Selección» o «Término», solo aparecen esos glifos">
           <PenTool size={14} /> Write por glifo
+        </button>
+        <button className={`${btn} w-full justify-start`} onClick={() => add('appear', { ...scopeParams(), direction: 'up', distance: 40 })}
+          title="FadeIn del alcance elegido (por ejemplo «+» o paréntesis de la ecuación destino)">
+          <Sparkles size={14} /> FadeIn
         </button>
         <Field label="lag_ratio">
           <NumberInput className={`${input} w-16`} value={lag} min={0} max={5} step={0.05} onChange={setLag} ariaLabel="lag_ratio" />
@@ -672,7 +699,7 @@ function EquationAnimations() {
 
       <div className="space-y-1.5 rounded border border-bezel p-2">
         <Field label="Destino">
-          <select className={input} value={dest} onChange={(e) => { setDest(e.target.value); setDestTerm(''); }} aria-label="Objeto destino">
+          <select className={input} value={dest} onChange={(e) => { setDest(e.target.value); setDestTerm(''); setDestGlyphs([]); }} aria-label="Objeto destino">
             <option value="">Estado (sin objeto)</option>
             {objects.filter((o) => o.id !== obj.id && is2D(o)).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
           </select>
@@ -711,6 +738,53 @@ function EquationAnimations() {
           onClick={() => add('transformMatch', { to: targetFormula!.id, ...(keepSource ? { keep: true } : {}) })}>
           <RotateCw size={14} /> TransformMatchingTex
         </button>
+      </div>
+
+      <div className="space-y-1.5 rounded border border-bezel p-2" aria-label="Transformación dirigida de glifos">
+        <div className="text-[11px] font-semibold text-slate-300">Glifo → glifo (TransformFromCopy)</div>
+        <p className="text-[11px] leading-snug text-slate-500">
+          1) Doble clic en esta ecuación y elige glifos origen ({sel.length}). 2) Elige el objeto Destino. 3) Marca los glifos destino
+          en orden: el i-ésimo origen viaja al i-ésimo destino.
+        </p>
+        {targetFormula ? (
+          <>
+            <div className="flex flex-wrap gap-0.5" role="group" aria-label="Glifos de la ecuación destino">
+              {targetGlyphs.map((g) => {
+                const order = destGlyphs.indexOf(g.index);
+                return (
+                  <button key={g.index} data-dest-glyph={g.index} aria-pressed={order >= 0} title={`#${g.index} · ${g.glyphId}`}
+                    className={`h-5 min-w-5 rounded border px-1 font-mono text-[11px] ${order >= 0 ? 'border-accent bg-accent-soft text-accent-light' : 'border-bezel bg-ink-700 text-slate-200 hover:bg-ink-600'}`}
+                    onClick={() => toggleDest(g.index)}>
+                    {g.char || '·'}{order >= 0 && <sup className="ml-0.5 text-[8px]">{order + 1}</sup>}
+                  </button>
+                );
+              })}
+            </div>
+            {(sel.length > 0 || destGlyphs.length > 0) && (
+              <div className="font-mono text-[10px] text-slate-400" data-glyph-pairs>
+                {Array.from({ length: Math.max(sel.length, destGlyphs.length) }, (_, i) => (
+                  <span key={i} className="mr-1.5 inline-block">
+                    {i < sel.length ? charOf(sourceGlyphs, sel[i]) : '?'}→{i < destGlyphs.length ? charOf(targetGlyphs, destGlyphs[i]) : '?'}
+                  </span>
+                ))}
+              </div>
+            )}
+            <label className="flex items-center gap-1.5 text-[11px] text-slate-300"
+              title="Activo: una copia viaja y el origen queda en su sitio. Inactivo: el origen se mueve (ReplacementTransform)">
+              <input type="checkbox" checked={copyMode} onChange={(e) => setCopyMode(e.target.checked)} />
+              Mantener origen (copia)
+            </label>
+            <button className={`${btn} w-full justify-start`} disabled={!pairsReady} onClick={glyphTransform}
+              title={pairsReady ? undefined : `Origen (${sel.length}) y destino (${destGlyphs.length}) deben tener el mismo número de glifos`}>
+              <MoveRight size={14} /> {copyMode ? 'TransformFromCopy' : 'ReplacementTransform (glifos)'}
+            </button>
+            {destGlyphs.length > 0 && (
+              <button className="text-[11px] text-accent-light underline" onClick={() => setDestGlyphs([])}>limpiar destino</button>
+            )}
+          </>
+        ) : (
+          <p className="text-[11px] text-slate-500">Elige una ecuación como Destino para marcar sus glifos.</p>
+        )}
       </div>
     </Section>
   );
