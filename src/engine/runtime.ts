@@ -1,7 +1,10 @@
 import { STAGE_SIZES, is2D, type Box, type Clip, type Obj2D, type Obj3D, type Project, type Shape3D, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
 import { SELECTABLE_SHAPES } from './svgImport';
-import { clipGlyphs, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor } from './glyphs';
+import {
+  clipGlyphs, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor,
+  type DirectedGlyphClip,
+} from './glyphs';
 import { Scene3D, defaultState3D, type State3D } from './three3d';
 
 /**
@@ -1204,10 +1207,17 @@ export class SceneRuntime {
     };
     const is3d = (id: string) => this.project!.objects.some((o) => o.id === id && o.kind === 'shape3d');
     const sorted = clips.slice().sort((a, b) => a.start - b.start);
+    // Transformaciones dirigidas glifo → glifo: cada glifo destino se oculta hasta que llega el suyo.
+    const directed = directedGlyphClips(sorted);
+    const directedOf = new Map<Clip, DirectedGlyphClip>(directed.map((d) => [d.clip, d]));
+    const targeted = directedTargets(directed);
+    /** Glifos de la copia visual del origen que viajan en este instante (el resto de la copia se oculta). */
+    const ghostMoving = new Map<string, Set<number>>();
     // Destinos de transformaciones sin entrada propia anterior: ocultos hasta que empieza la transformación.
     const revealAt = new Map<string, number>();
     for (const c of sorted) {
       if (c.type !== 'transform' && c.type !== 'transformMatch') continue;
+      if (directedOf.has(c)) continue;
       const to = c.parameters.to;
       if (typeof to !== 'string' || to === c.targetId || revealAt.has(to)) continue;
       const entrance = sorted.some((k) => k.targetId === to && (k.type === 'draw' || k.type === 'appear') && k.start < c.start);
@@ -1218,6 +1228,31 @@ export class SceneRuntime {
       get(id).opacity *= 0;
       hiddenIds.add(id);
     }
+    for (const [objId, set] of targeted) {
+      const fo = this.formulaOf(objId);
+      const rec = fo && this.objs.get(objId);
+      if (!fo || !rec) continue;
+      const arrive = new Map<number, number>();
+      let last = 0;
+      for (const d of directed) {
+        if (d.spec.targetObjectId !== objId) continue;
+        const end = d.clip.start + d.clip.duration;
+        last = Math.max(last, end);
+        for (const j of d.dst) arrive.set(j, Math.min(arrive.get(j) ?? Infinity, end));
+      }
+      for (const g of rec.glyphs) {
+        const end = arrive.get(g.index);
+        if (end !== undefined) {
+          if (t < end) glyphState(objId, g.index).opacity *= 0;
+          continue;
+        }
+        // Glifos que no vienen de otro objeto (+, paréntesis…): esperan a su propio Write/FadeIn;
+        // sin clip de entrada aparecen al llegar el último glifo dirigido.
+        const own = sorted.some((k) => (k.type === 'draw' || k.type === 'appear') && k.targetId === objId
+          && entranceScope(fo, k.parameters, set, rec.glyphs.length)?.includes(g.index));
+        if (!own && t < last) glyphState(objId, g.index).opacity *= 0;
+      }
+    }
     for (const c of sorted) {
       if (!this.nodes.has(c.targetId) && !is3d(c.targetId)) continue;
       const raw = (t - c.start) / c.duration;
@@ -1226,12 +1261,35 @@ export class SceneRuntime {
       const par = c.parameters;
       switch (c.type) {
         case 'draw': {
+          const fo = this.formulaOf(c.targetId);
+          const scope = fo ? entranceScope(fo, par, targeted.get(fo.id), this.objs.get(fo.id)!.glyphs.length) : null;
+          if (fo && scope) {
+            // Write sobre glifos concretos: solo ellos aparecen; los que ya llegaron no se tocan.
+            for (const i of scope) glyphState(fo.id, i).opacity *= easeOut(p);
+            break;
+          }
           const s = get(c.targetId);
           s.draw = p;
           s.lag = typeof par.lagRatio === 'number' && par.lagRatio >= 0 ? par.lagRatio : null;
           break;
         }
         case 'appear': {
+          const fo = this.formulaOf(c.targetId);
+          const scope = fo ? entranceScope(fo, par, targeted.get(fo.id), this.objs.get(fo.id)!.glyphs.length) : null;
+          if (fo && scope) {
+            const eg = easeOut(p);
+            const dirG = str(par.direction, 'up');
+            const shift = this.stageVec(fo,
+              (dirG === 'left' ? -1 : dirG === 'right' ? 1 : 0) * (1 - eg) * num(par.distance, 120),
+              (dirG === 'up' ? -1 : dirG === 'down' ? 1 : 0) * (1 - eg) * num(par.distance, 120));
+            for (const i of scope) {
+              const g = glyphState(fo.id, i);
+              g.opacity *= eg;
+              g.dx += shift.x;
+              g.dy += shift.y;
+            }
+            break;
+          }
           const s = get(c.targetId);
           const e = easeOut(p);
           s.opacity *= e;
@@ -1313,6 +1371,42 @@ export class SceneRuntime {
           break;
         }
         case 'transform': {
+          const dg = directedOf.get(c);
+          if (dg) {
+            // Glifo → glifo: sourceGlyphIds[i] viaja (copia o movimiento) hasta targetGlyphIds[i] con `smooth`.
+            const GA = this.formulaOf(dg.spec.sourceObjectId);
+            const GB = this.formulaOf(dg.spec.targetObjectId);
+            const rA = GA && this.objs.get(GA.id);
+            const rB = GB && this.objs.get(GB.id);
+            const gA = rA ? this.geoOf(rA) : null;
+            const gB = rB ? this.geoOf(rB) : null;
+            if (!GA || !GB || !rA || !rB || !gA || !gB || raw < 0) break;
+            const keepSrc = dg.spec.keepSource;
+            if (raw >= 1) {
+              // El glifo destino ya está visible; sin copia, el origen se consume.
+              if (!keepSrc) for (const i of dg.src) glyphState(GA.id, i).opacity *= 0;
+              break;
+            }
+            const sm = smooth(p);
+            const colA = this.baseColor(rA, this.project!.styles[GA.id]?.fill);
+            const colB = this.baseColor(rB, this.project!.styles[GB.id]?.fill);
+            const moving = ghostMoving.get(GA.id) ?? new Set<number>();
+            dg.src.forEach((ai, n) => {
+              const bj = dg.dst[n];
+              if (ai >= gA.length || bj >= gB.length) return;
+              const sa = this.stageBounds(GA, gA, [ai]);
+              const sb = this.stageBounds(GB, gB, [bj]);
+              const ratio = Math.sqrt((sb.w * sb.h) / Math.max(1e-6, sa.w * sa.h));
+              const k = 1 + ((Number.isFinite(ratio) && ratio > 0 ? ratio : 1) - 1) * sm;
+              moveGroup(GA, gA, [ai], k, 0, this.stageVec(GA, (sb.cx - sa.cx) * sm, (sb.cy - sa.cy) * sm), keepSrc);
+              const from = GA.glyphStyles?.[ai]?.color ?? colA;
+              const to = GB.glyphStyles?.[bj]?.color ?? colB;
+              if (from !== to && sm > 0) glyphState(GA.id, ai, keepSrc).mix.push([to, sm]);
+              moving.add(ai);
+            });
+            if (keepSrc) ghostMoving.set(GA.id, moving);
+            break;
+          }
           const e = easeInOut(p);
           const A = this.obj2d(c.targetId);
           const B = typeof par.to === 'string' && par.to !== c.targetId ? this.obj2d(par.to) : undefined;
@@ -1456,6 +1550,10 @@ export class SceneRuntime {
           break;
         }
       }
+    }
+    // La copia visual del origen solo muestra los glifos que viajan ahora.
+    for (const [objId, moving] of ghostMoving) {
+      for (const g of this.objs.get(objId)?.glyphs ?? []) if (!moving.has(g.index)) glyphState(objId, g.index, true).opacity *= 0;
     }
     return { states, rings, camAz, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds };
   }

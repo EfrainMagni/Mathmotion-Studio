@@ -66,6 +66,68 @@ export interface Clip {
   sound: SoundId | null;
 }
 
+/** Id estable de un glifo de fórmula: `<objeto>.g<índice>`. */
+export const glyphIdOf = (objectId: string, index: number) => `${objectId}.g${index}`;
+
+/**
+ * Transformación dirigida glifo → glifo (`TransformFromCopy` / `ReplacementTransform` de submobjects).
+ * Es un clip `transform` cuyos parámetros incluyen `targetGlyphIds`; se guardan como texto
+ * (`"a.g0,a.g1"`) porque `ClipParams` solo admite escalares. `sourceGlyphIds[i]` viaja a `targetGlyphIds[i]`.
+ */
+export interface GlyphTransformSpec {
+  sourceObjectId: string;
+  sourceGlyphIds: string[];
+  targetObjectId: string;
+  targetGlyphIds: string[];
+  /** `true` (por defecto): una copia viaja y el origen permanece. `false`: el origen se consume. */
+  keepSource: boolean;
+}
+
+export function glyphTransformParams(spec: GlyphTransformSpec): ClipParams {
+  return {
+    to: spec.targetObjectId,
+    sourceGlyphIds: spec.sourceGlyphIds.join(','),
+    targetGlyphIds: spec.targetGlyphIds.join(','),
+    keepSource: spec.keepSource,
+  };
+}
+
+/** Índices de los ids `<objeto>.g<n>` que pertenecen a `objectId`, en el orden dado (sin ordenar ni deduplicar). */
+export function parseGlyphIds(objectId: string, text: unknown): number[] {
+  if (typeof text !== 'string') return [];
+  const prefix = `${objectId}.g`;
+  const out: number[] = [];
+  for (const part of text.split(',')) {
+    const id = part.trim();
+    if (!id.startsWith(prefix)) continue;
+    const index = Number(id.slice(prefix.length));
+    if (Number.isInteger(index) && index >= 0) out.push(index);
+  }
+  return out;
+}
+
+/** Especificación dirigida de un clip, o `null` si no es una transformación glifo → glifo válida. */
+export function glyphTransformOf(clip: Pick<Clip, 'type' | 'targetId' | 'parameters'>): GlyphTransformSpec | null {
+  const p = clip.parameters;
+  if (clip.type !== 'transform' || typeof p.to !== 'string' || typeof p.targetGlyphIds !== 'string') return null;
+  const sourceObjectId = clip.targetId.split('.')[0];
+  const sourceGlyphIds = parseGlyphIds(sourceObjectId, p.sourceGlyphIds).map((i) => glyphIdOf(sourceObjectId, i));
+  const targetGlyphIds = parseGlyphIds(p.to, p.targetGlyphIds).map((i) => glyphIdOf(p.to as string, i));
+  const n = Math.min(sourceGlyphIds.length, targetGlyphIds.length);
+  if (!n || sourceObjectId === p.to) return null;
+  return {
+    sourceObjectId, targetObjectId: p.to, keepSource: p.keepSource !== false,
+    sourceGlyphIds: sourceGlyphIds.slice(0, n), targetGlyphIds: targetGlyphIds.slice(0, n),
+  };
+}
+
+/** Etiqueta del clip (distingue la transformación dirigida de glifos de un Transform normal). */
+export function clipLabel(clip: Pick<Clip, 'type' | 'targetId' | 'parameters'>): string {
+  const spec = glyphTransformOf(clip);
+  if (spec) return spec.keepSource ? 'TransformFromCopy' : 'ReplacementTransform (glifos)';
+  return CLIP_LABEL[clip.type];
+}
+
 export type VectorTool = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'polygon';
 export type ArrowTip = 'triangle' | 'open' | 'both' | 'none';
 export interface Vertex { x: number; y: number }

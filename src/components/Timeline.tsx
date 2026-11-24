@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { CLIP_LABEL, FPS, SOUND_IDS, SOUND_LABEL, is2D, sceneDuration, type Clip, type Project, type SoundId } from '../types';
+import { FPS, SOUND_IDS, SOUND_LABEL, clipLabel, glyphTransformOf, is2D, parseGlyphIds, sceneDuration, type Clip, type Project, type SoundId } from '../types';
+import { formatGlyphList } from '../engine/glyphs';
 import { engine } from '../engine';
 import { NumberInput, btn, input } from './ui';
 
@@ -14,6 +15,12 @@ const fmt = (n: number) => n.toFixed(2);
 /** Alcance legible de un clip: término, glifos o destino (para bloques y descripciones). */
 function clipSubject(clip: Clip, objects: Project['objects']): string {
   const p = clip.parameters;
+  const directed = glyphTransformOf(clip);
+  if (directed) {
+    const dest = objects.find((o) => o.id === directed.targetObjectId)?.name ?? directed.targetObjectId;
+    const list = (id: string, ids: string[]) => formatGlyphList(parseGlyphIds(id, ids.join(',')));
+    return `#${list(directed.sourceObjectId, directed.sourceGlyphIds)} → ${dest} #${list(directed.targetObjectId, directed.targetGlyphIds)}`;
+  }
   const source = objects.find((o) => o.id === clip.targetId.split('.')[0]);
   const term = typeof p.term === 'string' && source && is2D(source) ? source.terms?.find((t) => t.id === p.term) : undefined;
   const parts: string[] = [];
@@ -84,8 +91,15 @@ function ClipEditor() {
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="max-w-[200px] truncate font-medium text-slate-200" title={runtimeName(clip.targetId)}>
-        {CLIP_LABEL[clip.type]} · {runtimeName(clip.targetId)} {clipSubject(clip, objects)}
+        {clipLabel(clip)} · {runtimeName(clip.targetId)} {clipSubject(clip, objects)}
       </span>
+      {glyphTransformOf(clip) && (
+        <label className="flex items-center gap-1" title="Activo: una copia del glifo viaja (TransformFromCopy). Inactivo: el glifo origen se mueve (ReplacementTransform)">
+          <input type="checkbox" checked={clip.parameters.keepSource !== false}
+            onChange={(e) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, keepSource: e.target.checked } })} />
+          Mantener origen
+        </label>
+      )}
       {clip.type === 'draw' && (
         <label className="flex items-center gap-1" title="lag_ratio de Write (vacío = automático)">
           Lag
@@ -105,7 +119,7 @@ function ClipEditor() {
             onChange={(v) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, scale: v } })} ariaLabel="Escala del énfasis" />
         </label>
       )}
-      {(clip.type === 'transform' || clip.type === 'transformMatch') && typeof clip.parameters.to === 'string' && (
+      {(clip.type === 'transform' || clip.type === 'transformMatch') && typeof clip.parameters.to === 'string' && !glyphTransformOf(clip) && (
         <label className="flex items-center gap-1" title="El origen queda fijo; una copia viaja al destino (origen.copy())">
           <input type="checkbox" checked={clip.parameters.keep === true}
             onChange={(e) => {
@@ -334,9 +348,9 @@ function Lane({
             onPointerDown={(e) => onDown(e, c.id, c.start)}
             onPointerMove={onMove}
             onPointerUp={onUp}
-            title={`${CLIP_LABEL[c.type]} ${clipSubject(c, objects)} · inicio ${fmt(c.start)} s · duración ${fmt(c.duration)} s${c.sound ? ` · ♪ ${SOUND_LABEL[c.sound]}` : ''}`}
+            title={`${clipLabel(c)} ${clipSubject(c, objects)} · inicio ${fmt(c.start)} s · duración ${fmt(c.duration)} s${c.sound ? ` · ♪ ${SOUND_LABEL[c.sound]}` : ''}`}
           >
-            <span className="truncate font-semibold">{CLIP_LABEL[c.type]} {clipSubject(c, objects)}</span>
+            <span className="truncate font-semibold">{clipLabel(c)} {clipSubject(c, objects)}</span>
             <span className="truncate font-mono text-[9px] opacity-90">
               {fmt(c.start)}s · {fmt(c.duration)}s{c.sound ? ` · ♪ ${SOUND_LABEL[c.sound]}` : ''}
             </span>

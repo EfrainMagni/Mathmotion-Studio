@@ -1,4 +1,4 @@
-import type { Obj2D } from '../types';
+import { glyphTransformOf, parseGlyphIds, type Clip, type GlyphTransformSpec, type Obj2D } from '../types';
 
 /**
  * Glifos de una fórmula MathJax (estilo submobjects de MathTex en Manim).
@@ -105,6 +105,51 @@ export function clipGlyphs(object: Obj2D, params: Record<string, number | string
     return list.length ? list : null;
   }
   return null;
+}
+
+/** Transformación dirigida glifo → glifo ya resuelta a índices (`src[i]` viaja a `dst[i]`). */
+export interface DirectedGlyphClip {
+  clip: Clip;
+  spec: GlyphTransformSpec;
+  src: number[];
+  dst: number[];
+}
+
+/** Clips `transform` con `targetGlyphIds`, ordenados por inicio. */
+export function directedGlyphClips(clips: Clip[]): DirectedGlyphClip[] {
+  const out: DirectedGlyphClip[] = [];
+  for (const clip of clips) {
+    const spec = glyphTransformOf(clip);
+    if (!spec) continue;
+    const src = parseGlyphIds(spec.sourceObjectId, spec.sourceGlyphIds.join(','));
+    const dst = parseGlyphIds(spec.targetObjectId, spec.targetGlyphIds.join(','));
+    if (src.length && src.length === dst.length) out.push({ clip, spec, src, dst });
+  }
+  return out.sort((a, b) => a.clip.start - b.clip.start);
+}
+
+/** Glifos que reciben algún clip dirigido, por objeto destino. */
+export function directedTargets(list: DirectedGlyphClip[]): Map<string, Set<number>> {
+  const map = new Map<string, Set<number>>();
+  for (const d of list) {
+    const set = map.get(d.spec.targetObjectId) ?? new Set<number>();
+    for (const j of d.dst) set.add(j);
+    map.set(d.spec.targetObjectId, set);
+  }
+  return map;
+}
+
+/**
+ * Alcance de un clip de entrada (Write/FadeIn) sobre una fórmula: la selección guardada o, si la fórmula
+ * recibe glifos dirigidos, solo los glifos que no llegan desde otro objeto. `null` = toda la ecuación.
+ */
+export function entranceScope(
+  object: Obj2D, params: Record<string, number | string | boolean>, targeted: Set<number> | undefined, count: number,
+): number[] | null {
+  const explicit = clipGlyphs(object, params);
+  if (explicit) return explicit.filter((i) => i < count);
+  if (!targeted?.size) return null;
+  return Array.from({ length: count }, (_, i) => i).filter((i) => !targeted.has(i));
 }
 
 /**
