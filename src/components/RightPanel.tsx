@@ -7,7 +7,7 @@ import {
   type ClipType, type FontId, type FontWeight, type Obj2D, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
-import { formatGlyphList, parseGlyphList } from '../engine/glyphs';
+import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
 import { preloadFont } from '../engine/fonts';
 import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
 
@@ -598,6 +598,8 @@ function EquationAnimations() {
   useStore((s) => s.ui.treeVersion);
   const [destGlyphs, setDestGlyphs] = useState<number[]>([]);
   const [copyMode, setCopyMode] = useState(true);
+  const [connectors, setConnectors] = useState(false);
+  const clips = useStore((s) => s.project.clips);
   const [duration, setDuration] = useState(1);
   const [scope, setScope] = useState('all');
   const [lag, setLag] = useState(0.1);
@@ -640,9 +642,24 @@ function EquationAnimations() {
       parameters: glyphTransformParams({
         sourceObjectId: obj.id, sourceGlyphIds: sel.map((i) => glyphIdOf(obj.id, i)),
         targetObjectId: targetFormula.id, targetGlyphIds: destGlyphs.map((j) => glyphIdOf(targetFormula.id, j)),
-        keepSource: copyMode,
+        keepSource: copyMode, revealConnectors: connectors,
       }),
     });
+  };
+  // Glifos de la ecuación destino que ningún clip dirigido ni de entrada (Write/FadeIn) cubre todavía.
+  const remaining = (() => {
+    if (!targetFormula) return [];
+    const set = directedTargets(directedGlyphClips(clips)).get(targetFormula.id);
+    if (!set?.size) return [];
+    return targetGlyphs.map((g) => g.index).filter((i) => !set.has(i)
+      && !clips.some((k) => (k.type === 'draw' || k.type === 'appear') && k.targetId === targetFormula.id
+        && entranceScope(targetFormula, k.parameters, set, targetGlyphs.length)?.includes(i)));
+  })();
+  const selectRemaining = () => {
+    if (!targetFormula) return;
+    actions.enterTermEdit(targetFormula.id);
+    actions.selectGlyphs(remaining);
+    setScope('sel');
   };
   const transform = (replace: boolean) => add('transform', target
     ? { ...scopeParams(), to: target.id, replace, ...(destTerm ? { toTerm: destTerm } : {}), ...(keepSource ? { keep: true } : {}) }
@@ -774,12 +791,23 @@ function EquationAnimations() {
               <input type="checkbox" checked={copyMode} onChange={(e) => setCopyMode(e.target.checked)} />
               Mantener origen (copia)
             </label>
+            <label className="flex items-center gap-1.5 text-[11px] text-slate-300"
+              title="Los operadores y paréntesis sin glifo dirigido brotan (escala 0.4→1 y fundido) en el último 40 % del clip que completa a sus vecinos">
+              <input type="checkbox" checked={connectors} onChange={(e) => setConnectors(e.target.checked)} />
+              Revelar conectores (·, +, =) al aterrizar
+            </label>
             <button className={`${btn} w-full justify-start`} disabled={!pairsReady} onClick={glyphTransform}
               title={pairsReady ? undefined : `Origen (${sel.length}) y destino (${destGlyphs.length}) deben tener el mismo número de glifos`}>
               <MoveRight size={14} /> {copyMode ? 'TransformFromCopy' : 'ReplacementTransform (glifos)'}
             </button>
             {destGlyphs.length > 0 && (
               <button className="text-[11px] text-accent-light underline" onClick={() => setDestGlyphs([])}>limpiar destino</button>
+            )}
+            {remaining.length > 0 && (
+              <button className={`${btn} w-full justify-start`} onClick={selectRemaining}
+                title="Selecciona en la ecuación destino los glifos sin clip (p. ej. + o =) para aplicarles Write o FadeIn">
+                Seleccionar restantes ({remaining.length})
+              </button>
             )}
           </>
         ) : (
