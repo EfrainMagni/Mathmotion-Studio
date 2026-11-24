@@ -1,9 +1,13 @@
-import { useRef, useState } from 'react';
-import { Orbit, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Italic, Orbit, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, is2D, type ClipType, type SoundId } from '../types';
+import {
+  DEFAULT_TEXT_STYLE, FONT_CATALOG, SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, is2D,
+  type ClipType, type FontId, type FontWeight, type Obj2D, type SoundId, type TextAlign, type TextStyle,
+} from '../types';
 import { engine } from '../engine';
 import { formatGlyphList, parseGlyphList } from '../engine/glyphs';
+import { preloadFont } from '../engine/fonts';
 import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
 
 function toHex(css: string | undefined): string | null {
@@ -58,6 +62,108 @@ function PaintRow({
         </button>
       )}
     </Field>
+  );
+}
+
+const WEIGHT_LABEL: Record<FontWeight, string> = { 400: 'Regular 400', 600: 'SemiBold 600', 700: 'Bold 700' };
+const ALIGNS: { id: TextAlign; label: string; icon: typeof AlignLeft }[] = [
+  { id: 'left', label: 'Izquierda', icon: AlignLeft },
+  { id: 'center', label: 'Centro', icon: AlignCenter },
+  { id: 'right', label: 'Derecha', icon: AlignRight },
+];
+
+/** Sección «Carácter» (estilo Illustrator) de los objetos de texto. */
+function TextTypography({ obj }: { obj: Obj2D }) {
+  const style: TextStyle = obj.vector?.textStyle ?? DEFAULT_TEXT_STYLE;
+  const info = fontInfo(style.fontFamily);
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const sample = (obj.vector?.text ?? '').trim().slice(0, 18) || 'Aa Ββ 123';
+
+  useEffect(() => {
+    if (!open) return;
+    for (const f of FONT_CATALOG) void preloadFont(f.id);
+    const close = (event: MouseEvent) => {
+      if (!box.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const esc = (event: KeyboardEvent) => event.key === 'Escape' && setOpen(false);
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
+
+  const apply = (patch: Partial<TextStyle>) => {
+    const next = { ...style, ...patch };
+    const f = fontInfo(next.fontFamily);
+    if (!f.weights.includes(next.fontWeight)) next.fontWeight = f.weights.reduce((a, b) => (Math.abs(b - next.fontWeight) < Math.abs(a - next.fontWeight) ? b : a));
+    if (!f.italic) next.italic = false;
+    void preloadFont(next.fontFamily, next.fontWeight, next.italic);
+    actions.editVector(obj, { textStyle: next });
+  };
+
+  const toggle = (on: boolean) => `h-6 min-w-6 rounded border px-1.5 text-[11px] disabled:opacity-30 ${on ? 'border-accent bg-accent-soft text-accent-light' : 'border-bezel bg-ink-700 text-slate-200 hover:bg-ink-600'}`;
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded border border-bezel p-1.5" aria-label="Carácter">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Carácter</div>
+      <div ref={box} className="relative">
+        <button type="button" className={`${input} flex items-center justify-between gap-2 text-left`} aria-haspopup="listbox" aria-expanded={open}
+          aria-label="Tipografía" onClick={() => setOpen(!open)}>
+          <span className="truncate text-sm" style={{ fontFamily: fontStack(info.id) }}>{info.id}</span>
+          <ChevronDown size={12} className="shrink-0 text-slate-400" />
+        </button>
+        {open && (
+          <ul role="listbox" className="absolute left-0 right-0 z-30 mt-0.5 max-h-72 overflow-auto rounded border border-bezel bg-ink-900 py-0.5 shadow-lg">
+            {(['Divulgación', 'Letra corrida'] as const).map((category) => (
+              <li key={category} role="presentation">
+                <div className="px-2 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  {category === 'Divulgación' ? 'Divulgación científica' : 'Letra corrida'}
+                </div>
+                <ul role="presentation">
+                  {FONT_CATALOG.filter((f) => f.category === category).map((f) => (
+                    <li key={f.id} role="option" aria-selected={f.id === style.fontFamily}>
+                      <button type="button" className={`flex w-full items-center justify-between gap-2 px-2 py-1 text-left hover:bg-white/10 ${f.id === style.fontFamily ? 'bg-accent-soft' : ''}`}
+                        onClick={() => { apply({ fontFamily: f.id as FontId }); setOpen(false); }}>
+                        <span className="min-w-0">
+                          <span className="block truncate text-[11px] text-slate-300">{f.id}</span>
+                          <span className="block truncate text-lg leading-tight text-slate-50" style={{ fontFamily: fontStack(f.id) }}>{sample}</span>
+                        </span>
+                        <span className="shrink-0 rounded bg-ink-700 px-1 text-[10px] text-slate-400">{f.category}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <Field label="Peso">
+        <select className={input} aria-label="Peso" value={style.fontWeight}
+          onChange={(event) => apply({ fontWeight: Number(event.target.value) as FontWeight })}>
+          {info.weights.map((w) => <option key={w} value={w}>{WEIGHT_LABEL[w]}</option>)}
+        </select>
+        <button type="button" className={toggle(style.italic)} disabled={!info.italic} aria-pressed={style.italic}
+          title={info.italic ? 'Cursiva / Italic' : 'Esta fuente no tiene cursiva'} aria-label="Cursiva" onClick={() => apply({ italic: !style.italic })}>
+          <Italic size={12} />
+        </button>
+      </Field>
+      <Field label="Alineación">
+        {ALIGNS.map(({ id, label, icon: Icon }) => (
+          <button key={id} type="button" className={toggle(style.align === id)} aria-pressed={style.align === id} title={label} aria-label={label}
+            onClick={() => apply({ align: id })}>
+            <Icon size={12} />
+          </button>
+        ))}
+      </Field>
+      <Field label="Espaciado (px)">
+        <NumberInput className={`${input} w-20`} value={style.letterSpacing} min={-20} max={100} step={0.5}
+          onChange={(v) => apply({ letterSpacing: v })} ariaLabel="Espaciado entre letras" />
+      </Field>
+    </div>
   );
 }
 
@@ -185,6 +291,7 @@ function Inspector() {
             onChange={(event) => actions.editVector(obj, { text: event.target.value })} />
         </Field>
       )}
+      {is2D(obj) && obj.vector?.tool === 'text' && <TextTypography obj={obj} />}
 
       <Field label="Escala">
         <input type="range" className="min-w-0 flex-1 accent-sky-400" aria-label="Escala (control deslizante)"

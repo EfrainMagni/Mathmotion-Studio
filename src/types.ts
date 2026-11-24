@@ -70,12 +70,50 @@ export type VectorTool = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | '
 export type ArrowTip = 'triangle' | 'open' | 'both' | 'none';
 export interface Vertex { x: number; y: number }
 
+export type FontId = 'Inter' | 'Space Grotesk' | 'Lora' | 'Playfair Display' | 'Great Vibes' | 'Dancing Script';
+export type FontCategory = 'Divulgación' | 'Letra corrida';
+export type FontWeight = 400 | 600 | 700;
+export type TextAlign = 'left' | 'center' | 'right';
+
+export interface FontInfo {
+  id: FontId;
+  category: FontCategory;
+  description: string;
+  fallback: string;
+  weights: FontWeight[];
+  italic: boolean;
+}
+
+/** Catálogo curado; debe coincidir con el `<link>` de Google Fonts de `index.html`. */
+export const FONT_CATALOG: FontInfo[] = [
+  { id: 'Inter', category: 'Divulgación', description: 'Sans geométrica moderna', fallback: 'system-ui, sans-serif', weights: [400, 600, 700], italic: true },
+  { id: 'Space Grotesk', category: 'Divulgación', description: 'Sans técnica contemporánea', fallback: 'system-ui, sans-serif', weights: [400, 600, 700], italic: false },
+  { id: 'Lora', category: 'Divulgación', description: 'Serif editorial clásica', fallback: 'Georgia, serif', weights: [400, 600, 700], italic: true },
+  { id: 'Playfair Display', category: 'Divulgación', description: 'Serif editorial de alto contraste', fallback: 'Georgia, serif', weights: [400, 600, 700], italic: true },
+  { id: 'Great Vibes', category: 'Letra corrida', description: 'Caligráfica fluida y formal', fallback: 'cursive', weights: [400], italic: false },
+  { id: 'Dancing Script', category: 'Letra corrida', description: 'Manuscrita moderna y legible', fallback: 'cursive', weights: [400, 600, 700], italic: false },
+];
+export const fontInfo = (id: string): FontInfo => FONT_CATALOG.find((f) => f.id === id) ?? FONT_CATALOG[0];
+export const fontStack = (id: FontId) => `'${id}', ${fontInfo(id).fallback}`;
+
+/** Tipografía de un objeto de texto. Si falta, se usa el aspecto original (sans-serif ajustada al cuadro). */
+export interface TextStyle {
+  fontFamily: FontId;
+  fontWeight: FontWeight;
+  italic: boolean;
+  align: TextAlign;
+  /** Espaciado entre letras en px lógicos. */
+  letterSpacing: number;
+}
+export const DEFAULT_TEXT_STYLE: TextStyle = { fontFamily: 'Inter', fontWeight: 400, italic: false, align: 'left', letterSpacing: 0 };
+
 export interface VectorGeometry {
   tool: VectorTool;
   reverseX?: boolean;
   reverseY?: boolean;
   tip?: ArrowTip;
   text?: string;
+  textStyle?: TextStyle;
   vertices?: Vertex[];
 }
 
