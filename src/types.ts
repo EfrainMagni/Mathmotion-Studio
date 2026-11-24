@@ -81,6 +81,8 @@ export interface GlyphTransformSpec {
   targetGlyphIds: string[];
   /** `true` (por defecto): una copia viaja y el origen permanece. `false`: el origen se consume. */
   keepSource: boolean;
+  /** Opcional: los conectores (`·`, `+`, `=`…) sin glifo dirigido brotan al aterrizar los vecinos. */
+  revealConnectors?: boolean;
 }
 
 export function glyphTransformParams(spec: GlyphTransformSpec): ClipParams {
@@ -89,6 +91,7 @@ export function glyphTransformParams(spec: GlyphTransformSpec): ClipParams {
     sourceGlyphIds: spec.sourceGlyphIds.join(','),
     targetGlyphIds: spec.targetGlyphIds.join(','),
     keepSource: spec.keepSource,
+    ...(spec.revealConnectors ? { revealConnectors: true } : {}),
   };
 }
 
@@ -116,7 +119,7 @@ export function glyphTransformOf(clip: Pick<Clip, 'type' | 'targetId' | 'paramet
   const n = Math.min(sourceGlyphIds.length, targetGlyphIds.length);
   if (!n || sourceObjectId === p.to) return null;
   return {
-    sourceObjectId, targetObjectId: p.to, keepSource: p.keepSource !== false,
+    sourceObjectId, targetObjectId: p.to, keepSource: p.keepSource !== false, revealConnectors: p.revealConnectors === true,
     sourceGlyphIds: sourceGlyphIds.slice(0, n), targetGlyphIds: targetGlyphIds.slice(0, n),
   };
 }

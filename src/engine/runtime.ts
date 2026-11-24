@@ -2,7 +2,7 @@ import { STAGE_SIZES, is2D, type Box, type Clip, type Obj2D, type Obj3D, type Pr
 import { vertexAttributes, vertexGeometry } from './vertices';
 import { SELECTABLE_SHAPES } from './svgImport';
 import {
-  clipGlyphs, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor,
+  clipGlyphs, connectorPlan, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor,
   type DirectedGlyphClip,
 } from './glyphs';
 import { Scene3D, defaultState3D, type State3D } from './three3d';
@@ -1240,6 +1240,8 @@ export class SceneRuntime {
         last = Math.max(last, end);
         for (const j of d.dst) arrive.set(j, Math.min(arrive.get(j) ?? Infinity, end));
       }
+      const plan = connectorPlan(directed, objId, rec.glyphs.map((g) => g.char), set);
+      const geoT = plan.size ? this.geoOf(rec) : null;
       for (const g of rec.glyphs) {
         const end = arrive.get(g.index);
         if (end !== undefined) {
@@ -1250,6 +1252,15 @@ export class SceneRuntime {
         // sin clip de entrada aparecen al llegar el último glifo dirigido.
         const own = sorted.some((k) => (k.type === 'draw' || k.type === 'appear') && k.targetId === objId
           && entranceScope(fo, k.parameters, set, rec.glyphs.length)?.includes(g.index));
+        const via = own ? undefined : plan.get(g.index);
+        if (via) {
+          // Conector (·, +, =…): brota desde su centro (0.4 → 1) durante el último 40 % del clip que cierra a sus vecinos.
+          const q = clamp01((t - (via.clip.start + 0.6 * via.clip.duration)) / (0.4 * via.clip.duration));
+          const e = smooth(q);
+          glyphState(objId, g.index).opacity *= e;
+          if (geoT && g.index < geoT.length && e < 1) moveGroup(fo, geoT, [g.index], 0.4 + 0.6 * e, 0, { x: 0, y: 0 });
+          continue;
+        }
         if (!own && t < last) glyphState(objId, g.index).opacity *= 0;
       }
     }
