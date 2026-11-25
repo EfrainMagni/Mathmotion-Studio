@@ -76,12 +76,6 @@ export const LINE_TIPS: Record<LineTip, string> = {
   right: 'Triángulo recto',
 };
 
-/** Longitud y semiancho de la punta, en múltiplos del grosor de trazo. */
-const TIP_LENGTH = 5;
-const TIP_HALF_WIDTH = 2;
-/** Fracción de la longitud donde queda la muesca trasera de la flecha afilada. */
-const STEALTH_NOTCH = 0.72;
-
 /** Mapea puntas antiguas (triangle/open/circle) a uno de los dos diseños vigentes. */
 export function normalizeTip(tip: LineTip | LegacyLineTip | undefined): LineTip {
   if (tip === 'none' || tip === undefined) return 'none';
@@ -97,39 +91,51 @@ export function lineTips(vector: VectorGeometry) {
   };
 }
 
-/** Distancia (unidades de usuario) que el cuerpo de la línea debe retroceder desde el vértice. */
-function tipInset(tip: LineTip, scale: number) {
+const STEALTH_NOTCH = 0.72;
+
+/** Longitud y semiancho de la punta, proporcionales al grosor real del trazo. */
+function tipSize(tip: LineTip, sw: number, scale: number) {
+  const length = (tip === 'stealth' ? Math.max(14, sw * 4.2) : Math.max(13, sw * 3.8)) * scale;
+  return { length, half: length * (tip === 'stealth' ? 0.42 : 0.45) };
+}
+
+/** Distancia que el cuerpo de la línea retrocede desde el vértice (muesca o base de la punta). */
+function tipInset(tip: LineTip, sw: number, scale: number) {
   if (tip === 'none') return 0;
-  return TIP_LENGTH * scale * VECTOR_STROKE_WIDTH * (tip === 'stealth' ? STEALTH_NOTCH : 1);
+  const { length } = tipSize(tip, sw, scale);
+  return tip === 'stealth' ? length * STEALTH_NOTCH : length;
 }
 
-function tipMarker(id: string, tip: LineTip, scale: number) {
-  if (tip === 'none') return '';
-  const L = TIP_LENGTH * scale;
-  const W = TIP_HALF_WIDTH * scale;
-  const d = tip === 'stealth'
-    ? `M 0,0 L ${-L},${-W} L ${-STEALTH_NOTCH * L},0 L ${-L},${W} Z`
-    : `M 0,0 L ${-L},${-W} L ${-L},${W} Z`;
-  return `<marker id="${id}" markerUnits="strokeWidth" markerWidth="1" markerHeight="1" refX="0" refY="0" orient="auto-start-reverse" overflow="visible">`
-    + `<path d="${d}" fill="context-stroke" stroke="context-stroke" stroke-width="0.01" stroke-linejoin="miter" stroke-miterlimit="10"/></marker>`;
+/** Vértices del polígono de una punta en `(x, y)` apuntando hacia `theta`. */
+function tipPoints(tip: LineTip, x: number, y: number, theta: number, sw: number, scale: number) {
+  const { length, half } = tipSize(tip, sw, scale);
+  const ux = Math.cos(theta);
+  const uy = Math.sin(theta);
+  const at = (back: number, side: number) => `${(x - ux * back - uy * side).toFixed(3)},${(y - uy * back + ux * side).toFixed(3)}`;
+  const pts = tip === 'stealth'
+    ? [at(0, 0), at(length, -half), at(length * STEALTH_NOTCH, 0), at(length, half)]
+    : [at(0, 0), at(length, -half), at(length, half)];
+  return pts.join(' ');
 }
 
-/** Recorta el cuerpo de la línea en la muesca/base de cada punta, con corte recto. */
-function bodyClip(start: Vertex, end: Vertex, startInset: number, endInset: number) {
+/** Geometría de las puntas y del recorte del cuerpo para una línea con grosor `sw`. */
+export function tipLayout(start: Vertex, end: Vertex, tips: ReturnType<typeof lineTips>, sw: number) {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
-  if (!length || (!startInset && !endInset)) return '';
-  const ux = dx / length;
-  const uy = dy / length;
-  const nx = -uy;
-  const ny = ux;
-  const from = Math.min(startInset, length);
-  const to = Math.max(from, length - endInset);
+  const theta = Math.atan2(dy, dx);
+  const startInset = Math.min(tipInset(tips.start, sw, tips.scale), length);
+  const endInset = tipInset(tips.end, sw, tips.scale);
+  const to = Math.max(startInset, length - endInset);
+  const ux = Math.cos(theta);
+  const uy = Math.sin(theta);
   const half = 1e4;
-  const at = (t: number, k: number) => `${(start.x + ux * t + nx * k).toFixed(4)},${(start.y + uy * t + ny * k).toFixed(4)}`;
-  const points = [at(from, -half), at(to, -half), at(to, half), at(from, half)].join(' ');
-  return `<clipPath id="tip-clip" clipPathUnits="userSpaceOnUse"><polygon points="${points}"/></clipPath>`;
+  const at = (t: number, k: number) => `${(start.x + ux * t - uy * k).toFixed(3)},${(start.y + uy * t + ux * k).toFixed(3)}`;
+  return {
+    start: tips.start === 'none' ? null : tipPoints(tips.start, start.x, start.y, theta + Math.PI, sw, tips.scale),
+    end: tips.end === 'none' ? null : tipPoints(tips.end, end.x, end.y, theta, sw, tips.scale),
+    clip: !length || (!startInset && !endInset) ? null : [at(startInset, -half), at(to, -half), at(to, half), at(startInset, half)].join(' '),
+  };
 }
 
 export function vectorSvg(vector: VectorGeometry, width: number, height: number) {
@@ -142,12 +148,10 @@ export function vectorSvg(vector: VectorGeometry, width: number, height: number)
   const stroke = `stroke="${VECTOR_STROKE}" stroke-width="${VECTOR_STROKE_WIDTH}" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"`;
   const tips = lineTips(vector);
   const linear = tool === 'line' || tool === 'arrow';
-  const clip = linear ? bodyClip(start, end, tipInset(tips.start, tips.scale), tipInset(tips.end, tips.scale)) : '';
-  const markers = linear
-    ? tipMarker('tip-start', tips.start, tips.scale) + tipMarker('tip-end', tips.end, tips.scale) + clip
-    : '';
-  const heads = markers ? `<defs>${markers}</defs>` : '';
-  const line = `<line x1="${start.x}" y1="${start.y}" x2="${end.x}" y2="${end.y}" ${stroke}${tips.start !== 'none' ? ' marker-start="url(#tip-start)"' : ''}${tips.end !== 'none' ? ' marker-end="url(#tip-end)"' : ''}${clip ? ' clip-path="url(#tip-clip)"' : ''}/>`;
+  const layout = linear ? tipLayout(start, end, tips, VECTOR_STROKE_WIDTH) : null;
+  const heads = layout?.clip ? `<defs><clipPath id="tip-clip" clipPathUnits="userSpaceOnUse"><polygon points="${layout.clip}"/></clipPath></defs>` : '';
+  const line = `<line x1="${start.x}" y1="${start.y}" x2="${end.x}" y2="${end.y}" ${stroke}${layout?.clip ? ' clip-path="url(#tip-clip)"' : ''}/>`
+    + (['start', 'end'] as const).map((k) => layout?.[k] ? `<polygon data-mm-tip="${k}" points="${layout[k]}" fill="${VECTOR_STROKE}" stroke="none"/>` : '').join('');
   const markup = {
     polygon: `<polygon points="${vector.vertices?.map(({ x, y }) => `${x},${y}`).join(' ') ?? ''}" ${fill}/>`,
     rectangle: `<rect width="${width}" height="${height}" ${fill}/>`,
