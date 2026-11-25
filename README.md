@@ -12,15 +12,14 @@ npm run build      # tsc --noEmit && vite build  → dist/
 npm run preview    # sirve dist/
 ```
 
-Requiere Node 18+ y un navegador basado en Chromium (la grabación usa `getDisplayMedia` + `MediaRecorder`).
+Requiere Node 18+ y un navegador basado en Chromium (la grabación codifica MP4/H.264 con WebCodecs + `mp4-muxer`; `MediaRecorder`/WebM queda como respaldo).
 
 ## Uso rápido
 
 1. **Importar SVG** (panel izquierdo; «Ejemplo» carga un SVG de prueba) o escribir una fórmula LaTeX.
 2. Clic en el lienzo = selecciona el elemento hijo; **Mayús+clic / Mayús+arrastrar** = objeto completo.
-3. En el panel derecho, pulsa una animación (Escribir/Dibujar, Radar, Brillar, Aparecer/Deslizar, Rotar/Orbitar): crea un clip en el cabezal.
+3. En el panel derecho, pulsa una animación (Escribir/Dibujar, Radar, Brillar, Aparecer/Deslizar, Rotar): crea un clip en el cabezal.
 4. En la línea de tiempo mueve, edita numéricamente o elimina clips; arrastra el cabezal; ←/→ avanzan un fotograma (30 fps) cuando no hay un objeto seleccionado. Espacio reproduce.
-5. Objetos 3D: se insertan desde el panel; activa el **modo cámara** en la barra superior para orbitar.
 
 ## Polígonos y edición de vértices
 
@@ -40,7 +39,7 @@ Usa Ctrl+Z para deshacer, Ctrl+Y o Ctrl+Mayús+Z para rehacer, Ctrl+D para dupli
 manim escena.py EscenaMathMotion
 ```
 
-Las notas de exportación indican qué efectos se aproximan y qué elementos quedan fuera del script. El orden de apilamiento se ajusta dentro de cada capa 2D o 3D.
+Las notas de exportación indican qué efectos se aproximan y qué elementos quedan fuera del script. El orden de apilamiento se ajusta entre los objetos 2D.
 
 ## Guardar y abrir proyectos
 
@@ -54,7 +53,7 @@ El editor autoguarda el proyecto actual y su pista de voz en IndexedDB en este n
 2. Pulsa **Grabar video**. Se abre la ventana «MathMotion · vista de grabación» y el navegador pide qué compartir.
 3. **Elige esa pestaña** (no ventana ni pantalla completa; si lo haces, la app aborta).
 4. Se comprueba que la vista esté lista y la reproducción arranca desde 0 s a 1×. Se detiene sola al terminar (o con «Detener»).
-5. Se descarga el archivo con la extensión que corresponde al formato elegido (`.webm` / `.mp4`). La barra muestra la resolución efectiva capturada, que puede diferir del tamaño lógico del escenario.
+5. Se descarga el archivo con la extensión que corresponde al formato elegido (`.mp4` con WebCodecs; `.webm` solo en el respaldo de `MediaRecorder`). La barra muestra la resolución efectiva capturada, que puede diferir del tamaño lógico del escenario.
 
 ## Pruebas
 
@@ -69,4 +68,4 @@ Pruebas en Chromium del editor 2D y del flujo de autoguardado, recarga, descarga
 
 ## Limitaciones conocidas
 
-Ver el informe de entrega: no se probó con el `Proyecto.svg` real, ni 3D con WebGL real, ni micrófono.
+Ver el informe de entrega: no se probó con el `Proyecto.svg` real ni con micrófono.

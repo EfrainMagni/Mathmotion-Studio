@@ -1,3 +1,4 @@
+import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
 import { BACKGROUND_COLOR, STAGE_SIZES, sceneDuration } from '../types';
 import { actions, store } from '../store';
 import { audio, engine } from './index';
@@ -6,8 +7,9 @@ import { embeddedFontCss, loadFonts, usedFonts } from './fonts';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
- * Orden de preferencia: WebM (VP9/VP8) primero, porque en Chrome/Edge sobre Windows siempre genera una pista
- * de vídeo válida; MP4 (H.264) solo como último recurso (p. ej. Safari).
+ * Respaldo con `MediaRecorder` (navegadores sin `VideoEncoder`). Orden de preferencia: WebM (VP9/VP8) primero, porque
+ * en Chrome/Edge sobre Windows siempre genera una pista de vídeo válida; MP4 (H.264) solo como último recurso.
+ * La vía principal es MP4 (H.264) con `VideoEncoder` + `mp4-muxer`, que escribe la duración exacta en el archivo.
  */
 const MIME_CANDIDATES = [
   'video/webm;codecs=vp9,opus',
@@ -48,6 +50,180 @@ export function stopRecording() {
   active?.stop('manual');
 }
 
+// ------------------------------------------------------------------ MP4 directo (WebCodecs + mp4-muxer)
+
+/** `true` si el navegador ofrece WebCodecs para vídeo (la codificación H.264 concreta se comprueba al crear el sumidero). */
+export function hasWebCodecs(): boolean {
+  return typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined';
+}
+
+interface Mp4Sink {
+  /** Codifica el canvas como fotograma de la línea de tiempo `elapsedMs` (descarta duplicados y satura la cola). */
+  addFrame(canvas: HTMLCanvasElement, elapsedMs: number, force?: boolean): void;
+  /** Vacía los codificadores, cierra el contenedor y devuelve el `.mp4` con la duración exacta. */
+  finish(totalMs: number, canvas: HTMLCanvasElement): Promise<Blob>;
+  /** Libera codificadores y nodos de audio sin producir archivo. Es idempotente. */
+  dispose(): void;
+  error(): Error | null;
+}
+
+const TAP_PROCESSOR = `class MMTap extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0];
+    if (ch && ch.length) {
+      const n = ch[0].length, out = new Float32Array(n * 2);
+      out.set(ch[0], 0); out.set(ch[ch.length > 1 ? 1 : 0], n);
+      this.port.postMessage(out, [out.buffer]);
+    }
+    return true;
+  }
+}
+registerProcessor('mm-tap', MMTap);`;
+const tapModules = new WeakMap<BaseAudioContext, Promise<void>>();
+
+async function createMp4Sink(W: number, H: number, quality: 'light' | 'standard', withAudio: boolean): Promise<Mp4Sink | null> {
+  if (!hasWebCodecs()) return null;
+  const q = QUALITY[quality];
+
+  let videoCfg: VideoEncoderConfig | null = null;
+  // H.264 High/Main nivel 4.0 y Baseline 4.2: cubren 1920×1080 y 1080×1920 a 30 fps.
+  for (const codec of ['avc1.640028', 'avc1.4d0028', 'avc1.42002a']) {
+    const cfg: VideoEncoderConfig = { codec, width: W, height: H, bitrate: q.video, framerate: FPS, avc: { format: 'avc' } };
+    if ((await VideoEncoder.isConfigSupported(cfg).catch(() => null))?.supported) {
+      videoCfg = cfg;
+      break;
+    }
+  }
+  if (!videoCfg) return null;
+
+  let audioCfg: AudioEncoderConfig | null = null;
+  let audioCodec: 'aac' | 'opus' = 'aac';
+  let ctx: AudioContext | null = null;
+  if (withAudio) {
+    // Sin AudioEncoder/AudioWorklet se prefiere el respaldo de MediaRecorder antes que perder la voz.
+    if (typeof AudioEncoder === 'undefined' || typeof AudioData === 'undefined' || typeof AudioWorkletNode === 'undefined') return null;
+    ctx = audio.ensure();
+    for (const [codec, muxCodec] of [['mp4a.40.2', 'aac'], ['opus', 'opus']] as const) {
+      const cfg: AudioEncoderConfig = { codec, sampleRate: ctx.sampleRate, numberOfChannels: 2, bitrate: q.audio };
+      if ((await AudioEncoder.isConfigSupported(cfg).catch(() => null))?.supported) {
+        audioCfg = cfg;
+        audioCodec = muxCodec;
+        break;
+      }
+    }
+    if (!audioCfg) return null;
+  }
+
+  const target = new ArrayBufferTarget();
+  const muxer = new Muxer({
+    target,
+    fastStart: 'in-memory', // `moov` al principio: duración y metadatos exactos
+    firstTimestampBehavior: 'offset',
+    video: { codec: 'avc', width: W, height: H, frameRate: FPS },
+    ...(audioCfg ? { audio: { codec: audioCodec, numberOfChannels: 2, sampleRate: audioCfg.sampleRate } } : {}),
+  });
+
+  let failure: Error | null = null;
+  const onError = (e: Error) => {
+    failure ??= e;
+  };
+  const venc = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: onError });
+  venc.configure(videoCfg);
+
+  let aenc: AudioEncoder | null = null;
+  let tap: AudioWorkletNode | null = null;
+  let mute: GainNode | null = null;
+  const teardownAudio = () => {
+    try {
+      if (tap) audio.master.disconnect(tap);
+      tap?.disconnect();
+      mute?.disconnect();
+    } catch {
+      /* ya desconectado */
+    }
+    if (tap) tap.port.onmessage = null;
+    tap = null;
+    mute = null;
+  };
+  if (audioCfg && ctx) {
+    try {
+      let ready = tapModules.get(ctx);
+      if (!ready) {
+        const url = URL.createObjectURL(new Blob([TAP_PROCESSOR], { type: 'text/javascript' }));
+        ready = ctx.audioWorklet.addModule(url).finally(() => URL.revokeObjectURL(url));
+        tapModules.set(ctx, ready);
+      }
+      await ready;
+    } catch {
+      tapModules.delete(ctx);
+      venc.close();
+      return null;
+    }
+    const encoder = new AudioEncoder({ output: (chunk, meta) => muxer.addAudioChunk(chunk, meta), error: onError });
+    encoder.configure(audioCfg);
+    aenc = encoder;
+    const sampleRate = audioCfg.sampleRate;
+    tap = new AudioWorkletNode(ctx, 'mm-tap', {
+      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit',
+    });
+    mute = ctx.createGain();
+    mute.gain.value = 0; // el nodo debe llegar al destino para procesarse, pero no debe sonar
+    let samples = 0;
+    tap.port.onmessage = (e: MessageEvent<Float32Array>) => {
+      if (encoder.state !== 'configured') return;
+      const frames = e.data.length / 2;
+      const data = new AudioData({
+        format: 'f32-planar', sampleRate, numberOfFrames: frames, numberOfChannels: 2,
+        timestamp: Math.round((samples / sampleRate) * 1e6), data: new Float32Array(e.data),
+      });
+      samples += frames;
+      encoder.encode(data);
+      data.close();
+    };
+    audio.master.connect(tap);
+    tap.connect(mute).connect(ctx.destination);
+  }
+
+  let last = -1;
+  let disposed = false;
+  const addFrame = (canvas: HTMLCanvasElement, elapsedMs: number, force = false) => {
+    if (disposed || venc.state !== 'configured') return;
+    const index = Math.max(0, Math.floor((elapsedMs * FPS) / 1000));
+    if (index <= last && !force) return;
+    if (venc.encodeQueueSize > 12 && !force) return; // codificador saturado: se descarta el fotograma
+    const at = force ? Math.max(index, last + 1) : index;
+    const frame = new VideoFrame(canvas, { timestamp: Math.round((at * 1e6) / FPS), duration: Math.round(1e6 / FPS) });
+    venc.encode(frame, { keyFrame: last < 0 || at % (FPS * 2) === 0 });
+    frame.close();
+    last = at;
+  };
+
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    teardownAudio();
+    if (venc.state !== 'closed') venc.close();
+    if (aenc && aenc.state !== 'closed') aenc.close();
+  };
+
+  return {
+    addFrame,
+    error: () => failure,
+    dispose,
+    async finish(totalMs, canvas) {
+      addFrame(canvas, totalMs, true); // el último fotograma fija la duración exacta
+      teardownAudio();
+      await venc.flush();
+      await aenc?.flush();
+      if (failure) throw failure;
+      muxer.finalize();
+      const blob = new Blob([target.buffer], { type: 'video/mp4' });
+      dispose();
+      return blob;
+    },
+  };
+}
+
 const setRec = (patch: Partial<ReturnType<typeof store.getState>['ui']['recording']>) => {
   const cur = store.getState().ui.recording;
   store.setUi({ recording: { ...cur, ...patch } });
@@ -76,14 +252,16 @@ function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number, bac
 /**
  * Inicia la grabación directa del escenario. No usa la captura de pantalla: cada fotograma se dibuja
  * en un canvas oculto a la resolución lógica del escenario (1920×1080 o 1080×1920, sin interfaz) y ese
- * canvas se graba con `captureStream` + `MediaRecorder`, mezclando la pista de audio del proyecto.
+ * canvas se codifica directamente a MP4 (H.264 + AAC) con `VideoEncoder`/`AudioEncoder` y `mp4-muxer`, o,
+ * si el navegador no tiene WebCodecs, se graba con `captureStream` + `MediaRecorder` (WebM) como respaldo.
  */
 export function beginRecording() {
   if (active) return;
   const { ui } = store.getState();
   const mime = pickMime();
-  if (!mime) return fail('Este navegador no admite ningún formato de grabación compatible (MediaRecorder).');
-  if (!('captureStream' in HTMLCanvasElement.prototype)) {
+  const direct = hasWebCodecs();
+  if (!direct && !mime) return fail('Este navegador no admite ningún formato de grabación compatible (WebCodecs ni MediaRecorder).');
+  if (!direct && !('captureStream' in HTMLCanvasElement.prototype)) {
     return fail('Este navegador no permite grabar un canvas (captureStream).');
   }
   const runtime = engine.runtime;
@@ -96,7 +274,7 @@ export function beginRecording() {
 async function run(
   runtime: NonNullable<typeof engine.runtime>,
   playback: NonNullable<typeof engine.playback>,
-  mime: string,
+  mime: string | null,
   quality: 'light' | 'standard',
 ) {
   const project = store.getState().project;
@@ -104,6 +282,8 @@ async function run(
   const prevSpeed = playback.speed;
   const chunks: Blob[] = [];
   let recorder: MediaRecorder | null = null;
+  let sink: Mp4Sink | null = null;
+  let startedAt = 0;
   let stream: MediaStream | null = null;
   let finished = false;
   let startedRecording = false;
@@ -126,7 +306,7 @@ async function run(
     c.height = H;
     return c;
   };
-  const base = mk(); // fondo + capa 3D (se copia de forma síncrona)
+  const base = mk(); // fondo (se copia de forma síncrona)
   const frame = mk(); // último fotograma completo
   const out = mk(); // el que se captura
   out.setAttribute('aria-hidden', 'true');
@@ -142,7 +322,7 @@ async function run(
   };
   drawBackground(fctx, W, H, project.background);
 
-  /** Dibuja el estado actual del runtime. Debe llamarse justo después de `renderAt` (por el WebGL). */
+  /** Dibuja el estado actual del runtime. Debe llamarse justo después de `renderAt`. */
   const grab = () => {
     if (busy || finished) return;
     busy = true;
@@ -150,7 +330,6 @@ async function run(
     try {
       drawBackground(bctx, W, H, store.getState().project.background);
       snap = runtime.snapshotScene(W, H);
-      for (const gl of snap.gl) bctx.drawImage(gl, 0, 0, W, H);
     } catch {
       busy = false;
       return;
@@ -174,7 +353,7 @@ async function run(
       hasFrame = true;
     })()
       .catch(() => {
-        // Si todo falla se conserva el fondo (más la capa 3D) en lugar de un fotograma vacío.
+        // Si todo falla se conserva el fondo en lugar de un fotograma vacío.
         fctx.drawImage(base, 0, 0);
         hasFrame = true;
       })
@@ -191,38 +370,51 @@ async function run(
     playback.pause();
     playback.setSpeed(prevSpeed);
     stream?.getTracks().forEach((t) => t.stop());
+    sink?.dispose();
     audio.releaseRecordingDestination();
     out.remove();
     active = null;
   };
 
+  const deliver = (blob: Blob, ext: 'mp4' | 'webm') => {
+    cleanup();
+    if (!startedRecording || blob.size === 0) {
+      fail('No se grabó ningún dato.');
+      return;
+    }
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const name = `mathmotion-clase-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.${ext}`;
+    const prev = store.getState().ui.recording.lastFile;
+    if (prev) URL.revokeObjectURL(prev.url);
+    const urlObj = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = urlObj;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setRec({ phase: 'idle', message: null, captureSize: null, lastFile: { url: urlObj, name, size: blob.size, mime: blob.type } });
+    actions.notify('info', `Grabación lista: ${name}`);
+  };
+
   const finalize = () => {
     if (finished) return;
     finished = true;
-    setRec({ phase: 'finishing', message: 'Guardando archivo…' });
-    const finish = () => {
-      const blob = new Blob(chunks, { type: mime.split(';')[0] });
-      cleanup();
-      if (!startedRecording || blob.size === 0) {
-        fail('No se grabó ningún dato.');
-        return;
-      }
-      const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
-      const d = new Date();
-      const pad = (n: number) => String(n).padStart(2, '0');
-      const name = `mathmotion-clase-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.${ext}`;
-      const prev = store.getState().ui.recording.lastFile;
-      if (prev) URL.revokeObjectURL(prev.url);
-      const urlObj = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = urlObj;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setRec({ phase: 'idle', message: null, captureSize: null, lastFile: { url: urlObj, name, size: blob.size, mime: blob.type } });
-      actions.notify('info', `Grabación lista: ${name}`);
-    };
+    setRec({ phase: 'finishing', message: sink ? 'Codificando MP4…' : 'Guardando archivo…' });
+    if (sink) {
+      const s = sink;
+      window.clearInterval(tickTimer);
+      paintOut();
+      s.finish(performance.now() - startedAt, out)
+        .then((blob) => deliver(blob, 'mp4'))
+        .catch((e: unknown) => {
+          cleanup();
+          fail(`No se pudo codificar el MP4: ${e instanceof Error ? e.message : String(e)}`);
+        });
+      return;
+    }
+    const finish = () => deliver(new Blob(chunks, { type: (mime ?? 'video/webm').split(';')[0] }), (mime ?? '').startsWith('video/mp4') ? 'mp4' : 'webm');
     if (recorder && recorder.state !== 'inactive') {
       recorder.onstop = finish;
       try {
@@ -249,13 +441,7 @@ async function run(
 
   setRec({ phase: 'preparing', message: 'Preparando la grabación…', captureSize: { w: W, h: H } });
 
-  // 1) Escena lista (capa 3D incluida) y primer fotograma limpio
-  try {
-    await runtime.whenReady();
-  } catch {
-    /* sin capa 3D: se graba igualmente la 2D */
-  }
-  if (finished) return;
+  // 1) Primer fotograma limpio
   playback.restart();
   playback.setSpeed(1);
   grab();
@@ -267,35 +453,55 @@ async function run(
     return fail('No se pudo dibujar el escenario en el canvas de grabación.');
   }
 
-  // 2) Canvas oculto → vídeo, más la mezcla de audio común
+  // 2) Canvas oculto → MP4 directo (WebCodecs); si no es posible, MediaRecorder con la mezcla de audio común
+  const withAudio = !!project.voice || project.clips.some((clip) => clip.sound);
   try {
-    stream = out.captureStream(FPS);
-    const dest = audio.createRecordingDestination();
-    const mixed = new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
-    const q = QUALITY[quality];
-    recorder = new MediaRecorder(mixed, { mimeType: mime, videoBitsPerSecond: q.video, audioBitsPerSecond: q.audio });
-  } catch (e) {
-    cleanup();
-    return fail(`No se pudo crear el grabador (${mime}): ${(e as Error).message}`);
+    sink = await createMp4Sink(W, H, quality, withAudio);
+  } catch {
+    sink = null;
   }
-  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-  recorder.onerror = () => active?.stop('manual');
+  if (finished) {
+    sink?.dispose();
+    return;
+  }
+  if (!sink) {
+    if (!mime || !('captureStream' in HTMLCanvasElement.prototype)) {
+      cleanup();
+      return fail('Este navegador no puede codificar vídeo (ni WebCodecs ni MediaRecorder disponibles).');
+    }
+    try {
+      stream = out.captureStream(FPS);
+      const dest = audio.createRecordingDestination();
+      const mixed = new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+      const q = QUALITY[quality];
+      recorder = new MediaRecorder(mixed, { mimeType: mime, videoBitsPerSecond: q.video, audioBitsPerSecond: q.audio });
+    } catch (e) {
+      cleanup();
+      return fail(`No se pudo crear el grabador (${mime}): ${(e as Error).message}`);
+    }
+    recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    recorder.onerror = () => active?.stop('manual');
+  }
 
   // Bucle de renderizado a 30 fps (temporizador, no rAF: sigue vivo con la pestaña en segundo plano).
-  // Cada tick pinta fondo + último fotograma y pide explícitamente un fotograma a la pista de vídeo.
+  // Cada tick pinta fondo + último fotograma y lo envía al codificador (o pide un fotograma a la pista de vídeo).
   const videoTrack = stream?.getVideoTracks()[0] as (MediaStreamTrack & { requestFrame?: () => void }) | undefined;
   const pump = () => {
     if (finished) return;
     paintOut();
-    if (recorder?.state === 'recording') videoTrack?.requestFrame?.();
+    if (sink) {
+      sink.addFrame(out, performance.now() - startedAt);
+      if (sink.error()) active?.stop('manual');
+    } else if (recorder?.state === 'recording') videoTrack?.requestFrame?.();
   };
+  startedAt = performance.now();
   pump();
 
   // 3) Grabar la duración real de la línea de tiempo (máx. de clips, voz y MIN_SECONDS), en tiempo real
-  recorder.start(500);
+  recorder?.start(500);
   startedRecording = true;
   setRec({ phase: 'recording', message: 'Grabando…', captureSize: { w: W, h: H } });
-  const startedAt = performance.now();
+  startedAt = performance.now();
   tickTimer = window.setInterval(() => {
     pump();
     if (performance.now() - startedAt >= totalDuration * 1000 + 300) active?.stop('complete');

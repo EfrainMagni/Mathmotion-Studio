@@ -5,7 +5,6 @@ import {
   PanelLeft, PanelRight, Plus, X,
 } from 'lucide-react';
 import { engine } from './engine';
-import { is2D } from './types';
 import { actions, store, useStore } from './store';
 import { TopBar } from './components/TopBar';
 import { LeftPanel } from './components/LeftPanel';
@@ -163,7 +162,7 @@ export function App() {
       }
       if (key === 'a' && !ui.playing) {
         event.preventDefault();
-        store.setUi({ pointerTool: 'direct', vectorTool: null, cameraMode: false });
+        store.setUi({ pointerTool: 'direct', vectorTool: null });
         return;
       }
       if (event.key === 'Escape' && ui.termEdit) {
@@ -186,7 +185,7 @@ export function App() {
       const [dx, dy] = direction.map((value) => value * step);
       if (object && selection && !selectedClip && !ui.playing) {
         event.preventDefault();
-        if (selection === object.id && is2D(object)) {
+        if (selection === object.id) {
           actions.updateObject(object.id, { x: object.x + dx, y: object.y + dy });
         } else {
           const delta = engine.runtime?.stageDeltaForNode(selection, dx, dy) ?? { x: dx, y: dy };
@@ -322,16 +321,16 @@ export function App() {
           >
             <button type="button" className={controlClass} title="Seleccionar" aria-label="Seleccionar"
               aria-pressed={pointerTool === 'select' && !vectorTool}
-              onClick={() => store.setUi({ vectorTool: null, pointerTool: 'select', cameraMode: false })}>
+              onClick={() => store.setUi({ vectorTool: null, pointerTool: 'select' })}>
               <MousePointer2 size={16} />
             </button>
             <button type="button" className={controlClass} title="Selección Directa (Vértices) · A"
               aria-label="Selección Directa (Vértices)" aria-keyshortcuts="A" aria-pressed={pointerTool === 'direct'}
-              onClick={() => store.setUi({ pointerTool: 'direct', vectorTool: null, cameraMode: false })}>
+              onClick={() => store.setUi({ pointerTool: 'direct', vectorTool: null })}>
               <MousePointer size={15} />
             </button>
             <button type="button" className={controlClass} title="Mover (Espacio + arrastrar)"
-              aria-label="Mover" aria-pressed={pointerTool === 'hand'} onClick={() => store.setUi({ vectorTool: null, pointerTool: 'hand', cameraMode: false })}>
+              aria-label="Mover" aria-pressed={pointerTool === 'hand'} onClick={() => store.setUi({ vectorTool: null, pointerTool: 'hand' })}>
               <Hand size={16} />
             </button>
             <button type="button" className={controlClass} title="Alejar" aria-label="Alejar"

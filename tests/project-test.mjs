@@ -105,39 +105,25 @@ try {
   await page.getByRole('treeitem', { name: /figura/ }).waitFor();
   await page.getByRole('textbox', { name: 'Relleno', exact: true }).fill('#22cc88');
   await button('Radar').click();
-  await button('Esfera').click();
-  await page.getByRole('treeitem', { name: /Esfera/ }).waitFor();
-  await button('Orbitar cámara').click();
-  await button('Modo cámara').click();
-  const scene = page.locator('[data-mm-scope="o2"]');
-  const box = await scene.boundingBox();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2 + 30, box.y + box.height / 2 + 16);
-  await page.mouse.up();
-
   const bytes = wave();
   await page.locator('input[accept^="audio/"]').setInputFiles({
     name: 'voz.wav', mimeType: 'audio/wav', buffer: bytes,
   });
   await button('Quitar pista de voz').waitFor();
-  const before = await savedProject(page, 3, true);
+  const before = await savedProject(page, 2, true);
   assert.equal(before.objects[0].tex, formula);
   assert.match(before.objects[0].markup, /<path/);
   assert.equal(before.objects[1].sourceSvg, svg);
-  assert.equal(before.objects[2].kind, 'shape3d');
   assert.equal(before.styles.o2.fill, '#22cc88');
-  assert.deepEqual(before.clips.map((clip) => clip.type), ['draw', 'radar', 'orbit']);
-  assert.notEqual(before.camera.az, 35);
+  assert.deepEqual(before.clips.map((clip) => clip.type), ['draw', 'radar']);
   assert.deepEqual(before.voice.bytes, Array.from(bytes));
   assert.equal(before.format, '9:16');
 
   await page.reload();
   await page.getByRole('treeitem', { name: /Fórmula 1/ }).waitFor();
-  await page.getByRole('treeitem', { name: /Esfera/ }).waitFor();
   await button('Quitar pista de voz').waitFor();
-  assert.equal(await page.locator('[data-clip]').count(), 3);
-  assert.deepEqual(await savedProject(page, 3, true), before);
+  assert.equal(await page.locator('[data-clip]').count(), 2);
+  assert.deepEqual(await savedProject(page, 2, true), before);
   await button('Reproducir').click();
   await page.waitForFunction(() => window.playedVoice > 0);
   const downloaded = page.waitForEvent('download');
@@ -146,7 +132,7 @@ try {
   assert.equal(download.suggestedFilename(), 'proyecto.mathmotion');
   const file = await readFile(await download.path());
   assert.equal(JSON.parse(file).project.voice.base64, bytes.toString('base64'));
-  console.log('PASS autoguardado y recarga exactos con SVG, LaTeX, 3D, estilos, cámara, clips y WAV');
+  console.log('PASS autoguardado y recarga exactos con SVG, LaTeX, estilos, clips y WAV');
 
   const fresh = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   fresh.on('pageerror', (error) => errors.push(error.message));
@@ -156,15 +142,15 @@ try {
   await (await chooser).setFiles({ name: 'escena.json', mimeType: 'application/json', buffer: file });
   await fresh.getByRole('treeitem', { name: /Fórmula 1/ }).waitFor();
   await button('Quitar pista de voz', fresh).waitFor();
-  assert.deepEqual(await savedProject(fresh, 3, true), before);
+  assert.deepEqual(await savedProject(fresh, 2, true), before);
   console.log('PASS archivo .mathmotion con audio Base64 abierto como .json en un contexto nuevo');
 
   await open('incorrecto.mathmotion', Buffer.from('{"version":2}'), fresh);
   await fresh.getByRole('alert').filter({ hasText: 'No se pudo abrir el proyecto' }).waitFor();
-  assert.deepEqual(await savedProject(fresh, 3, true), before);
+  assert.deepEqual(await savedProject(fresh, 2, true), before);
   fresh.once('dialog', (dialog) => void dialog.dismiss());
   await button('Nuevo proyecto', fresh).click();
-  assert.equal(await fresh.locator('[data-clip]').count(), 3);
+  assert.equal(await fresh.locator('[data-clip]').count(), 2);
   fresh.once('dialog', (dialog) => void dialog.accept());
   await button('Nuevo proyecto', fresh).click();
   const empty = await savedProject(fresh, 0, false);

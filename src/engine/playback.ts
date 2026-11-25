@@ -10,7 +10,7 @@ export interface PlaybackHooks {
 }
 
 /**
- * Línea de tiempo maestra (GSAP). Es la referencia de tiempo para SVG, Three.js y audio:
+ * Línea de tiempo maestra (GSAP). Es la referencia de tiempo para SVG y audio:
  * cada fotograma, `renderAt(tl.time())` dibuja el escenario y el audio se programa contra
  * la misma posición del cabezal.
  */

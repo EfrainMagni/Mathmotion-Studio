@@ -3,10 +3,10 @@ import { useRef, useState } from 'react';
 import { audio } from '../engine';
 import { parseProject, serializeProject } from '../engine/projectFiles';
 import { activateProject } from '../engine/projectStorage';
-import { Crosshair, Download, Loader2, Orbit, Square, Video } from 'lucide-react';
+import { Crosshair, Download, Loader2, Square, Video } from 'lucide-react';
 import { actions, defaultProject, store, useStore } from '../store';
 import type { StageBackground, StageFormat } from '../types';
-import { QUALITY, beginRecording, pickMime, stopRecording } from '../engine/recorder';
+import { QUALITY, beginRecording, hasWebCodecs, pickMime, stopRecording } from '../engine/recorder';
 
 const FORMATS: { id: StageFormat; label: string }[] = [
   { id: '9:16', label: '9:16 · 1080×1920' },
@@ -24,11 +24,9 @@ const seg = (on: boolean) =>
 export function TopBar() {
   const format = useStore((s) => s.project.format);
   const background = useStore((s) => s.project.background);
-  const cameraMode = useStore((s) => s.ui.cameraMode);
   const showGuides = useStore((s) => s.ui.showGuides);
   const quality = useStore((s) => s.ui.recordQuality);
   const rec = useStore((s) => s.ui.recording);
-  const has3d = useStore((s) => s.project.objects.some((o) => o.kind === 'shape3d'));
   const busy = rec.phase !== 'idle';
   const [working, setWorking] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -72,7 +70,7 @@ export function TopBar() {
     }
   }
 
-  const supported = !!pickMime() && 'captureStream' in HTMLCanvasElement.prototype;
+  const supported = hasWebCodecs() || (!!pickMime() && 'captureStream' in HTMLCanvasElement.prototype);
 
   return (
     <header className="studio-toolbar flex min-h-8 shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-bezel bg-ink-700 px-2 py-1">
@@ -130,17 +128,6 @@ export function TopBar() {
         <Crosshair size={14} /> <span className="hidden min-[1350px]:inline">Guías</span>
       </button>
 
-      <button
-        className={`inline-flex items-center gap-1.5 rounded-md border px-1.5 text-xs disabled:opacity-40 ${cameraMode ? 'border-accent/60 bg-accent-soft text-accent-light' : 'border-bezel bg-ink-700 hover:bg-ink-600'}`}
-        onClick={() => store.setUi({ cameraMode: !cameraMode, vectorTool: null, pointerTool: 'select' })}
-        disabled={!has3d || busy}
-        aria-label="Modo cámara"
-        aria-pressed={cameraMode}
-        title={has3d ? 'Orbitar la cámara 3D con el ratón (desactiva la selección 2D)' : 'Inserta un objeto 3D para usar la cámara'}
-      >
-        <Orbit size={14} /> <span className="hidden min-[1440px]:inline">Modo cámara</span>
-      </button>
-
       <div className="ml-auto flex items-center gap-1.5">
         {rec.message && (
           <span className="max-w-[420px] truncate text-xs text-amber-200" title={rec.message}>
@@ -177,7 +164,7 @@ export function TopBar() {
             className="inline-flex items-center gap-1.5 rounded-md bg-rose-500 px-2 py-0.5 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-40"
             onClick={beginRecording}
             disabled={!supported || working}
-            title={supported ? 'Graba el lienzo limpio (sin interfaz) con voz y efectos en WebM (VP9/VP8); duración mínima 3 s' : 'Este navegador no admite la grabación del lienzo'}
+            title={supported ? 'Graba el lienzo limpio (sin interfaz) con voz y efectos en MP4 (H.264); duración mínima 3 s' : 'Este navegador no admite la grabación del lienzo'}
           >
             <Video size={14} /> Grabar video
           </button>

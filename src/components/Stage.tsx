@@ -1,6 +1,6 @@
 import { regularPolygon, vectorSvg } from '../engine/vector';
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
-import { BACKGROUND_COLOR, STAGE_SIZES, is2D, type Box, type Obj2D, type VectorGeometry, type Vertex } from '../types';
+import { BACKGROUND_COLOR, STAGE_SIZES, type Box, type Obj2D, type VectorGeometry, type Vertex } from '../types';
 import { actions, store, useStore } from '../store';
 import { audio, engine } from '../engine';
 import { SceneRuntime } from '../engine/runtime';
@@ -10,8 +10,7 @@ import { PolygonOptions } from './PolygonOptions';
 type Drag =
   | { kind: 'root'; id: string; sx: number; sy: number; ox: number; oy: number }
   | { kind: 'child'; id: string; sx: number; sy: number; ox: number; oy: number; inv: DOMMatrix }
-  | { kind: 'vertex'; id: string; native: Obj2D | null; index: number; points: Vertex[]; start: Vertex; inverse: DOMMatrix }
-  | { kind: 'camera'; sx: number; sy: number; az: number; el: number };
+  | { kind: 'vertex'; id: string; native: Obj2D | null; index: number; points: Vertex[]; start: Vertex; inverse: DOMMatrix };
 
 type Sketch = { start: Vertex; end: Vertex; vector: VectorGeometry; constrain: boolean; polygonSides: number };
 
@@ -56,7 +55,7 @@ function sketchBounds({ start, end, vector, constrain, polygonSides }: Sketch) {
   return { x, y, bw, bh, vector: { ...vector, reverseX: dx < 0, reverseY: dy < 0 } };
 }
 
-/** Escenario del editor: capas de fondo, 3D, SVG, efectos y marcas de interfaz. */
+/** Escenario del editor: capas de fondo, SVG, efectos y marcas de interfaz. */
 export function Stage({ viewportScale }: { viewportScale: number }) {
   const format = useStore((s) => s.project.format);
   const background = useStore((s) => s.project.background);
@@ -67,7 +66,6 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const anchorProject = useStore((s) => s.ui.pointerTool === 'direct' ? s.project : null);
   const treeVersion = useStore((s) => s.ui.pointerTool === 'direct' ? s.ui.treeVersion : 0);
   const time = useStore((s) => s.ui.pointerTool === 'direct' && !s.ui.playing ? s.ui.time : 0);
-  const cameraMode = useStore((s) => s.ui.cameraMode);
   const showGuides = useStore((s) => s.ui.showGuides);
   const selection = useStore((s) => s.ui.selection);
   const termEdit = useStore((s) => s.ui.termEdit);
@@ -77,7 +75,6 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const layerRef = useRef<HTMLDivElement>(null);
   const fxRef = useRef<SVGSVGElement>(null);
-  const host3dRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null);
   const pointer = useRef<{ id: number; generation: number; group: symbol } | null>(null);
   const draft = useRef<Sketch | null>(null);
@@ -95,9 +92,8 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   // Runtime y línea de tiempo maestra: se crean una vez y se liberan al desmontar.
   useEffect(() => {
     const rt = new SceneRuntime(
-      { stage: stageRef.current!, layer: layerRef.current!, fx: fxRef.current!, host3d: host3dRef.current! },
+      { stage: stageRef.current!, layer: layerRef.current!, fx: fxRef.current! },
       {
-        onWebgl: (status, message) => store.setUi({ webgl: status, webglMessage: message }),
         onTree: () => store.setUi({ treeVersion: store.getState().ui.treeVersion + 1 }),
       },
     );
@@ -169,19 +165,6 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     return () => ro.disconnect();
   }, [W, H]);
 
-  // Rueda: acercar/alejar la cámara solo en modo cámara.
-  useEffect(() => {
-    const el = stageRef.current!;
-    const onWheel = (e: WheelEvent) => {
-      if (!store.getState().ui.cameraMode) return;
-      e.preventDefault();
-      const cam = store.getState().project.camera;
-      actions.setCamera({ dist: Math.min(30, Math.max(3, cam.dist * (e.deltaY > 0 ? 1.08 : 0.92))) });
-    };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, []);
-
   useLayoutEffect(() => {
     const target = direct && !hideUi && selection ? engine.runtime?.getVertexTarget(selection) : null;
     if (!target) {
@@ -217,7 +200,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     element.setPointerCapture(e.pointerId);
     pointer.current = { id: e.pointerId, generation: store.projectGeneration(), group: Symbol() };
 
-    if (ui.vectorTool && !ui.cameraMode) {
+    if (ui.vectorTool) {
       const start = position(e);
       const vector: VectorGeometry = { tool: ui.vectorTool };
       if (vector.tool === 'text') vector.text = ui.vectorText;
@@ -227,10 +210,6 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       return;
     }
 
-    if (ui.cameraMode) {
-      dragRef.current = { kind: 'camera', sx: e.clientX, sy: e.clientY, az: project.camera.az, el: project.camera.el };
-      return;
-    }
     if (ui.pointerTool === 'direct' && e.target instanceof HTMLElement && e.target.dataset.vertexIndex !== undefined && ui.selection) {
       const target = rt.getVertexTarget(ui.selection);
       const index = Number(e.target.dataset.vertexIndex);
@@ -268,7 +247,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     }
     actions.select(id);
     // Doble clic (o herramienta Selección Directa) sobre una ecuación: edición de términos.
-    const formula = project.objects.find((o) => o.id === id && is2D(o) && o.kind === 'formula' && !o.vector);
+    const formula = project.objects.find((o) => o.id === id && o.kind === 'formula' && !o.vector);
     const previous = lastClick.current;
     lastClick.current = formula ? { id, t: e.timeStamp } : null;
     if (formula && (ui.pointerTool === 'direct' || (previous && previous.id === id && e.timeStamp - previous.t < DOUBLE_CLICK_MS))) {
@@ -284,7 +263,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     if (!info) return;
     const obj = project.objects.find((o) => o.id === info.objId);
     if (info.isRoot) {
-      if (obj && is2D(obj)) dragRef.current = { kind: 'root', id, sx: e.clientX, sy: e.clientY, ox: obj.x, oy: obj.y };
+      if (obj) dragRef.current = { kind: 'root', id, sx: e.clientX, sy: e.clientY, ox: obj.x, oy: obj.y };
     } else {
       const node = (e.target as Element).closest(`[data-mm-id="${id}"]`) ?? null;
       const parent = node?.parentNode as SVGGraphicsElement | null;
@@ -312,12 +291,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     }
     const dx = e.clientX - d.sx;
     const dy = e.clientY - d.sy;
-    if (d.kind === 'camera') {
-      actions.setCamera({
-        az: d.az - dx * 0.4,
-        el: Math.max(-85, Math.min(85, d.el + dy * 0.4)),
-      }, active.group);
-    } else if (d.kind === 'root') {
+    if (d.kind === 'root') {
       // El desplazamiento se divide entre la escala real del escenario en pantalla.
       const r = stageRef.current!.getBoundingClientRect();
       const kx = r.width / W;
@@ -337,12 +311,12 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     if (!Number.isFinite(edited.x) || !Number.isFinite(edited.y)) return;
     const current = store.getState().project;
     const object = current.objects.find((entry) => entry.id === drag.id);
-    const existing = drag.native && object && is2D(object) ? object.vector?.vertices : current.styles[drag.id]?.vertices;
+    const existing = drag.native && object ? object.vector?.vertices : current.styles[drag.id]?.vertices;
     // Un clic sobre el ancla por sí solo no cambia la geometría.
     const previous = existing?.[drag.index] ?? from;
     if (edited.x === previous.x && edited.y === previous.y) return;
     const points = drag.points.map((vertex, index) => index === drag.index ? edited : vertex);
-    if (drag.native && object && is2D(object)) actions.editVector(object, { tool: 'polygon', vertices: points }, group);
+    if (drag.native && object) actions.editVector(object, { tool: 'polygon', vertices: points }, group);
     else if (!drag.native) actions.setStyle(drag.id, { vertices: points }, group);
   }
 
@@ -401,14 +375,13 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
             top: 0,
             overflow: 'hidden',
             background: bg,
-            cursor: cameraMode ? 'grab' : vectorTool ? 'crosshair' : 'default',
+            cursor: vectorTool ? 'crosshair' : 'default',
             touchAction: 'none',
             userSelect: 'none',
             outline: 'none',
           }}
         >
           <div className={`absolute inset-0 ${background === 'grid' ? 'mm-grid' : ''}`} />
-          <div ref={host3dRef} className="absolute inset-0" style={{ pointerEvents: 'none' }} />
           <div ref={layerRef} className="absolute inset-0" />
           <svg ref={fxRef} viewBox={`0 0 ${W} ${H}`} width={W} height={H} className="absolute inset-0" style={{ pointerEvents: 'none' }} />
 
@@ -463,11 +436,6 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
                   style={{ left: vertex.x - anchorSize / 2, top: vertex.y - anchorSize / 2,
                     width: anchorSize, height: anchorSize, borderWidth: anchorSize / 8 }} />
               ))}
-              {cameraMode && (
-                <div className="absolute left-4 top-4 rounded bg-black/60 px-3 py-1.5 text-[26px] text-accent-light">
-                  Modo cámara: arrastra para orbitar · rueda para acercar
-                </div>
-              )}
             </div>
           )}
         </div>

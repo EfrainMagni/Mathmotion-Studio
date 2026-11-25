@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Italic, Orbit, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
+import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
 import {
   DEFAULT_TEXT_STYLE, FONT_CATALOG, SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
-  glyphTransformParams, is2D,
+  glyphTransformParams,
   type ClipType, type FontId, type FontWeight, type Obj2D, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
@@ -189,27 +189,16 @@ function Inspector() {
       </Section>
     );
   }
-  const is3d = info.kind === 'shape3d';
   const style = project.styles[selection] ?? {};
-  const paint = is3d ? null : engine.runtime?.getPaint(selection) ?? null;
+  const paint = engine.runtime?.getPaint(selection) ?? null;
   const fill = style.fill ?? paint?.fill;
   const stroke = style.stroke ?? paint?.stroke;
   const strokeWidth = style.strokeWidth ?? paint?.strokeWidth ?? 0;
   const scale = info.isRoot ? obj.scale : style.scale ?? 1;
   const center = (axis: 'x' | 'y') => {
     const { w, h } = STAGE_SIZES[project.format];
-    if (is2D(obj)) {
-      actions.updateObject(obj.id, axis === 'x' ? { x: w / 2 } : { y: h / 2 });
-      return;
-    }
-    const box = engine.runtime?.getBox(obj.id);
-    if (!box) return;
-    const position = project.styles[obj.id];
-    if (axis === 'x') actions.setStyle(obj.id, { tx: (position?.tx ?? 0) + (w - box.w) / 2 - box.x });
-    else actions.setStyle(obj.id, { ty: (position?.ty ?? 0) + (h - box.h) / 2 - box.y });
+    actions.updateObject(obj.id, axis === 'x' ? { x: w / 2 } : { y: h / 2 });
   };
-
-  const defaultFill = is3d ? '#38bdf8' : '#ffffff';
 
   const setScale = (v: number) => (info.isRoot ? actions.updateObject(obj.id, { scale: v }) : actions.setStyle(selection, { scale: v }));
 
@@ -218,16 +207,16 @@ function Inspector() {
       <div className="rounded bg-ink-900 p-1.5 text-xs">
         <div className="truncate font-semibold text-slate-100" title={info.name}>{info.name}</div>
         <div className="font-mono text-[10px] text-slate-500">
-          {selection} · {is3d ? obj.kind === 'shape3d' && obj.shape : info.tag}
+          {selection} · {info.tag}
         </div>
       </div>
 
-      {(is3d || paint) ? (
+      {paint ? (
         <>
           <PaintRow
-            label={is3d ? 'Superficie' : 'Relleno'}
+            label="Relleno"
             value={fill}
-            fallbackHex={defaultFill}
+            fallbackHex="#ffffff"
             hasOverride={style.fill !== undefined}
             noneLabel="ninguno"
             onColor={(hex) => actions.setStyle(selection, { fill: hex })}
@@ -235,12 +224,12 @@ function Inspector() {
             onReset={() => actions.setStyle(selection, { fill: undefined })}
           />
           <PaintRow
-            label={is3d ? 'Líneas' : 'Trazo'}
+            label="Trazo"
             value={stroke}
             fallbackHex="#ffffff"
             hasOverride={style.stroke !== undefined}
             noneLabel="ninguno"
-            onColor={(hex) => actions.setStyle(selection, { stroke: hex, ...(strokeWidth <= 0 && !is3d ? { strokeWidth: 3 } : {}) })}
+            onColor={(hex) => actions.setStyle(selection, { stroke: hex, ...(strokeWidth <= 0 ? { strokeWidth: 3 } : {}) })}
             onNone={(n) => actions.setStyle(selection, { stroke: n ? 'none' : undefined })}
             onReset={() => actions.setStyle(selection, { stroke: undefined, strokeWidth: undefined })}
           />
@@ -273,7 +262,7 @@ function Inspector() {
           onChange={(value) => actions.setStyle(selection, { opacity: value / 100 })} />
       </Field>
 
-      {is2D(obj) && obj.vector?.tool === 'arrow' && (
+      {obj.vector?.tool === 'arrow' && (
         <Field label="Punta de flecha">
           <select className={input} value={obj.vector.tip ?? 'triangle'} onChange={(event) => {
             const tip = event.target.value;
@@ -286,13 +275,13 @@ function Inspector() {
           </select>
         </Field>
       )}
-      {is2D(obj) && obj.vector?.tool === 'text' && (
+      {obj.vector?.tool === 'text' && (
         <Field label="Contenido del texto">
           <input className={input} value={obj.vector.text ?? ''} maxLength={250}
             onChange={(event) => actions.editVector(obj, { text: event.target.value })} />
         </Field>
       )}
-      {is2D(obj) && obj.vector?.tool === 'text' && <TextTypography obj={obj} />}
+      {obj.vector?.tool === 'text' && <TextTypography obj={obj} />}
 
       <Field label="Escala">
         <input type="range" className="min-w-0 flex-1 accent-sky-400" aria-label="Escala (control deslizante)"
@@ -302,12 +291,12 @@ function Inspector() {
       </Field>
 
       {info.isRoot && (
-        <Field label={is3d ? 'Giro base (Y°)' : 'Rotación (°)'}>
+        <Field label="Rotación (°)">
           <NumberInput className={`${input} w-20`} value={obj.rotation} step={5} onChange={(v) => actions.updateObject(obj.id, { rotation: v })} />
         </Field>
       )}
 
-      {info.isRoot && is2D(obj) && (
+      {info.isRoot && (
         <div className="flex gap-2">
           <button
             className={btn}
@@ -367,11 +356,8 @@ function Animations() {
   const [rotMode, setRotMode] = useState<'angle' | 'spin'>('angle');
   const [angle, setAngle] = useState(360);
   const [speed, setSpeed] = useState(90);
-  const [axis, setAxis] = useState<'x' | 'y' | 'z'>('y');
-  const [orbitAngle, setOrbitAngle] = useState(180);
 
   const info = selection ? engine.runtime?.getNodeInfo(selection) ?? null : null;
-  const is3d = info?.kind === 'shape3d' && objects.some((o) => o.id === selection);
   const enabled = !!selection && nodeExists && !!info;
   const start = Math.round(time * 100) / 100;
 
@@ -429,9 +415,9 @@ function Animations() {
             className={`${btn} w-full justify-start`}
             disabled={!enabled}
             title={reason}
-            onClick={() => add('rotate', rotMode === 'angle' ? { mode: 'angle', angle, axis } : { mode: 'spin', speed, axis })}
+            onClick={() => add('rotate', rotMode === 'angle' ? { mode: 'angle', angle } : { mode: 'spin', speed })}
           >
-            <RotateCw size={14} /> {is3d ? 'Rotar objeto' : 'Rotar'}
+            <RotateCw size={14} /> Rotar
           </button>
           <div className="flex gap-1.5">
             <select className={input} value={rotMode} onChange={(e) => setRotMode(e.target.value as 'angle' | 'spin')} aria-label="Modo de giro">
@@ -446,29 +432,6 @@ function Animations() {
               ariaLabel={rotMode === 'angle' ? 'Ángulo' : 'Velocidad'}
             />
           </div>
-          {is3d && (
-            <Field label="Eje">
-              <select className={`${input} w-20`} value={axis} onChange={(e) => setAxis(e.target.value as 'x' | 'y' | 'z')}>
-                <option value="y">Y</option>
-                <option value="x">X</option>
-                <option value="z">Z</option>
-              </select>
-            </Field>
-          )}
-        </div>
-
-        <div className="space-y-1.5 rounded border border-bezel p-2">
-          <button
-            className={`${btn} w-full justify-start`}
-            disabled={!enabled || !is3d}
-            title={!is3d ? 'Selecciona un objeto 3D para orbitar la cámara' : undefined}
-            onClick={() => add('orbit', { angle: orbitAngle })}
-          >
-            <Orbit size={14} /> Orbitar cámara
-          </button>
-          <Field label="Ángulo (°)">
-            <NumberInput className={`${input} w-20`} value={orbitAngle} step={15} onChange={setOrbitAngle} />
-          </Field>
         </div>
       </div>
     </Section>
@@ -480,7 +443,7 @@ function useFormula() {
   const selection = useStore((s) => s.ui.selection);
   const objects = useStore((s) => s.project.objects);
   const object = objects.find((o) => o.id === selection?.split('.')[0]);
-  return object && is2D(object) && object.kind === 'formula' && !object.vector ? object : null;
+  return object && object.kind === 'formula' && !object.vector ? object : null;
 }
 
 function GlyphPanel() {
@@ -618,8 +581,8 @@ function EquationAnimations() {
 
   const sel = termEdit === obj.id ? glyphSel : [];
   const start = Math.round(time * 100) / 100;
-  const target = objects.find((o) => o.id === dest && o.id !== obj.id && is2D(o));
-  const targetFormula = target && is2D(target) && target.kind === 'formula' && !target.vector ? target : null;
+  const target = objects.find((o) => o.id === dest && o.id !== obj.id);
+  const targetFormula = target && target.kind === 'formula' && !target.vector ? target : null;
   const term = scope.startsWith('term:') ? obj.terms?.find((entry) => entry.id === scope.slice(5)) : undefined;
   const chosen = scope === 'sel' && sel.length ? sel : term ? term.glyphs : null;
   const scopeParams = (): Record<string, number | string | boolean> => {
@@ -730,7 +693,7 @@ function EquationAnimations() {
         <Field label="Destino">
           <select className={input} value={dest} onChange={(e) => { setDest(e.target.value); setDestTerm(''); setDestGlyphs([]); }} aria-label="Objeto destino">
             <option value="">Estado (sin objeto)</option>
-            {objects.filter((o) => o.id !== obj.id && is2D(o)).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+            {objects.filter((o) => o.id !== obj.id).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
           </select>
         </Field>
         {targetFormula?.terms?.length ? (

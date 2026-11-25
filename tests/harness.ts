@@ -1,6 +1,6 @@
 /**
  * Pruebas de lógica en un navegador real. Se empaquetan con esbuild y se ejecutan con tests/dom-test.mjs.
- * No dependen de React, GSAP, Three.js ni MathJax: ejercitan el saneado de SVG y el runtime del escenario.
+ * No dependen de React, GSAP ni MathJax: ejercitan el saneado de SVG y el runtime del escenario.
  */
 import { SAMPLE_SVG, inlineUses, prepareSvg } from '../src/engine/svgImport';
 import { SceneRuntime, type TreeNode } from '../src/engine/runtime';
@@ -24,7 +24,6 @@ function mkProject(objects: Obj2D[], clips: Clip[] = [], styles: Record<string, 
     objects,
     styles,
     clips,
-    camera: { az: 35, el: 22, dist: 9 },
     voice: null,
     counters: { obj: 9, clip: 9 },
   };
@@ -49,9 +48,7 @@ function mkStage(scale = 1) {
   const fx = document.createElementNS('http://www.w3.org/2000/svg', 'svg') as SVGSVGElement;
   fx.setAttribute('viewBox', '0 0 1920 1080');
   fx.style.cssText = 'position:absolute;inset:0;width:1920px;height:1080px;pointer-events:none';
-  const host3d = document.createElement('div');
-  host3d.style.cssText = 'position:absolute;inset:0;pointer-events:none';
-  stage.append(host3d, layer, fx);
+  stage.append(layer, fx);
   box.append(stage);
   document.body.append(box);
   // regla equivalente a index.css para los objetos montados
@@ -59,7 +56,7 @@ function mkStage(scale = 1) {
   st.textContent = `.mm-obj{position:absolute;left:0;top:0;transform-origin:50% 50%;pointer-events:none}
 .mm-obj>svg{display:block;width:100%;height:100%;pointer-events:none}.mm-obj>svg *{pointer-events:auto}`;
   document.head.append(st);
-  const rt = new SceneRuntime({ stage, layer, fx, host3d });
+  const rt = new SceneRuntime({ stage, layer, fx });
   rt.setScale(scale);
   return { rt, stage, layer, fx, scale };
 }

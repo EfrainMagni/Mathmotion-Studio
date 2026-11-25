@@ -19,14 +19,6 @@ export const FPS = 30;
 export const SCALE_MIN = 0.05;
 export const SCALE_MAX = 10;
 
-export type Shape3D = 'axes' | 'paraboloid' | 'sphere' | 'vector';
-export const SHAPE3D_LABEL: Record<Shape3D, string> = {
-  axes: 'Ejes cartesianos',
-  paraboloid: 'Paraboloide',
-  sphere: 'Esfera',
-  vector: 'Vector 3D',
-};
-
 export type SoundId = 'chalk' | 'pop' | 'radar' | 'sparkle';
 export const SOUND_LABEL: Record<SoundId, string> = {
   chalk: 'Trazo de tiza',
@@ -37,7 +29,7 @@ export const SOUND_LABEL: Record<SoundId, string> = {
 export const SOUND_IDS = Object.keys(SOUND_LABEL) as SoundId[];
 
 export type ClipType =
-  | 'draw' | 'radar' | 'glow' | 'appear' | 'rotate' | 'orbit'
+  | 'draw' | 'radar' | 'glow' | 'appear' | 'rotate'
   | 'indicate' | 'circumscribe' | 'focus' | 'transform' | 'transformMatch';
 export const CLIP_LABEL: Record<ClipType, string> = {
   draw: 'Escribir / Dibujar',
@@ -45,7 +37,6 @@ export const CLIP_LABEL: Record<ClipType, string> = {
   glow: 'Brillar',
   appear: 'Aparecer / Deslizar',
   rotate: 'Rotar',
-  orbit: 'Orbitar cámara',
   indicate: 'Indicate',
   circumscribe: 'Circumscribe',
   focus: 'FocusOn',
@@ -221,18 +212,8 @@ export interface Obj2D {
   terms?: Term[];
 }
 
-export interface Obj3D {
-  id: string;
-  kind: 'shape3d';
-  name: string;
-  shape: Shape3D;
-  scale: number;
-  /** Rotación base alrededor del eje Y (grados). */
-  rotation: number;
-}
-
-export type SceneObject = Obj2D | Obj3D;
-export const is2D = (o: SceneObject): o is Obj2D => o.kind !== 'shape3d';
+/** El editor es 100% 2D: un objeto de escena es siempre un `Obj2D`. */
+export type SceneObject = Obj2D;
 
 export interface NodeStyle {
   fill?: string;
@@ -245,12 +226,6 @@ export interface NodeStyle {
   scale?: number;
   tx?: number;
   ty?: number;
-}
-
-export interface CameraState {
-  az: number;
-  el: number;
-  dist: number;
 }
 
 export interface VoiceMeta {
@@ -267,7 +242,6 @@ export interface Project {
   objects: SceneObject[];
   styles: Record<string, NodeStyle>;
   clips: Clip[];
-  camera: CameraState;
   voice: VoiceMeta | null;
   counters: { obj: number; clip: number };
 }

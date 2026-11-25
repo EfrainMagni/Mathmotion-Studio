@@ -16,7 +16,6 @@ export function StageView({ sessionId }: { sessionId: string }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const layerRef = useRef<HTMLDivElement>(null);
   const fxRef = useRef<SVGSVGElement>(null);
-  const host3dRef = useRef<HTMLDivElement>(null);
   const { w: W, h: H } = STAGE_SIZES[format];
 
   useEffect(() => {
@@ -25,7 +24,6 @@ export function StageView({ sessionId }: { sessionId: string }) {
       stage: stageRef.current!,
       layer: layerRef.current!,
       fx: fxRef.current!,
-      host3d: host3dRef.current!,
     });
     const ch = new BroadcastChannel(channelName(sessionId));
     const onMsg = async (e: MessageEvent<EditorToStage>) => {
@@ -33,7 +31,6 @@ export function StageView({ sessionId }: { sessionId: string }) {
       if (m.type === 'project') {
         store.replaceProject(m.project);
         rt.setProject(m.project);
-        await rt.whenReady();
         rt.renderAt(rt.time);
         setReady(true);
         ch.postMessage({ type: 'applied', token: m.token } satisfies StageToEditor);
@@ -77,7 +74,6 @@ export function StageView({ sessionId }: { sessionId: string }) {
           }}
         >
           <div className={`absolute inset-0 ${background === 'grid' ? 'mm-grid' : ''}`} />
-          <div ref={host3dRef} className="absolute inset-0" />
           <div ref={layerRef} className="absolute inset-0" />
           <svg ref={fxRef} viewBox={`0 0 ${W} ${H}`} width={W} height={H} className="absolute inset-0" />
         </div>
