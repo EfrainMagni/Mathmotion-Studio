@@ -160,9 +160,9 @@ export function App() {
         }
         return;
       }
-      if (key === 'a' && !ui.playing) {
+      if ((key === 'a' || key === 'v') && !ui.playing) {
         event.preventDefault();
-        store.setUi({ pointerTool: 'direct', vectorTool: null });
+        store.setUi({ pointerTool: key === 'a' ? 'direct' : 'select', vectorTool: null });
         return;
       }
       if (event.key === 'Escape' && ui.termEdit) {
@@ -260,7 +260,7 @@ export function App() {
       <Notice />
       <div className="flex min-h-0 flex-1">
         <div id="studio-left" className={!focus && panels.left ? 'contents' : 'hidden'}>
-          <LeftPanel key={projectGeneration} />
+          <LeftPanel key={projectGeneration} visible={!focus && panels.left} />
         </div>
 
         <main className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -319,16 +319,20 @@ export function App() {
             onClick={clearMouseFocus}
             className="absolute bottom-2 left-1/2 z-20 flex max-w-[calc(100%_-_1rem)] -translate-x-1/2 flex-wrap justify-center gap-0.5 rounded-md border border-bezel bg-ink-700/95 p-1 shadow-xl backdrop-blur-md"
           >
-            <button type="button" className={controlClass} title="Seleccionar" aria-label="Seleccionar"
-              aria-pressed={pointerTool === 'select' && !vectorTool}
-              onClick={() => store.setUi({ vectorTool: null, pointerTool: 'select' })}>
-              <MousePointer2 size={16} />
-            </button>
-            <button type="button" className={controlClass} title="Selección Directa (Vértices) · A"
-              aria-label="Selección Directa (Vértices)" aria-keyshortcuts="A" aria-pressed={pointerTool === 'direct'}
-              onClick={() => store.setUi({ pointerTool: 'direct', vectorTool: null })}>
-              <MousePointer size={15} />
-            </button>
+            {(focus || !panels.left) && (
+              <>
+                <button type="button" className={controlClass} title="Seleccionar · V" aria-label="Seleccionar" aria-keyshortcuts="V"
+                  aria-pressed={pointerTool === 'select' && !vectorTool}
+                  onClick={() => store.setUi({ vectorTool: null, pointerTool: 'select' })}>
+                  <MousePointer2 size={16} />
+                </button>
+                <button type="button" className={controlClass} title="Selección Directa (Vértices) · A"
+                  aria-label="Selección Directa (Vértices)" aria-keyshortcuts="A" aria-pressed={pointerTool === 'direct'}
+                  onClick={() => store.setUi({ pointerTool: 'direct', vectorTool: null })}>
+                  <MousePointer size={15} />
+                </button>
+              </>
+            )}
             <button type="button" className={controlClass} title="Mover (Espacio + arrastrar)"
               aria-label="Mover" aria-pressed={pointerTool === 'hand'} onClick={() => store.setUi({ vectorTool: null, pointerTool: 'hand' })}>
               <Hand size={16} />

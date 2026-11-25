@@ -1,7 +1,7 @@
 import { VECTOR_LABEL } from '../engine/vector';
 import { useEffect, useRef, useState } from 'react';
 import {
-  ArrowUpRight, Minus, MousePointer2, Pentagon, Settings2, Type,
+  ArrowUpRight, Minus, MousePointer, MousePointer2, PenTool, Pentagon, Settings2, Type, X,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -9,7 +9,7 @@ import {
   Layers,
   Loader2,
   Mic,
-  Music,
+  AudioLines,
   Play,
   Sigma,
   Square,
@@ -23,7 +23,7 @@ import { audio, engine } from '../engine';
 import { SAMPLE_SVG, prepareSvg } from '../engine/svgImport';
 import { formulaToPrepared, loadMathJax, texToSvg } from '../engine/mathjax';
 import type { TreeNode } from '../engine/runtime';
-import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
+import { Field, NumberInput, btn, btnPrimary, input } from './ui';
 
 // ------------------------------------------------------------------ árbol de objetos
 
@@ -111,7 +111,7 @@ function ObjectsSection() {
     });
 
   return (
-    <Section title="Objetos" icon={<Layers size={14} />}>
+    <>
       {objects.length === 0 && <p className="text-xs text-slate-500">Importa un SVG o inserta una fórmula.</p>}
       <div ref={boxRef} role="tree" className="scroll-thin max-h-72 overflow-auto rounded border border-bezel bg-ink-900 p-1">
         {objects.map((o) => {
@@ -162,7 +162,7 @@ function ObjectsSection() {
       <p className="text-[11px] leading-snug text-slate-500">
         Clic en el lienzo = elemento hijo · Mayús+clic o Mayús+arrastrar = objeto completo.
       </p>
-    </Section>
+    </>
   );
 }
 
@@ -202,7 +202,7 @@ function SvgSection() {
   };
 
   return (
-    <Section title="Importar SVG (Illustrator)" icon={<FileUp size={14} />}>
+    <>
       <input ref={fileRef} type="file" accept=".svg,image/svg+xml" className="hidden" onChange={(e) => void onFile(e.target.files?.[0])} />
       <div className="flex gap-2">
         <button className={btnPrimary} disabled={busy} onClick={() => fileRef.current?.click()}>
@@ -228,7 +228,7 @@ function SvgSection() {
       {warn.map((w, i) => (
         <p key={i} className="rounded bg-amber-500/10 p-2 text-[11px] text-amber-200">{w}</p>
       ))}
-    </Section>
+    </>
   );
 }
 
@@ -315,7 +315,7 @@ function LatexSection() {
   };
 
   return (
-    <Section title="Editor LaTeX" icon={<Sigma size={14} />}>
+    <>
       <textarea
         className={`${input} h-16 resize-y font-mono`}
         value={tex}
@@ -350,7 +350,7 @@ function LatexSection() {
       <button className={btnPrimary} disabled={status !== 'ok' || inserting} onClick={() => void insert()}>
         {inserting ? <Loader2 size={13} className="animate-spin" /> : <Sigma size={13} />} Insertar fórmula
       </button>
-    </Section>
+    </>
   );
 }
 
@@ -423,7 +423,7 @@ function AudioSection() {
   };
 
   return (
-    <Section title="Audio y voz" icon={<Music size={14} />}>
+    <>
       <div className="space-y-1">
         <p className="text-[11px] uppercase tracking-wide text-slate-500">Efectos</p>
         {SOUND_IDS.map((id: SoundId) => (
@@ -490,58 +490,174 @@ function AudioSection() {
           </div>
         )}
       </div>
-    </Section>
+    </>
   );
 }
 
 const DRAW_TOOLS = [
-  ['rectangle', Square], ['ellipse', Circle], ['line', Minus], ['arrow', ArrowUpRight], ['text', Type], ['polygon', Pentagon],
+  { id: 'select', label: 'Selección', shortcut: 'V', icon: MousePointer2 },
+  { id: 'direct', label: 'Selección Directa (Vértices)', shortcut: 'A', icon: MousePointer },
+  { id: 'rectangle', label: VECTOR_LABEL.rectangle, shortcut: 'R', icon: Square },
+  { id: 'ellipse', label: VECTOR_LABEL.ellipse, shortcut: 'E', icon: Circle },
+  { id: 'polygon', label: VECTOR_LABEL.polygon, shortcut: 'P', icon: Pentagon },
+  { id: 'line', label: VECTOR_LABEL.line, shortcut: 'L', icon: Minus },
+  { id: 'arrow', label: VECTOR_LABEL.arrow, shortcut: 'F', icon: ArrowUpRight },
+  { id: 'text', label: VECTOR_LABEL.text, shortcut: 'T', icon: Type },
+] as const satisfies readonly { id: VectorTool | 'select' | 'direct'; label: string; shortcut: string; icon: typeof Square }[];
+
+const MODULES = [
+  { id: 'layers', label: 'Capas / Objetos', shortcut: '2', icon: Layers, content: ObjectsSection },
+  { id: 'svg', label: 'Importar SVG', shortcut: '3', icon: FileUp, content: SvgSection },
+  { id: 'latex', label: 'Editor LaTeX', shortcut: '4', icon: Sigma, content: LatexSection },
+  { id: 'audio', label: 'Audio y voz', shortcut: '5', icon: AudioLines, content: AudioSection },
 ] as const;
 
-function DrawingSection() {
+type Module = typeof MODULES[number]['id'];
+type Flyout = Module | 'text';
+
+export function LeftPanel({ visible }: { visible: boolean }) {
   const active = useStore((s) => s.ui.vectorTool);
+  const pointer = useStore((s) => s.ui.pointerTool);
   const text = useStore((s) => s.ui.vectorText);
-  const normalSelection = useStore((s) => s.ui.pointerTool === 'select' );
-  const polygonSides = useStore((s) => s.ui.polygonSides);
   const disabled = useStore((s) => s.ui.playing || s.ui.recording.phase !== 'idle');
-  function select(tool: VectorTool | null) {
-    store.setUi({ vectorTool: tool, pointerTool: 'select' });
+  const [drawing, setDrawing] = useState(true);
+  const [open, setOpen] = useState<Flyout | null>(null);
+  const rail = useRef<HTMLElement>(null);
+  const textInput = useRef<HTMLInputElement>(null);
+
+  function selectTool(tool: typeof DRAW_TOOLS[number]['id']) {
+    if (tool === 'select' || tool === 'direct') {
+      store.setUi({ vectorTool: null, pointerTool: tool });
+    } else {
+      store.setUi({ vectorTool: tool, pointerTool: 'select' });
+    }
+    setOpen((current) => tool === 'text' ? 'text' : current === 'text' ? null : current);
   }
 
-  return (
-    <Section title="Dibujo vectorial">
-      <div className="studio-drawing grid grid-cols-2 gap-1">
-        <button className={!active && normalSelection ? btnPrimary : btn} aria-pressed={!active && normalSelection} disabled={disabled}
-          onClick={() => select(null)}><MousePointer2 size={12} /> Selección</button>
-        {DRAW_TOOLS.map(([tool, Icon]) => (
-          <button key={tool} className={active === tool ? btnPrimary : btn} aria-pressed={active === tool}
-            disabled={disabled} onClick={() => select(tool)} title={VECTOR_LABEL[tool]}>
-            <Icon size={12} /> <span className="truncate">{VECTOR_LABEL[tool]}</span>
-          </button>
-        ))}
-      </div>
-      {active === 'polygon' && (
-        <button className={`${btn} w-full`} disabled={disabled} onClick={() => store.setUi({ polygonRequest: 'options' })}>
-          <Settings2 size={12} /> Opciones de polígono · {polygonSides} lados
-        </button>
-      )}
-      {active === 'text' && (
-        <Field label="Texto para dibujar">
-          <input className={input} value={text} maxLength={250} onChange={(event) => store.setUi({ vectorText: event.target.value })} />
-        </Field>
-      )}
-    </Section>
-  );
-}
+  function close(flyout: Flyout) {
+    setOpen(null);
+    rail.current?.querySelector<HTMLButtonElement>(`[aria-controls="left-flyout-${flyout}"]`)?.focus();
+  }
 
-export function LeftPanel() {
+  useEffect(() => {
+    if (open === 'text' && visible) textInput.current?.focus();
+  }, [open, visible]);
+
+  useEffect(() => {
+    if (active !== 'text') setOpen((current) => current === 'text' ? null : current);
+  }, [active]);
+
+  useEffect(() => {
+    if (!visible) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey ||
+        document.querySelector('dialog[open]')) return;
+      const editing = event.target instanceof HTMLElement &&
+        (event.target.isContentEditable || event.target.closest('input, textarea, select'));
+      const inRail = event.target instanceof Node && rail.current?.contains(event.target);
+      if (event.key === 'Escape' && open && (inRail || (!editing && !store.getState().ui.termEdit))) {
+        event.preventDefault();
+        close(open);
+        return;
+      }
+      if (editing || event.repeat) return;
+      if (event.altKey) {
+        if (event.code === 'Digit1') {
+          event.preventDefault();
+          setDrawing((current) => !current);
+        }
+        const module = MODULES.find(({ shortcut }) => event.code === `Digit${shortcut}`);
+        if (module) {
+          event.preventDefault();
+          setOpen((current) => current === module.id ? null : module.id);
+        }
+        return;
+      }
+      if (disabled) return;
+      const tool = DRAW_TOOLS.find(({ shortcut }) => shortcut === event.key.toUpperCase());
+      if (!tool || tool.id === 'select' || tool.id === 'direct') return;
+      event.preventDefault();
+      setDrawing(true);
+      selectTool(tool.id);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [disabled, open, visible]);
+
   return (
-    <aside className="scroll-thin w-[228px] shrink-0 overflow-y-auto border-r border-bezel bg-ink-800">
-      <DrawingSection />
-      <ObjectsSection />
-      <SvgSection />
-      <LatexSection />
-      <AudioSection />
+    <aside ref={rail} className="studio-left" aria-label="Herramientas y módulos">
+      <div className="studio-left-rail scroll-thin">
+        <button type="button" className="studio-rail-button" aria-label="Herramientas vectoriales"
+          title="Herramientas vectoriales · Alt+1" aria-keyshortcuts="Alt+1"
+          aria-expanded={drawing} aria-controls="left-drawing-tools" onClick={() => setDrawing(!drawing)}>
+          <PenTool size={20} aria-hidden="true" />
+        </button>
+        <div id="left-drawing-tools" className="studio-drawing" role="group" aria-label="Dibujo vectorial" hidden={!drawing}>
+          {DRAW_TOOLS.map(({ id, label, shortcut, icon: Icon }) => (
+            <button key={id} type="button" className="studio-rail-button" aria-label={label}
+              title={`${label} · ${shortcut}`} aria-keyshortcuts={shortcut} disabled={disabled}
+              aria-pressed={id === 'select' || id === 'direct' ? !active && pointer === id : active === id}
+              onClick={() => selectTool(id)}>
+              <Icon size={20} aria-hidden="true" />
+            </button>
+          ))}
+          {active === 'polygon' && (
+            <button type="button" className="studio-rail-button" disabled={disabled}
+              aria-label="Opciones de polígono" title="Opciones de polígono"
+              onClick={() => store.setUi({ polygonRequest: 'options' })}>
+              <Settings2 size={20} aria-hidden="true" />
+            </button>
+          )}
+          {active === 'text' && (
+            <button type="button" className="studio-rail-button" disabled={disabled}
+              aria-label="Opciones de texto" title="Opciones de texto"
+              aria-expanded={open === 'text'} aria-controls="left-flyout-text"
+              onClick={() => setOpen(open === 'text' ? null : 'text')}>
+              <Settings2 size={20} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+        <div className="studio-rail-modules">
+          {MODULES.map(({ id, label, shortcut, icon: Icon }) => (
+            <button key={id} type="button" className="studio-rail-button" aria-label={label}
+              title={`${label} · Alt+${shortcut}`} aria-keyshortcuts={`Alt+${shortcut}`}
+              aria-expanded={open === id} aria-controls={`left-flyout-${id}`}
+              onClick={() => setOpen(open === id ? null : id)}>
+              <Icon size={20} aria-hidden="true" />
+            </button>
+          ))}
+        </div>
+      </div>
+      {MODULES.map(({ id, label, content: Content }) => (
+        <section key={id} id={`left-flyout-${id}`} aria-label={label} className="studio-left-flyout scroll-thin" hidden={open !== id}>
+          <div className="studio-flyout-heading">
+            <h2>{label}</h2>
+            <button type="button" className="studio-rail-button" aria-label={`Cerrar ${label}`} onClick={() => close(id)}>
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="space-y-1.5 p-2"><Content /></div>
+        </section>
+      ))}
+      <section id="left-flyout-text" aria-label="Texto libre" className="studio-left-flyout scroll-thin" hidden={open !== 'text'}>
+        <div className="studio-flyout-heading">
+          <h2>Texto libre</h2>
+          <button type="button" className="studio-rail-button" aria-label="Cerrar Texto libre" onClick={() => close('text')}>
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+        <div className="space-y-1.5 p-2">
+          <Field label="Texto para dibujar">
+            <input ref={textInput} className={input} value={text} maxLength={250}
+              onChange={(event) => store.setUi({ vectorText: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                close('text');
+              }} />
+          </Field>
+        </div>
+      </section>
     </aside>
   );
 }
