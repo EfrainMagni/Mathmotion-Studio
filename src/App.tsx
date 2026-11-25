@@ -78,6 +78,10 @@ export function App() {
   const vectorTool = useStore((s) => s.ui.vectorTool);
   const pointerTool = useStore((s) => s.ui.pointerTool);
   const canPan = pointerTool === 'hand' || spaceHeld;
+  const format = useStore((s) => s.project.format);
+
+  // Al cargar o cambiar de formato (16:9 / 9:16) la vista vuelve a 100 % centrada.
+  useEffect(() => setCamera({ x: 0, y: 0, scale: 1 }), [format, projectGeneration]);
 
   useEffect(() => {
     const viewport = viewportRef.current;

@@ -16,8 +16,9 @@ export const BACKGROUND_COLOR: Record<StageBackground, string> = {
 export const FPS = 30;
 
 /** Rango de escala libre del inspector (ecuaciones, formas y glifos). */
-export const SCALE_MIN = 0.05;
-export const SCALE_MAX = 10;
+export const SCALE_MIN = 0.005;
+export const SCALE_MAX = 20;
+export const SCALE_STEP = 0.005;
 
 export type SoundId = 'chalk' | 'pop' | 'radar' | 'sparkle';
 export const SOUND_LABEL: Record<SoundId, string> = {

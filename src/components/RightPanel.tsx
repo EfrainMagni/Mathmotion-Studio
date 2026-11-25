@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
 import {
-  DEFAULT_TEXT_STYLE, FONT_CATALOG, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
+  DEFAULT_TEXT_STYLE, FONT_CATALOG, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
   glyphTransformParams,
   type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
@@ -396,9 +396,9 @@ function Inspector() {
 
       <Field label="Escala">
         <input type="range" className="min-w-0 flex-1 accent-sky-400" aria-label="Escala (control deslizante)"
-          min={SCALE_MIN} max={SCALE_MAX} step={0.01} value={Math.min(SCALE_MAX, Math.max(SCALE_MIN, scale))}
+          min={SCALE_MIN} max={SCALE_MAX} step={SCALE_STEP} value={Math.min(SCALE_MAX, Math.max(SCALE_MIN, scale))}
           onChange={(e) => setScale(parseFloat(e.target.value))} />
-        <NumberInput className={`${input} w-20`} value={scale} min={SCALE_MIN} max={SCALE_MAX} step={0.01} onChange={setScale} ariaLabel="Escala" />
+        <NumberInput className={`${input} w-20`} value={scale} min={SCALE_MIN} max={SCALE_MAX} step={SCALE_STEP} onChange={setScale} ariaLabel="Escala" />
       </Field>
 
       {info.isRoot && (
@@ -888,7 +888,7 @@ function GlyphPanel() {
             )}
           </Field>
           <Field label="Escala local">
-            <NumberInput className={`${input} w-20`} value={first.scale ?? 1} min={SCALE_MIN} max={SCALE_MAX} step={0.01}
+            <NumberInput className={`${input} w-20`} value={first.scale ?? 1} min={SCALE_MIN} max={SCALE_MAX} step={SCALE_STEP}
               onChange={(v) => edit({ scale: v === 1 ? undefined : v })} ariaLabel="Escala local" />
           </Field>
           <Field label="Opacidad (%)">
