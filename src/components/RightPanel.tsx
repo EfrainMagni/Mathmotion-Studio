@@ -4,11 +4,12 @@ import { actions, store, useStore } from '../store';
 import {
   DEFAULT_TEXT_STYLE, FONT_CATALOG, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
   glyphTransformParams,
-  type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type SoundId, type TextAlign, type TextStyle,
+  type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
 import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
 import { preloadFont } from '../engine/fonts';
+import { compileExpression, newPlot, newPoint } from '../engine/cartesianPlane';
 import { GRADIENT_PRESETS, LINE_TIPS, gradientCss, lineTips, makeGradient, newStopId } from '../engine/vector';
 import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
 
@@ -468,6 +469,37 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
   );
 }
 
+/** Campo de texto que confirma al salir o con Intro (evita una entrada de historial por cada tecla). */
+function CommitInput({ value, onCommit, label, placeholder, invalid, className }: {
+  value: string; onCommit: (value: string) => void; label: string; placeholder?: string; invalid?: boolean; className?: string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft !== null && draft !== value) onCommit(draft);
+    setDraft(null);
+  };
+  return (
+    <input className={`${className ?? compact} ${invalid ? 'border-rose-400/70' : ''}`} aria-label={label} aria-invalid={invalid || undefined}
+      placeholder={placeholder} value={draft ?? value} spellCheck={false}
+      onChange={(event) => setDraft(event.target.value)} onBlur={commit}
+      onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
+  );
+}
+
+/** Número opcional (vacío = valor por defecto del plano). */
+function OptionalNumber({ value, placeholder, label, onCommit }: {
+  value: number | undefined; placeholder: string; label: string; onCommit: (value: number | undefined) => void;
+}) {
+  return (
+    <CommitInput label={label} placeholder={placeholder} value={value === undefined ? '' : String(value)}
+      onCommit={(text) => {
+        if (!text.trim()) return onCommit(undefined);
+        const parsed = Number(text);
+        if (Number.isFinite(parsed)) onCommit(parsed);
+      }} />
+  );
+}
+
 const PLANE_HEADING = 'pt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500';
 
 /** Inspector del plano cartesiano (`NumberPlane`): intervalos, ejes y flechas, cuadrícula, números y marcas. */
@@ -571,6 +603,80 @@ function PlaneInspector() {
             onChange={(event) => set({ numberColor: event.target.value })} />
         </Mini>
       </div>
+
+      <div className={PLANE_HEADING}>Funciones f(x)</div>
+      {(p.plots ?? []).map((plot) => {
+        const patch = (change: Partial<PlanePlot>) =>
+          set({ plots: (p.plots ?? []).map((entry) => (entry.id === plot.id ? { ...entry, ...change } : entry)) });
+        return (
+          <div key={plot.id} className="space-y-1 rounded border border-bezel p-1">
+            <div className="flex items-center gap-1">
+              <input type="checkbox" aria-label={`Mostrar ${plot.id}`} checked={plot.visible} onChange={(event) => patch({ visible: event.target.checked })} />
+              <span className="shrink-0 font-mono text-[10px] text-slate-500">{plot.id}</span>
+              <CommitInput label={`Expresión de ${plot.id}`} value={plot.expression} placeholder="2*x + 1"
+                invalid={!compileExpression(plot.expression)} onCommit={(expression) => patch({ expression })} />
+              <input type="color" className={colorInput} aria-label={`Color de ${plot.id}`} value={plot.color}
+                onChange={(event) => patch({ color: event.target.value })} />
+              <button className="shrink-0 text-slate-400 hover:text-rose-300" title="Eliminar función" aria-label={`Eliminar ${plot.id}`}
+                onClick={() => set({ plots: (p.plots ?? []).filter((entry) => entry.id !== plot.id) })}>
+                <Trash2 size={12} />
+              </button>
+            </div>
+            {!compileExpression(plot.expression) && (
+              <p className="text-[10px] text-rose-300">Expresión no válida (usa x, + - * / ^, sin, cos, tan, sqrt, abs, ln, log, exp, pi, e).</p>
+            )}
+            <div className="grid grid-cols-3 gap-1">
+              <Mini label="Grosor">
+                <NumberInput className={compact} ariaLabel={`Grosor de ${plot.id}`} value={plot.width} min={0.5} step={0.5} onChange={(width) => patch({ width })} />
+              </Mini>
+              <Mini label="x desde">
+                <OptionalNumber label={`x inicial de ${plot.id}`} placeholder={String(p.xMin)} value={plot.xStart} onCommit={(xStart) => patch({ xStart })} />
+              </Mini>
+              <Mini label="x hasta">
+                <OptionalNumber label={`x final de ${plot.id}`} placeholder={String(p.xMax)} value={plot.xEnd} onCommit={(xEnd) => patch({ xEnd })} />
+              </Mini>
+            </div>
+          </div>
+        );
+      })}
+      <button className={btn} disabled={(p.plots?.length ?? 0) >= 50} onClick={() => set({ plots: [...(p.plots ?? []), newPlot(p)] })}>
+        + Función / Recta f(x)
+      </button>
+
+      <div className={PLANE_HEADING}>Puntos (x, y)</div>
+      {(p.points ?? []).map((point) => {
+        const patch = (change: Partial<PlanePoint>) =>
+          set({ points: (p.points ?? []).map((entry) => (entry.id === point.id ? { ...entry, ...change } : entry)) });
+        return (
+          <div key={point.id} className="space-y-1 rounded border border-bezel p-1">
+            <div className="flex items-center gap-1">
+              <input type="checkbox" aria-label={`Mostrar ${point.id}`} checked={point.visible} onChange={(event) => patch({ visible: event.target.checked })} />
+              <span className="shrink-0 font-mono text-[10px] text-slate-500">{point.id}</span>
+              <NumberInput className={compact} ariaLabel={`x de ${point.id}`} value={point.x} step={0.5} onChange={(x) => patch({ x })} />
+              <NumberInput className={compact} ariaLabel={`y de ${point.id}`} value={point.y} step={0.5} onChange={(y) => patch({ y })} />
+              <input type="color" className={colorInput} aria-label={`Color de ${point.id}`} value={point.color}
+                onChange={(event) => patch({ color: event.target.value })} />
+              <button className="shrink-0 text-slate-400 hover:text-rose-300" title="Eliminar punto" aria-label={`Eliminar ${point.id}`}
+                onClick={() => set({ points: (p.points ?? []).filter((entry) => entry.id !== point.id) })}>
+                <Trash2 size={12} />
+              </button>
+            </div>
+            <div className="grid grid-cols-[3.5rem_1fr] items-end gap-1">
+              <Mini label="Radio">
+                <NumberInput className={compact} ariaLabel={`Radio de ${point.id}`} value={point.radius} min={1} step={1} onChange={(radius) => patch({ radius })} />
+              </Mini>
+              <Mini label="Etiqueta">
+                <CommitInput label={`Etiqueta de ${point.id}`} value={point.label ?? ''} placeholder="A" onCommit={(label) => patch({ label: label.trim() ? label : undefined })} />
+              </Mini>
+            </div>
+            <Toggle label="Líneas guía a los ejes" checked={point.showGuideLines === true}
+              onChange={(showGuideLines) => patch({ showGuideLines: showGuideLines || undefined })} />
+          </div>
+        );
+      })}
+      <button className={btn} disabled={(p.points?.length ?? 0) >= 200} onClick={() => set({ points: [...(p.points ?? []), newPoint(p)] })}>
+        + Punto (x, y)
+      </button>
     </Section>
   );
 }

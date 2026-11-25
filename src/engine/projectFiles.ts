@@ -18,6 +18,15 @@ const term = z.object({
   id: z.string().regex(/^t[1-9]\d*$/), name: z.string().max(60), glyphs: z.array(z.int().nonnegative()).max(2000),
 });
 const hex = z.string().regex(/^#[\da-f]{3,8}$/i);
+const planeItemId = z.string().regex(/^[a-z]{1,3}\d{1,6}$/);
+const planePlot = z.object({
+  id: planeItemId, expression: z.string().max(200), color: hex, width: positive,
+  xStart: number.optional(), xEnd: number.optional(), visible: z.boolean(),
+});
+const planePoint = z.object({
+  id: planeItemId, x: number, y: number, color: hex, radius: positive,
+  label: z.string().max(24).optional(), showGuideLines: z.boolean().optional(), visible: z.boolean(),
+});
 /** Plano cartesiano: todos los campos son opcionales; `normalizePlane` completa y sanea al abrir. */
 const plane = z.object({
   width: positive, height: positive,
@@ -29,6 +38,7 @@ const plane = z.object({
   showSubGrid: z.boolean(), subGridColor: hex, subGridOpacity: number.min(0).max(1), subGridWidth: nonnegative,
   showTicks: z.boolean(), tickLength: nonnegative, showNumbers: z.boolean(), numberColor: hex,
   numberSize: positive, showOriginZero: z.boolean(),
+  plots: z.array(planePlot).max(50), points: z.array(planePoint).max(200),
 }).partial();
 const baseObject = { id: objectId, name: z.string(), scale: positive, rotation: number };
 const object2D = z.object({

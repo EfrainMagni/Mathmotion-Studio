@@ -183,6 +183,31 @@ export interface VectorGeometry {
 
 export type PlaneArrowTips = 'both' | 'positive' | 'none';
 
+/** Gráfica `f(x)` dentro de un plano (estilo `plane.plot(...)` de Manim). `expression` usa `x`, `+ - * / ^`, funciones y `pi`/`e`. */
+export interface PlanePlot {
+  id: string;
+  expression: string;
+  color: string;
+  width: number;
+  /** Extremos del dominio; por defecto, los del plano. */
+  xStart?: number;
+  xEnd?: number;
+  visible: boolean;
+}
+
+/** Punto coordenado `(x, y)` dentro de un plano (estilo `Dot(plane.c2p(x, y))`). */
+export interface PlanePoint {
+  id: string;
+  x: number;
+  y: number;
+  color: string;
+  radius: number;
+  label?: string;
+  /** Líneas punteadas perpendiculares hacia los ejes. */
+  showGuideLines?: boolean;
+  visible: boolean;
+}
+
 /**
  * Geometría de un plano cartesiano estilo Manim `NumberPlane` (objeto nativo `cartesianPlane`).
  * `width`/`height` son px lógicos del escenario antes de aplicar `scale` del objeto; posición, rotación
@@ -216,6 +241,8 @@ export interface PlaneGeometry {
   numberColor: string;
   numberSize: number;
   showOriginZero: boolean;
+  plots?: PlanePlot[];
+  points?: PlanePoint[];
 }
 
 /** Colores clásicos 3Blue1Brown (cuadrícula principal, subcuadrícula, ejes). */
