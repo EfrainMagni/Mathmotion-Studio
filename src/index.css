@@ -19,13 +19,88 @@ body {
   min-block-size: 24px;
 }
 
-.studio-drawing button {
-  justify-content: flex-start;
-  gap: 4px;
-  padding-inline: 4px;
+.studio-left {
+  position: relative;
+  z-index: 30;
+  width: 44px;
+  flex: 0 0 44px;
+  min-height: 0;
+  background: #1e1e1e;
+  border-right: 1px solid #323232;
 }
 
-.studio-drawing svg { flex: none; }
+.studio-left-rail {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.studio-left-rail::-webkit-scrollbar { display: none; }
+
+.studio-drawing:not([hidden]),
+.studio-rail-modules {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.studio-rail-modules {
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid #323232;
+}
+
+.studio-rail-button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #d4d4d4;
+}
+
+.studio-rail-button:hover { background: #323232; }
+.studio-rail-button:focus-visible { outline: 1px solid #89b6f5; }
+.studio-rail-button:is([aria-expanded="true"], [aria-pressed="true"]) {
+  border-color: #486181;
+  background: #29384b;
+  color: #c2dcff;
+}
+.studio-rail-button:disabled { opacity: .4; }
+
+.studio-left-flyout {
+  position: absolute;
+  top: 4px;
+  left: 100%;
+  width: min(240px, calc(100vw - 44px));
+  max-height: calc(100% - 8px);
+  overflow: auto;
+  border: 1px solid #323232;
+  border-radius: 0 5px 5px 0;
+  background: #1e1e1e;
+  box-shadow: 8px 8px 20px rgb(0 0 0 / 40%);
+}
+
+.studio-flyout-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 3px 0 8px;
+  border-bottom: 1px solid #323232;
+  background: #252525;
+  font-weight: 600;
+}
 
 /* Objetos 2D del escenario: el contenedor no captura el puntero; solo la geometría pintada. */
 .mm-obj { font-size: 16px; position: absolute; left: 0; top: 0; transform-origin: 50% 50%; pointer-events: none; }
