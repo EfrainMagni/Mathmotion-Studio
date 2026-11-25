@@ -208,6 +208,10 @@ export function defaultClipParams(type: ClipType): ClipParams {
   }
 }
 
+/** Fracción máxima del lienzo que ocupa una fórmula recién insertada. */
+const FORMULA_MAX_W = 0.75;
+const FORMULA_MAX_H = 0.35;
+
 export const actions = {
   reserveObjectId(): string {
     objectSerial = Math.max(objectSerial, state.project.counters.obj) + 1;
@@ -235,7 +239,11 @@ export const actions = {
     store.setProject((p) => {
       const { w, h } = STAGE_SIZES[p.format];
       const { fit, position, ...rest } = o;
-      const obj: Obj2D = { ...rest, x: position?.x ?? w / 2, y: position?.y ?? h / 2, scale: fit, rotation: 0 };
+      // Las fórmulas LaTeX nacen ajustadas: nunca más del 75 % del ancho ni del 35 % del alto del formato actual.
+      const scale = rest.kind === 'formula' && rest.bw > 0 && rest.bh > 0
+        ? Math.min(w * FORMULA_MAX_W / rest.bw, h * FORMULA_MAX_H / rest.bh)
+        : fit;
+      const obj: Obj2D = { ...rest, x: position?.x ?? w / 2, y: position?.y ?? h / 2, scale, rotation: 0 };
       return { ...p, objects: [...p.objects, obj], counters: { ...p.counters, obj: Math.max(p.counters.obj, Number(o.id.slice(1))) } };
     });
     actions.select(o.id);
