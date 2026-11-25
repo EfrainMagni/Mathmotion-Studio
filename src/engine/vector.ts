@@ -1,4 +1,4 @@
-import { fontStack, type FillGradient, type GradientStop, type LineTip, type VectorGeometry, type VectorTool, type Vertex } from '../types';
+import { fontStack, type FillGradient, type GradientStop, type LegacyLineTip, type LineTip, type VectorGeometry, type VectorTool, type Vertex } from '../types';
 
 export const VECTOR_LABEL: Record<VectorTool, string> = {
   rectangle: 'Rectángulo', ellipse: 'Círculo / Elipse', line: 'Línea / Vector',
@@ -72,26 +72,64 @@ function xml(text: string) {
 
 export const LINE_TIPS: Record<LineTip, string> = {
   none: 'Ninguna',
-  triangle: 'Triángulo clásico',
-  open: 'Punta abierta / V',
-  circle: 'Punto / Círculo',
+  stealth: 'Flecha afilada',
+  right: 'Triángulo recto',
 };
+
+/** Longitud y semiancho de la punta, en múltiplos del grosor de trazo. */
+const TIP_LENGTH = 5;
+const TIP_HALF_WIDTH = 2;
+/** Fracción de la longitud donde queda la muesca trasera de la flecha afilada. */
+const STEALTH_NOTCH = 0.72;
+
+/** Mapea puntas antiguas (triangle/open/circle) a uno de los dos diseños vigentes. */
+export function normalizeTip(tip: LineTip | LegacyLineTip | undefined): LineTip {
+  if (tip === 'none' || tip === undefined) return 'none';
+  return tip === 'right' || tip === 'triangle' ? 'right' : 'stealth';
+}
 
 export function lineTips(vector: VectorGeometry) {
   const legacy = vector.tool === 'arrow' ? vector.tip ?? 'triangle' : 'none';
   return {
-    start: vector.startTip ?? (legacy === 'both' ? 'triangle' : 'none'),
-    end: vector.endTip ?? (legacy === 'both' ? 'triangle' : legacy),
+    start: normalizeTip(vector.startTip ?? (legacy === 'both' ? 'triangle' : 'none')),
+    end: normalizeTip(vector.endTip ?? (legacy === 'both' ? 'triangle' : legacy)),
     scale: vector.tipScale ?? 1,
   };
 }
 
+/** Distancia (unidades de usuario) que el cuerpo de la línea debe retroceder desde el vértice. */
+function tipInset(tip: LineTip, scale: number) {
+  if (tip === 'none') return 0;
+  return TIP_LENGTH * scale * VECTOR_STROKE_WIDTH * (tip === 'stealth' ? STEALTH_NOTCH : 1);
+}
+
 function tipMarker(id: string, tip: LineTip, scale: number) {
   if (tip === 'none') return '';
-  const shape = tip === 'circle'
-    ? '<circle cx="5" cy="5" r="3" fill="context-stroke"/>'
-    : `<path d="M0 0 L10 5 L0 10${tip === 'open' ? '' : 'Z'}" fill="${tip === 'open' ? 'none' : 'context-stroke'}" stroke="context-stroke" stroke-width="1"/>`;
-  return `<marker id="${id}" viewBox="0 0 10 10" refX="${tip === 'circle' ? 5 : 10}" refY="5" markerUnits="strokeWidth" markerWidth="${4 * scale}" markerHeight="${4 * scale}" orient="auto-start-reverse">${shape}</marker>`;
+  const L = TIP_LENGTH * scale;
+  const W = TIP_HALF_WIDTH * scale;
+  const d = tip === 'stealth'
+    ? `M 0,0 L ${-L},${-W} L ${-STEALTH_NOTCH * L},0 L ${-L},${W} Z`
+    : `M 0,0 L ${-L},${-W} L ${-L},${W} Z`;
+  return `<marker id="${id}" markerUnits="strokeWidth" markerWidth="1" markerHeight="1" refX="0" refY="0" orient="auto-start-reverse" overflow="visible">`
+    + `<path d="${d}" fill="context-stroke" stroke="context-stroke" stroke-width="0.01" stroke-linejoin="miter" stroke-miterlimit="10"/></marker>`;
+}
+
+/** Recorta el cuerpo de la línea en la muesca/base de cada punta, con corte recto. */
+function bodyClip(start: Vertex, end: Vertex, startInset: number, endInset: number) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (!length || (!startInset && !endInset)) return '';
+  const ux = dx / length;
+  const uy = dy / length;
+  const nx = -uy;
+  const ny = ux;
+  const from = Math.min(startInset, length);
+  const to = Math.max(from, length - endInset);
+  const half = 1e4;
+  const at = (t: number, k: number) => `${(start.x + ux * t + nx * k).toFixed(4)},${(start.y + uy * t + ny * k).toFixed(4)}`;
+  const points = [at(from, -half), at(to, -half), at(to, half), at(from, half)].join(' ');
+  return `<clipPath id="tip-clip" clipPathUnits="userSpaceOnUse"><polygon points="${points}"/></clipPath>`;
 }
 
 export function vectorSvg(vector: VectorGeometry, width: number, height: number) {
@@ -101,13 +139,15 @@ export function vectorSvg(vector: VectorGeometry, width: number, height: number)
     { x: width <= 1 ? 0.5 : reverseX ? 0 : width, y: height <= 1 ? 0.5 : reverseY ? 0 : height },
   ];
   const fill = `fill="${VECTOR_FILL}"`;
-  const stroke = `stroke="${VECTOR_STROKE}" stroke-width="${VECTOR_STROKE_WIDTH}" stroke-linecap="round"`;
+  const stroke = `stroke="${VECTOR_STROKE}" stroke-width="${VECTOR_STROKE_WIDTH}" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"`;
   const tips = lineTips(vector);
-  const markers = tool === 'line' || tool === 'arrow'
-    ? tipMarker('tip-start', tips.start, tips.scale) + tipMarker('tip-end', tips.end, tips.scale)
+  const linear = tool === 'line' || tool === 'arrow';
+  const clip = linear ? bodyClip(start, end, tipInset(tips.start, tips.scale), tipInset(tips.end, tips.scale)) : '';
+  const markers = linear
+    ? tipMarker('tip-start', tips.start, tips.scale) + tipMarker('tip-end', tips.end, tips.scale) + clip
     : '';
   const heads = markers ? `<defs>${markers}</defs>` : '';
-  const line = `<line x1="${start.x}" y1="${start.y}" x2="${end.x}" y2="${end.y}" ${stroke}${tips.start !== 'none' ? ' marker-start="url(#tip-start)"' : ''}${tips.end !== 'none' ? ' marker-end="url(#tip-end)"' : ''}/>`;
+  const line = `<line x1="${start.x}" y1="${start.y}" x2="${end.x}" y2="${end.y}" ${stroke}${tips.start !== 'none' ? ' marker-start="url(#tip-start)"' : ''}${tips.end !== 'none' ? ' marker-end="url(#tip-end)"' : ''}${clip ? ' clip-path="url(#tip-clip)"' : ''}/>`;
   const markup = {
     polygon: `<polygon points="${vector.vertices?.map(({ x, y }) => `${x},${y}`).join(' ') ?? ''}" ${fill}/>`,
     rectangle: `<rect width="${width}" height="${height}" ${fill}/>`,

@@ -3,7 +3,7 @@ import type { Project } from '../types';
 import { prepareSvg } from './svgImport';
 
 const number = z.number();
-const lineTip = z.enum(['none', 'triangle', 'open', 'circle']);
+const lineTip = z.enum(['none', 'stealth', 'right', 'triangle', 'open', 'circle']);
 const vertex = z.object({ x: number, y: number });
 const positive = number.positive();
 const nonnegative = number.nonnegative();
