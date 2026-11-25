@@ -3,6 +3,7 @@ import type { Project } from '../types';
 import { prepareSvg } from './svgImport';
 
 const number = z.number();
+const lineTip = z.enum(['none', 'triangle', 'open', 'circle']);
 const vertex = z.object({ x: number, y: number });
 const positive = number.positive();
 const nonnegative = number.nonnegative();
@@ -22,6 +23,8 @@ const object2D = z.object({
     tool: z.enum(['rectangle', 'ellipse', 'line', 'arrow', 'text', 'polygon']),
     reverseX: z.boolean().optional(), reverseY: z.boolean().optional(),
     tip: z.enum(['triangle', 'open', 'both', 'none']).optional(), text: z.string().optional(),
+    startTip: lineTip.optional(), endTip: lineTip.optional(),
+    tipScale: number.min(0.5).max(3).optional(), endpoints: z.tuple([vertex, vertex]).optional(),
     textStyle: z.object({
       fontFamily: z.enum(['Inter', 'Space Grotesk', 'Lora', 'Playfair Display', 'Great Vibes', 'Dancing Script']),
       fontWeight: z.union([z.literal(400), z.literal(600), z.literal(700)]), italic: z.boolean(),
@@ -41,7 +44,8 @@ const fillGradient = z.object({
 });
 const style = z.object({
   fill: paint.optional(), fillGradient: fillGradient.optional(), stroke: paint.optional(), strokeWidth: nonnegative.optional(),
-  lineStyle: z.enum(['solid', 'dotted']).optional(), opacity: number.min(0).max(1).optional(),
+  lineStyle: z.enum(['solid', 'dashed', 'dotted']).optional(),
+  dashGap: positive.optional(), lineCap: z.enum(['butt', 'round']).optional(), opacity: number.min(0).max(1).optional(),
   vertices: z.array(vertex).min(2).max(2048).optional(),
   scale: positive.optional(), tx: number.optional(), ty: number.optional(),
 });

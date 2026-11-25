@@ -125,6 +125,7 @@ export function clipLabel(clip: Pick<Clip, 'type' | 'targetId' | 'parameters'>):
 
 export type VectorTool = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'polygon';
 export type ArrowTip = 'triangle' | 'open' | 'both' | 'none';
+export type LineTip = Exclude<ArrowTip, 'both'> | 'circle';
 export interface Vertex { x: number; y: number }
 
 export type FontId = 'Inter' | 'Space Grotesk' | 'Lora' | 'Playfair Display' | 'Great Vibes' | 'Dancing Script';
@@ -169,6 +170,10 @@ export interface VectorGeometry {
   reverseX?: boolean;
   reverseY?: boolean;
   tip?: ArrowTip;
+  startTip?: LineTip;
+  endTip?: LineTip;
+  tipScale?: number;
+  endpoints?: [Vertex, Vertex];
   text?: string;
   textStyle?: TextStyle;
   vertices?: Vertex[];
@@ -227,7 +232,9 @@ export interface NodeStyle {
   fillGradient?: FillGradient;
   stroke?: string;
   strokeWidth?: number;
-  lineStyle?: 'solid' | 'dotted';
+  lineStyle?: 'solid' | 'dashed' | 'dotted';
+  dashGap?: number;
+  lineCap?: 'butt' | 'round';
   opacity?: number;
   vertices?: Vertex[];
   /** Solo nodos hijos; la escala de un objeto raíz vive en el propio objeto. */

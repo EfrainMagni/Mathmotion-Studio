@@ -1,4 +1,4 @@
-import { STAGE_SIZES, type Box, type Clip, type Obj2D, type Project, type Vertex } from '../types';
+import { STAGE_SIZES, type Box, type Clip, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
 import { gradientId, gradientMarkup } from './vector';
 import { SELECTABLE_SHAPES } from './svgImport';
@@ -472,36 +472,45 @@ export class SceneRuntime {
     return objId;
   }
 
-  getVertexTarget(id: string) {
+  getVertexTarget(id: string, linesOnly = false) {
     const node = this.nodes.get(id);
     if (!node) return null;
     const object = this.project?.objects.find((entry) => entry.id === node.objId);
     if (!object || object.kind === 'formula') return null;
     const svg = this.objs.get(node.objId)?.svg;
+    const linear = object.vector?.tool === 'line' || object.vector?.tool === 'arrow';
+    if (linear) {
+      const element = svg?.querySelector('line');
+      const matrix = element?.getScreenCTM();
+      const points = element && vertexGeometry(element);
+      return matrix && points?.length === 2 ? { id: object.id, native: object, points, matrix, linear: true } : null;
+    }
     const native = object.vector?.tool === 'polygon' || object.vector?.tool === 'rectangle';
-    if (native) {
+    if (native && !linesOnly) {
       const element = svg?.querySelector<SVGGraphicsElement>('polygon, rect');
       const matrix = element?.getScreenCTM();
       if (!matrix) return null;
       const points = object.vector?.vertices ?? [
         { x: 0, y: 0 }, { x: object.bw, y: 0 }, { x: object.bw, y: object.bh }, { x: 0, y: object.bh },
       ];
-      return { id: object.id, native: object, points, matrix };
+      return { id: object.id, native: object, points, matrix, linear: false };
     }
     if (object.vector) return null;
     const element = (node.isRoot ? svg : node.el) as SVGGraphicsElement | undefined;
     if (!element) return null;
-    const candidates = [element, ...element.querySelectorAll<SVGGraphicsElement>('polygon, polyline, line, path')];
+    const candidates = [element, ...element.querySelectorAll<SVGGraphicsElement>(
+      linesOnly ? 'line' : 'polygon, polyline, line, path',
+    )];
     const editable = candidates.flatMap((candidate) => {
       const target = candidate.getAttribute('data-mm-id');
-      if (!target || !this.nodes.has(target)) return [];
+      if (!target || !this.nodes.has(target) || (linesOnly && candidate.localName !== 'line')) return [];
       const points = vertexGeometry(candidate);
       return points && points.length <= 2048 ? [{ target, candidate, points }] : [];
     });
     if (editable.length !== 1) return null;
     const leaf = editable[0];
     const matrix = leaf.candidate.getScreenCTM();
-    return matrix ? { id: leaf.target, native: null, points: leaf.points, matrix } : null;
+    return matrix ? { id: leaf.target, native: null, points: leaf.points, matrix, linear: leaf.candidate.localName === 'line' } : null;
   }
 
   stageDeltaForNode(id: string, x: number, y: number) {
@@ -520,8 +529,9 @@ export class SceneRuntime {
     const n = this.nodes.get(id);
     if (n) {
       const svg = n.isRoot ? this.objs.get(id)?.svg : undefined;
-      const polygon = this.project?.objects.some((object) => object.id === id && object.vector?.tool === 'polygon');
-      const el = (polygon && svg?.querySelector('polygon')) || svg || n.el;
+      const tool = this.project?.objects.find((object) => object.id === id)?.vector?.tool;
+      const geometry = tool === 'line' || tool === 'arrow' ? 'line' : tool === 'polygon' ? 'polygon' : null;
+      const el = (geometry && svg?.querySelector(geometry)) || svg || n.el;
       const r = el.getBoundingClientRect();
       const sr = this.els.stage.getBoundingClientRect();
       if (!sr.width || !sr.height) return null;
@@ -889,7 +899,8 @@ export class SceneRuntime {
     // 1) overrides de pintura del inspector (el más profundo gana)
     this.syncGradients(p);
     const styled = Object.entries(p.styles)
-      .filter(([, s]) => s.fill !== undefined || s.fillGradient !== undefined || s.stroke !== undefined || s.strokeWidth !== undefined || s.lineStyle !== undefined)
+      .filter(([, s]) => s.fill !== undefined || s.fillGradient !== undefined || s.stroke !== undefined || s.strokeWidth !== undefined ||
+        s.lineStyle !== undefined || s.dashGap !== undefined || s.lineCap !== undefined)
       .map(([id]) => this.nodes.get(id))
       .filter((n): n is NodeRec => !!n);
     const depth = (n: NodeRec) => {
@@ -902,6 +913,7 @@ export class SceneRuntime {
       return d;
     };
     styled.sort((a, b) => depth(a) - depth(b));
+    const patterns = new Map<Element, Pick<NodeStyle, 'lineStyle' | 'dashGap' | 'lineCap'>>();
     for (const n of styled) {
       const s = p.styles[n.id];
       for (const el of this.geomsOf(n)) {
@@ -912,12 +924,25 @@ export class SceneRuntime {
         else if (s.fill !== undefined) pr.fill = s.fill;
         if (s.stroke !== undefined && !(gradient && this.gradientOnStroke(n))) pr.stroke = s.stroke;
         if (s.strokeWidth !== undefined) pr['stroke-width'] = String(s.strokeWidth);
-        if (s.lineStyle) {
-          const width = Number(pr['stroke-width'] ?? this.geomInfo(el).sw) || 1;
-          pr['stroke-dasharray'] = s.lineStyle === 'dotted' ? `0 ${width * 2.5}` : 'none';
-          if (s.lineStyle === 'dotted') pr['stroke-linecap'] = 'round';
-          else delete pr['stroke-linecap'];
+        if (s.lineStyle || s.dashGap !== undefined || s.lineCap) {
+          const pattern = patterns.get(el) ?? {};
+          if (s.lineStyle) pattern.lineStyle = s.lineStyle;
+          if (s.dashGap !== undefined) pattern.dashGap = s.dashGap;
+          if (s.lineCap) pattern.lineCap = s.lineCap;
+          patterns.set(el, pattern);
         }
+      }
+    }
+    for (const [el, { lineStyle, dashGap, lineCap }] of patterns) {
+      const pr = P(el);
+      const cap = lineCap ?? (lineStyle === 'dotted' ? 'round' : undefined);
+      if (cap) pr['stroke-linecap'] = cap;
+      if (lineStyle === 'solid') pr['stroke-dasharray'] = 'none';
+      if (lineStyle === 'dashed' || lineStyle === 'dotted') {
+        const width = Number(pr['stroke-width'] ?? this.geomInfo(el).sw) || 1;
+        const dashed = lineStyle === 'dashed';
+        const mark = dashed ? 3 * width : cap === 'butt' ? Math.max(1, width * 0.2) : 0;
+        pr['stroke-dasharray'] = `${mark} ${dashGap ?? width * (dashed ? 2 : 2.5)}`;
       }
     }
 
