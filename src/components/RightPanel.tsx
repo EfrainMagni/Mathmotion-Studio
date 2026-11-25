@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
 import {
-  DEFAULT_TEXT_STYLE, FONT_CATALOG, SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
+  DEFAULT_TEXT_STYLE, FONT_CATALOG, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
   glyphTransformParams,
-  type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type Obj2D, type SoundId, type TextAlign, type TextStyle,
+  type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
 import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
@@ -312,7 +312,7 @@ function Inspector() {
         </div>
       </div>
 
-      {paint ? (
+      {obj.plane ? null : paint ? (
         <>
           <GradientControls selection={selection} gradient={style.fillGradient} solidHex={toHex(fill)} />
           {(!style.fillGradient || style.fillGradient.mode === 'solid') && (
@@ -442,6 +442,135 @@ function Inspector() {
           Restablecer estilo y posición
         </button>
       )}
+    </Section>
+  );
+}
+
+// ------------------------------------------------------------------ plano cartesiano
+
+const compact = 'min-h-5 w-full rounded border border-bezel bg-ink-900 px-1 py-0 text-[11px] text-slate-100 outline-none focus:border-accent disabled:opacity-40';
+const colorInput = 'h-5 w-8 shrink-0 cursor-pointer rounded border border-bezel bg-transparent disabled:opacity-30';
+
+function Mini({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="flex min-w-0 flex-col gap-0.5 text-[10px] text-slate-400">
+      <span className="truncate">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-1 text-[11px] text-slate-300">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /> {label}
+    </label>
+  );
+}
+
+const PLANE_HEADING = 'pt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500';
+
+/** Inspector del plano cartesiano (`NumberPlane`): intervalos, ejes y flechas, cuadrícula, números y marcas. */
+function PlaneInspector() {
+  const object = useStore((s) => {
+    const id = s.ui.selection;
+    return id && !id.includes('.') ? s.project.objects.find((o) => o.id === id && o.plane) ?? null : null;
+  });
+  if (!object?.plane) return null;
+  const p = object.plane;
+  const set = (patch: Partial<PlaneGeometry>) => actions.editPlane(object, patch);
+  const n = (label: string, key: keyof PlaneGeometry, extra: { min?: number; max?: number; step?: number } = {}) => (
+    <Mini label={label}>
+      <NumberInput className={compact} ariaLabel={label} value={p[key] as number} step={extra.step ?? 0.5}
+        min={extra.min} max={extra.max} onChange={(value) => set({ [key]: value })} />
+    </Mini>
+  );
+  const eps = 0.001;
+  return (
+    <Section title="Plano cartesiano">
+      <div className={PLANE_HEADING}>Intervalos</div>
+      <div className="grid grid-cols-3 gap-1">
+        {n('X mín', 'xMin', { max: p.xMax - eps })}
+        {n('X máx', 'xMax', { min: p.xMin + eps })}
+        {n('Paso X', 'xStep', { min: eps, step: 0.25 })}
+        {n('Y mín', 'yMin', { max: p.yMax - eps })}
+        {n('Y máx', 'yMax', { min: p.yMin + eps })}
+        {n('Paso Y', 'yStep', { min: eps, step: 0.25 })}
+        {n('Subdiv.', 'subdivisions', { min: 1, max: 10, step: 1 })}
+        {n('Ancho', 'width', { min: 20, step: 10 })}
+        {n('Alto', 'height', { min: 20, step: 10 })}
+      </div>
+
+      <div className={PLANE_HEADING}>Ejes y flechas</div>
+      <div className="flex items-center justify-between gap-2">
+        <Toggle label="Mostrar ejes" checked={p.showAxes} onChange={(showAxes) => set({ showAxes })} />
+        <input type="color" className={colorInput} aria-label="Color de ejes" value={p.axisColor}
+          onChange={(event) => set({ axisColor: event.target.value })} />
+        <NumberInput className={`${compact} w-12`} ariaLabel="Grosor de ejes" value={p.axisWidth} min={0} step={0.2}
+          onChange={(axisWidth) => set({ axisWidth })} />
+      </div>
+      <Field label="Puntas">
+        <select className={compact} aria-label="Puntas de flecha" value={p.arrowTips}
+          onChange={(event) => set({ arrowTips: event.target.value as PlaneArrowTips })}>
+          <option value="positive">Positivas</option>
+          <option value="both">Ambos lados</option>
+          <option value="none">Sin puntas</option>
+        </select>
+      </Field>
+      <div className="flex items-center gap-1.5">
+        <Toggle label="Etiquetas" checked={p.showAxisLabels} onChange={(showAxisLabels) => set({ showAxisLabels })} />
+        <input className={compact} aria-label="Etiqueta del eje x" value={p.xLabel} maxLength={12} disabled={!p.showAxisLabels}
+          onChange={(event) => set({ xLabel: event.target.value })} />
+        <input className={compact} aria-label="Etiqueta del eje y" value={p.yLabel} maxLength={12} disabled={!p.showAxisLabels}
+          onChange={(event) => set({ yLabel: event.target.value })} />
+      </div>
+
+      <div className={PLANE_HEADING}>Cuadrícula</div>
+      {([
+        ['Principal', 'showGrid', 'gridColor', 'gridWidth', 'gridOpacity'],
+        ['Subcuadrícula', 'showSubGrid', 'subGridColor', 'subGridWidth', 'subGridOpacity'],
+      ] as const).map(([label, show, color, width, opacity]) => (
+        <div key={show} className="space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <Toggle label={label} checked={p[show]} onChange={(value) => set({ [show]: value })} />
+            <input type="color" className={colorInput} aria-label={`Color de ${label.toLowerCase()}`} value={p[color]}
+              onChange={(event) => set({ [color]: event.target.value })} />
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            <Mini label="Grosor">
+              <NumberInput className={compact} ariaLabel={`Grosor de ${label.toLowerCase()}`} value={p[width]} min={0} step={0.1}
+                onChange={(value) => set({ [width]: value })} />
+            </Mini>
+            <Mini label="Opacidad (%)">
+              <NumberInput className={compact} ariaLabel={`Opacidad de ${label.toLowerCase()}`} value={p[opacity] * 100} min={0} max={100} step={5}
+                onChange={(value) => set({ [opacity]: value / 100 })} />
+            </Mini>
+          </div>
+        </div>
+      ))}
+      <button className={btn} onClick={() => set({ ...PLANE_STYLE_3B1B })}
+        title="Restaura los colores clásicos cian / blanco de 3Blue1Brown">
+        Estilo 3B1B
+      </button>
+
+      <div className={PLANE_HEADING}>Números y marcas</div>
+      <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+        <Toggle label="Marcas (ticks)" checked={p.showTicks} onChange={(showTicks) => set({ showTicks })} />
+        <Toggle label="Números" checked={p.showNumbers} onChange={(showNumbers) => set({ showNumbers })} />
+        <Toggle label="Mostrar 0 en origen" checked={p.showOriginZero} onChange={(showOriginZero) => set({ showOriginZero })} />
+      </div>
+      <div className="grid grid-cols-3 gap-1">
+        <Mini label="Largo marca">
+          <NumberInput className={compact} ariaLabel="Largo de marca" value={p.tickLength} min={0} step={1} onChange={(tickLength) => set({ tickLength })} />
+        </Mini>
+        <Mini label="Tamaño núm.">
+          <NumberInput className={compact} ariaLabel="Tamaño de números" value={p.numberSize} min={4} step={1} onChange={(numberSize) => set({ numberSize })} />
+        </Mini>
+        <Mini label="Color núm.">
+          <input type="color" className={colorInput} aria-label="Color de números" value={p.numberColor}
+            onChange={(event) => set({ numberColor: event.target.value })} />
+        </Mini>
+      </div>
     </Section>
   );
 }
@@ -907,6 +1036,7 @@ export function RightPanel() {
   return (
     <aside className="scroll-thin w-[248px] shrink-0 overflow-y-auto border-l border-bezel bg-ink-800">
       <Inspector />
+      <PlaneInspector />
       <GlyphPanel />
       <Animations />
       <EquationAnimations />

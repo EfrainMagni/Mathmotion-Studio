@@ -19,6 +19,8 @@ import {
 const PAINT_SEL = 'path,line,circle,ellipse,rect,polyline,polygon,text';
 const NON_RENDERED_SEL = 'defs,clipPath,mask,pattern,symbol,marker';
 const GEOM_TAGS = new Set(['path', 'line', 'circle', 'ellipse', 'rect', 'polyline', 'polygon']);
+/** Ventanas de `Create` de un plano cartesiano (fracción del clip): cuadrícula → ejes → números. */
+const PLANE_PHASES: Record<string, [number, number]> = { grid: [0, 0.55], axis: [0.35, 0.8], label: [0.6, 0.95] };
 
 type Props = Record<string, string>;
 
@@ -462,7 +464,7 @@ export class SceneRuntime {
     if (!wrapper) return null;
     const objId = wrapper.dataset.mmObj!;
     const rec = this.objs.get(objId);
-    if (!rec || rec.kind === 'formula' || shift || this.project?.objects.some((o) => o.id === objId && o.vector)) return objId;
+    if (!rec || rec.kind === 'formula' || shift || this.project?.objects.some((o) => o.id === objId && (o.vector || o.plane))) return objId;
     let el: Element | null = target;
     while (el && el !== rec.svg) {
       const id = el.getAttribute('data-mm-id');
@@ -495,7 +497,7 @@ export class SceneRuntime {
       ];
       return { id: object.id, native: object, points, matrix, linear: false };
     }
-    if (object.vector) return null;
+    if (object.vector || object.plane) return null;
     const element = (node.isRoot ? svg : node.el) as SVGGraphicsElement | undefined;
     if (!element) return null;
     const candidates = [element, ...element.querySelectorAll<SVGGraphicsElement>(
@@ -1131,11 +1133,27 @@ export class SceneRuntime {
       const lag = st.lag;
       const win = count > 1 ? (lag !== null ? 0.8 / (1 + (count - 1) * lag) : 0.5) : 0.8;
       const stagger = count > 1 ? (lag !== null ? lag * win : (0.8 - win) / (count - 1)) : 0;
+      // Plano cartesiano: `Create(plane)` revela la cuadrícula, luego los ejes con sus marcas y al final los números.
+      const planeCounts: Record<string, number> = {};
+      const planeSlots = n.isRoot && this.project?.objects.some((o) => o.id === id && o.plane)
+        ? geoms.map((el) => {
+            const phase = el.closest('[data-mm-phase]')?.getAttribute('data-mm-phase') ?? 'grid';
+            planeCounts[phase] = (planeCounts[phase] ?? 0) + 1;
+            return { phase, index: planeCounts[phase] - 1 };
+          })
+        : null;
       geoms.forEach((el, k) => {
         // En fórmulas el escalonado es por glifo (como los submobjects de MathTex).
         const i = glyphCount ? Number(el.closest('[data-mm-glyph]')?.getAttribute('data-mm-glyph') ?? k) : k;
         const info = this.geomInfo(el);
-        const ps = clamp01((st.draw! - i * stagger) / win);
+        let ps = clamp01((st.draw! - i * stagger) / win);
+        if (planeSlots) {
+          const { phase, index } = planeSlots[k];
+          const [from, to] = PLANE_PHASES[phase] ?? PLANE_PHASES.grid;
+          const lag = 0.12;
+          const slice = 1 / (1 + (planeCounts[phase] - 1) * lag);
+          ps = clamp01((clamp01((st.draw! - from) / (to - from)) - index * lag * slice) / slice);
+        }
         const pf = clamp01((st.draw! - 0.8) / 0.2);
         const pr = P(el);
         if (info.isText) {
