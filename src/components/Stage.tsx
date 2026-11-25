@@ -10,7 +10,7 @@ import { PolygonOptions } from './PolygonOptions';
 type Drag =
   | { kind: 'root'; id: string; sx: number; sy: number; ox: number; oy: number }
   | { kind: 'child'; id: string; sx: number; sy: number; ox: number; oy: number; inv: DOMMatrix }
-  | { kind: 'vertex'; id: string; native: Obj2D | null; index: number; points: Vertex[]; start: Vertex; inverse: DOMMatrix };
+  | { kind: 'vertex'; id: string; native: Obj2D | null; index: number; points: Vertex[]; start: Vertex; inverse: DOMMatrix; matrix: DOMMatrix; linear: boolean };
 
 type Sketch = { start: Vertex; end: Vertex; vector: VectorGeometry; constrain: boolean; polygonSides: number };
 
@@ -63,9 +63,11 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const recPhase = useStore((s) => s.ui.recording.phase);
   const vectorTool = useStore((s) => s.ui.vectorTool);
   const direct = useStore((s) => s.ui.pointerTool === 'direct');
-  const anchorProject = useStore((s) => s.ui.pointerTool === 'direct' ? s.project : null);
-  const treeVersion = useStore((s) => s.ui.pointerTool === 'direct' ? s.ui.treeVersion : 0);
-  const time = useStore((s) => s.ui.pointerTool === 'direct' && !s.ui.playing ? s.ui.time : 0);
+  const anchorsEnabled = useStore((s) => !!s.ui.selection && !s.ui.vectorTool && !s.ui.termEdit &&
+    !s.ui.playing && s.ui.recording.phase === 'idle' && s.ui.pointerTool !== 'hand');
+  const anchorProject = useStore((s) => anchorsEnabled ? s.project : null);
+  const treeVersion = useStore((s) => anchorsEnabled ? s.ui.treeVersion : 0);
+  const time = useStore((s) => anchorsEnabled ? s.ui.time : 0);
   const showGuides = useStore((s) => s.ui.showGuides);
   const selection = useStore((s) => s.ui.selection);
   const termEdit = useStore((s) => s.ui.termEdit);
@@ -166,7 +168,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   }, [W, H]);
 
   useLayoutEffect(() => {
-    const target = direct && !hideUi && selection ? engine.runtime?.getVertexTarget(selection) : null;
+    const target = anchorsEnabled && selection ? engine.runtime?.getVertexTarget(selection, !direct) : null;
     if (!target) {
       setAnchors((previous) => previous.length ? [] : previous);
       return;
@@ -177,7 +179,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       const client = transformVertex(target.matrix, x, y);
       return { x: (client.x - rect.left) * W / rect.width, y: (client.y - rect.top) * H / rect.height };
     }));
-  }, [direct, hideUi, selection, anchorProject, treeVersion, time, W, H, k, viewportScale]);
+  }, [direct, anchorsEnabled, selection, anchorProject, treeVersion, time, W, H, k, viewportScale]);
 
   useEffect(() => setActiveAnchor(null), [selection, direct]);
 
@@ -210,8 +212,8 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       return;
     }
 
-    if (ui.pointerTool === 'direct' && e.target instanceof HTMLElement && e.target.dataset.vertexIndex !== undefined && ui.selection) {
-      const target = rt.getVertexTarget(ui.selection);
+    if (!ui.termEdit && e.target instanceof HTMLElement && e.target.dataset.vertexIndex !== undefined && ui.selection) {
+      const target = rt.getVertexTarget(ui.selection, ui.pointerTool !== 'direct');
       const index = Number(e.target.dataset.vertexIndex);
       if (!target || !target.points[index]) return;
       const inverse = target.matrix.inverse();
@@ -219,7 +221,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       setActiveAnchor(index);
       dragRef.current = {
         kind: 'vertex', id: target.id, native: target.native, points: target.points, index,
-        start: transformVertex(inverse, e.clientX, e.clientY), inverse,
+        start: transformVertex(inverse, e.clientX, e.clientY), inverse, matrix: target.matrix, linear: target.linear,
       };
       return;
     }
@@ -307,17 +309,32 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   function moveVertex(drag: Extract<Drag, { kind: 'vertex' }>, event: PointerEvent, group: symbol) {
     const point = transformVertex(drag.inverse, event.clientX, event.clientY);
     const from = drag.points[drag.index];
-    const edited = { x: from.x + (point.x - drag.start.x), y: from.y + (point.y - drag.start.y) };
+    let edited = { x: from.x + (point.x - drag.start.x), y: from.y + (point.y - drag.start.y) };
+    if (drag.linear && event.shiftKey && (point.x !== drag.start.x || point.y !== drag.start.y)) {
+      const other = drag.points[1 - drag.index];
+      const fixed = transformVertex(drag.matrix, other.x, other.y);
+      const moved = transformVertex(drag.matrix, edited.x, edited.y);
+      const dx = moved.x - fixed.x;
+      const dy = moved.y - fixed.y;
+      const step = Math.PI / 4;
+      const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+      const length = Math.hypot(dx, dy);
+      edited = transformVertex(drag.inverse, fixed.x + length * Math.cos(angle), fixed.y + length * Math.sin(angle));
+    }
     if (!Number.isFinite(edited.x) || !Number.isFinite(edited.y)) return;
     const current = store.getState().project;
     const object = current.objects.find((entry) => entry.id === drag.id);
-    const existing = drag.native && object ? object.vector?.vertices : current.styles[drag.id]?.vertices;
+    const existing = drag.native && object
+      ? drag.linear ? object.vector?.endpoints : object.vector?.vertices
+      : current.styles[drag.id]?.vertices;
     // Un clic sobre el ancla por sí solo no cambia la geometría.
     const previous = existing?.[drag.index] ?? from;
     if (edited.x === previous.x && edited.y === previous.y) return;
     const points = drag.points.map((vertex, index) => index === drag.index ? edited : vertex);
-    if (drag.native && object) actions.editVector(object, { tool: 'polygon', vertices: points }, group);
-    else if (!drag.native) actions.setStyle(drag.id, { vertices: points }, group);
+    if (drag.native && object) {
+      if (drag.linear) actions.editVector(object, { endpoints: [points[0], points[1]] }, group);
+      else actions.editVector(object, { tool: 'polygon', vertices: points }, group);
+    } else if (!drag.native) actions.setStyle(drag.id, { vertices: points }, group);
   }
 
   const endDrag = (event: React.PointerEvent) => {
@@ -430,7 +447,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
                     }} />
                 );
               })}
-              {direct && anchors.map((vertex, index) => (
+              {anchorsEnabled && anchors.map((vertex, index) => (
                 <span key={index} data-vertex-index={index} title={`Vértice ${index + 1}`}
                   className={`pointer-events-auto absolute cursor-move border border-accent ${activeAnchor === index ? 'bg-accent' : 'bg-white'}`}
                   style={{ left: vertex.x - anchorSize / 2, top: vertex.y - anchorSize / 2,

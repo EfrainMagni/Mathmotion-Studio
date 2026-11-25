@@ -4,12 +4,12 @@ import { actions, store, useStore } from '../store';
 import {
   DEFAULT_TEXT_STYLE, FONT_CATALOG, SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
   glyphTransformParams,
-  type ClipType, type FillGradient, type FontId, type FontWeight, type Obj2D, type SoundId, type TextAlign, type TextStyle,
+  type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type Obj2D, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
 import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
 import { preloadFont } from '../engine/fonts';
-import { GRADIENT_PRESETS, gradientCss, makeGradient, newStopId } from '../engine/vector';
+import { GRADIENT_PRESETS, LINE_TIPS, gradientCss, lineTips, makeGradient, newStopId } from '../engine/vector';
 import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
 
 function toHex(css: string | undefined): string | null {
@@ -243,6 +243,32 @@ function TextTypography({ obj }: { obj: Obj2D }) {
   );
 }
 
+function LineTipFields({ object }: { object: Obj2D }) {
+  if (!object.vector) return null;
+  const tips = lineTips(object.vector);
+  const ends = [
+    { key: 'startTip', label: 'Punta Inicio', value: tips.start },
+    { key: 'endTip', label: 'Punta Fin', value: tips.end },
+  ] as const;
+
+  return (
+    <>
+      {ends.map(({ key, label, value }) => (
+        <Field key={key} label={label}>
+          <select className={input} aria-label={label} value={value}
+            onChange={(event) => actions.editVector(object, { [key]: event.target.value as LineTip })}>
+            {Object.entries(LINE_TIPS).map(([tip, name]) => <option key={tip} value={tip}>{name}</option>)}
+          </select>
+        </Field>
+      ))}
+      <Field label="Escala de punta">
+        <NumberInput className={`${input} w-20`} value={tips.scale} min={0.5} max={3} step={0.1}
+          onChange={(tipScale) => actions.editVector(object, { tipScale })} />
+      </Field>
+    </>
+  );
+}
+
 function Inspector() {
   const selection = useStore((s) => s.ui.selection);
   const project = useStore((s) => s.project);
@@ -321,13 +347,31 @@ function Inspector() {
             />
           </Field>
           <Field label="Estilo de línea">
-            <select className={input} value={style.lineStyle ?? ''} onChange={(event) => {
+            <select className={input} aria-label="Estilo de línea" value={style.lineStyle ?? ''} onChange={(event) => {
               const value = event.target.value;
-              actions.setStyle(selection, { lineStyle: value === 'solid' || value === 'dotted' ? value : undefined });
+              actions.setStyle(selection, { lineStyle: value === 'solid' || value === 'dashed' || value === 'dotted' ? value : undefined });
             }}>
               <option value="">Original</option>
-              <option value="solid">Sólida</option>
+              <option value="solid">Continua</option>
+              <option value="dashed">Discontinua (Guiones)</option>
               <option value="dotted">Punteada</option>
+            </select>
+          </Field>
+          {(style.lineStyle === 'dashed' || style.lineStyle === 'dotted') && (
+            <Field label="Separación (px)">
+              <NumberInput className={`${input} w-20`} min={0.1} step={0.5}
+                value={style.dashGap ?? (strokeWidth || 1) * (style.lineStyle === 'dashed' ? 2 : 2.5)}
+                onChange={(dashGap) => actions.setStyle(selection, { dashGap })} />
+            </Field>
+          )}
+          <Field label="Remate de extremo">
+            <select className={input} aria-label="Remate de extremo" value={style.lineCap ?? ''} onChange={(event) => {
+              const value = event.target.value;
+              actions.setStyle(selection, { lineCap: value === 'butt' || value === 'round' ? value : undefined });
+            }}>
+              <option value="">Original</option>
+              <option value="butt">Plano / Butt</option>
+              <option value="round">Redondeado / Round</option>
             </select>
           </Field>
         </>
@@ -340,19 +384,7 @@ function Inspector() {
           onChange={(value) => actions.setStyle(selection, { opacity: value / 100 })} />
       </Field>
 
-      {obj.vector?.tool === 'arrow' && (
-        <Field label="Punta de flecha">
-          <select className={input} value={obj.vector.tip ?? 'triangle'} onChange={(event) => {
-            const tip = event.target.value;
-            if (tip === 'triangle' || tip === 'open' || tip === 'both' || tip === 'none') actions.editVector(obj, { tip });
-          }}>
-            <option value="triangle">Triangular</option>
-            <option value="open">Abierta</option>
-            <option value="both">Ambos extremos</option>
-            <option value="none">Sin punta</option>
-          </select>
-        </Field>
-      )}
+      {(obj.vector?.tool === 'line' || obj.vector?.tool === 'arrow') && <LineTipFields object={obj} />}
       {obj.vector?.tool === 'text' && (
         <Field label="Contenido del texto">
           <input className={input} value={obj.vector.text ?? ''} maxLength={250}
@@ -405,7 +437,7 @@ function Inspector() {
       {!info.isRoot && (
         <button
           className={btn}
-          onClick={() => actions.setStyle(selection, { fill: undefined, stroke: undefined, strokeWidth: undefined, lineStyle: undefined, opacity: undefined, scale: undefined, tx: undefined, ty: undefined })}
+          onClick={() => actions.setStyle(selection, { fill: undefined, stroke: undefined, strokeWidth: undefined, lineStyle: undefined, dashGap: undefined, lineCap: undefined, opacity: undefined, scale: undefined, tx: undefined, ty: undefined })}
         >
           Restablecer estilo y posición
         </button>
