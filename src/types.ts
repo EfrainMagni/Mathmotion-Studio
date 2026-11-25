@@ -125,7 +125,9 @@ export function clipLabel(clip: Pick<Clip, 'type' | 'targetId' | 'parameters'>):
 
 export type VectorTool = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'polygon';
 export type ArrowTip = 'triangle' | 'open' | 'both' | 'none';
-export type LineTip = Exclude<ArrowTip, 'both'> | 'circle';
+export type LineTip = 'none' | 'stealth' | 'right';
+/** Valores de puntas de proyectos antiguos; se normalizan a `stealth` o `right` al leerlos. */
+export type LegacyLineTip = 'triangle' | 'open' | 'circle';
 export interface Vertex { x: number; y: number }
 
 export type FontId = 'Inter' | 'Space Grotesk' | 'Lora' | 'Playfair Display' | 'Great Vibes' | 'Dancing Script';
@@ -170,8 +172,8 @@ export interface VectorGeometry {
   reverseX?: boolean;
   reverseY?: boolean;
   tip?: ArrowTip;
-  startTip?: LineTip;
-  endTip?: LineTip;
+  startTip?: LineTip | LegacyLineTip;
+  endTip?: LineTip | LegacyLineTip;
   tipScale?: number;
   endpoints?: [Vertex, Vertex];
   text?: string;
