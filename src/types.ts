@@ -245,6 +245,26 @@ export interface PlaneGeometry {
   points?: PlanePoint[];
 }
 
+/** Sub-elemento de un plano al que apunta un clip (`parameters.subElementId`): `plot:<id>` o `point:<id>`. */
+export const PLANE_SUB_ID = /^(plot|point):([a-z]{1,3}\d{1,6})$/;
+
+export function planeSubElementOf(clip: Pick<Clip, 'parameters'>): { kind: 'plot' | 'point'; id: string } | null {
+  const raw = clip.parameters.subElementId;
+  const match = typeof raw === 'string' ? PLANE_SUB_ID.exec(raw) : null;
+  return match ? { kind: match[1] as 'plot' | 'point', id: match[2] } : null;
+}
+
+/** Nombre legible del sub-elemento de un plano (para la línea de tiempo): `f(x) = x^2` o `Punto (2, 2)`. */
+export function planeSubLabel(plane: PlaneGeometry | undefined, sub: { kind: 'plot' | 'point'; id: string }): string {
+  const round = (value: number) => String(Number(value.toFixed(2)));
+  if (sub.kind === 'plot') {
+    const plot = plane?.plots?.find((entry) => entry.id === sub.id);
+    return plot ? `f(x) = ${plot.expression.trim() || '…'}` : 'f(x) (eliminada)';
+  }
+  const point = plane?.points?.find((entry) => entry.id === sub.id);
+  return point ? `Punto${point.label ? ` ${point.label}` : ''} (${round(point.x)}, ${round(point.y)})` : 'Punto (eliminado)';
+}
+
 /** Colores clásicos 3Blue1Brown (cuadrícula principal, subcuadrícula, ejes). */
 export const PLANE_STYLE_3B1B = {
   gridColor: '#58C4DD', gridOpacity: 0.45, subGridColor: '#29ABCA', subGridOpacity: 0.18, axisColor: '#FFFFFF',

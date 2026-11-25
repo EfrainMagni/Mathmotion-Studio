@@ -1,4 +1,4 @@
-import { BACKGROUND_COLOR, STAGE_SIZES, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
+import { BACKGROUND_COLOR, STAGE_SIZES, planeSubElementOf, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
 import { svgWithVertices } from './vertices';
 import { expressionToPython, normalizePlane } from './cartesianPlane';
 import { clipGlyphs, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphRuns } from './glyphs';
@@ -171,17 +171,18 @@ function planeCode(object: Obj2D, style: NodeStyle, width: number, height: numbe
     if (!point.visible || point.x < plane.xMin || point.x > plane.xMax || point.y < plane.yMin || point.y > plane.yMax) continue;
     const id = `${name}_${point.id}`;
     const at = `${name}.c2p(${n(point.x)}, ${n(point.y)})`;
-    commands.push(`${id} = Dot(${at}, color=${color(point.color)}, radius=${n(point.radius * pxUnit)})`);
-    const parts = [id];
+    commands.push(`${id}_dot = Dot(${at}, color=${color(point.color)}, radius=${n(point.radius * pxUnit)})`);
+    const parts = [`${id}_dot`];
     if (point.showGuideLines) {
       commands.push(`${id}_lines = ${name}.get_lines_to_point(${at}, color=${color(point.color)}, stroke_width=1.4)`);
       parts.push(`${id}_lines`);
     }
     if (point.label) {
-      commands.push(`${id}_label = MathTex(${quoted(point.label)}, font_size=${n(Math.max(4, plane.numberSize * 1.3 * pxUnit * 100))}, color=${color(point.color)}).next_to(${id}, UR, buff=${n(3 * pxUnit)})`);
+      commands.push(`${id}_label = MathTex(${quoted(point.label)}, font_size=${n(Math.max(4, plane.numberSize * 1.3 * pxUnit * 100))}, color=${color(point.color)}).next_to(${id}_dot, UR, buff=${n(3 * pxUnit)})`);
       parts.push(`${id}_label`);
     }
-    commands.push(`${name}.add(${parts.join(', ')})`);
+    // El punto completo (círculo, líneas guía y etiqueta) es un VGroup: un clip lo anima como una unidad.
+    commands.push(`${id} = VGroup(${parts.join(', ')})`, `${name}.add(${id})`);
   }
   const opacity = style.opacity ?? 1;
   if (opacity !== 1) commands.push(`${name}.fade(${n(1 - opacity)})`);
@@ -248,6 +249,31 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
   commands.push(`${name}.${pivot ? 'shift' : 'move_to'}(${stagePoint(object, width, height)})`);
   if (info) commands.push(...glyphCommands(object, info));
   return commands;
+}
+
+/**
+ * Animación Manim de un clip dirigido a una gráfica (`o1_f1`) o a un punto (`o1_pt1`, VGroup con su círculo,
+ * líneas guía y etiqueta) de un plano. `null` si el elemento no existe o no se exportó.
+ */
+function planeSubAnimation(clip: Clip, plane: NonNullable<Obj2D['plane']>, variable: string, kind: 'plot' | 'point', id: string) {
+  const geometry = normalizePlane(plane);
+  const duration = `run_time=${n(clip.duration)}`;
+  if (kind === 'plot') {
+    const plot = geometry.plots?.find((entry) => entry.id === id);
+    if (!plot?.visible || !expressionToPython(plot.expression)) return null;
+    if (clip.type === 'draw') return `Create(${variable}, ${duration})`;
+    if (clip.type === 'appear') return `FadeIn(${variable}, ${duration})`;
+    if (clip.type === 'indicate') return `Indicate(${variable}, scale_factor=${n(typeof clip.parameters.scale === 'number' ? clip.parameters.scale : 1.3)}, color=${quoted(cssColor(String(clip.parameters.color)) ?? '#ffff00')}, ${duration})`;
+    return null;
+  }
+  const point = geometry.points?.find((entry) => entry.id === id);
+  if (!point?.visible || point.x < geometry.xMin || point.x > geometry.xMax || point.y < geometry.yMin || point.y > geometry.yMax) return null;
+  const bare = !point.showGuideLines && !point.label;
+  const grow = bare ? `GrowFromCenter(${variable}, ${duration})` : `GrowFromPoint(${variable}, ${variable}[0].get_center(), ${duration})`;
+  if (clip.type === 'draw' || (clip.type === 'appear' && clip.parameters.mode === 'pop')) return grow;
+  if (clip.type === 'appear') return `FadeIn(${variable}, ${duration})`;
+  if (clip.type === 'indicate') return `Indicate(${variable}, scale_factor=${n(typeof clip.parameters.scale === 'number' ? clip.parameters.scale : 1.3)}, color=${quoted(cssColor(String(clip.parameters.color)) ?? '#ffff00')}, ${duration})`;
+  return null;
 }
 
 function animation(clip: Clip, object: SceneObject, width: number, height: number, scoped?: string) {
@@ -448,6 +474,21 @@ export function generateManim(project: Project): { script: string; notes: string
   for (const clip of [...project.clips].sort((a, b) => a.start - b.start)) {
     const object = byId.get(clip.targetId.split('.')[0]);
     if (!object) continue;
+    const sub = planeSubElementOf(clip);
+    if (sub || clip.parameters.subElementId !== undefined) {
+      // Clip independiente de una gráfica o punto del plano (`Create(graph)`, `GrowFromCenter(dot)`…).
+      const code = sub && object.plane ? planeSubAnimation(clip, object.plane, `${object.id}_${sub.id}`, sub.kind, sub.id) : null;
+      if (!sub || !code) {
+        notes.add('Se omitieron clips de gráficas o puntos de un plano que ya no existen o no se exportan.');
+        continue;
+      }
+      const target = `${object.id}_${sub.id}`;
+      const start = Math.max(clip.start, ends.get(target) ?? 0);
+      if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
+      ends.set(target, start + clip.duration);
+      events.push({ start, time: clip.duration, id: target, code, entrance: clip.type === 'draw' || clip.type === 'appear', overlay: false, reveal: [] });
+      continue;
+    }
     const dg = directedOf.get(clip);
     if (dg) {
       const from = byId.get(dg.spec.sourceObjectId);

@@ -500,6 +500,21 @@ function OptionalNumber({ value, placeholder, label, onCommit }: {
   );
 }
 
+/** Crea un clip independiente para una gráfica o un punto del plano, en el instante actual del cabezal. */
+function addPlaneClip(object: Obj2D, subElementId: string, type: ClipType, duration: number, extra: Record<string, string> = {}) {
+  actions.addClip({
+    targetId: object.id, type, start: Math.round(store.getState().ui.time * 100) / 100, duration,
+    parameters: { ...extra, subElementId }, sound: null,
+  });
+}
+
+/** Quita los clips de un sub-elemento eliminado (el elemento se borra primero: un solo paso de historial). */
+function removePlaneClips(object: Obj2D, subElementId: string) {
+  for (const clip of store.getState().project.clips) {
+    if (clip.targetId === object.id && clip.parameters.subElementId === subElementId) actions.removeClip(clip.id);
+  }
+}
+
 const PLANE_HEADING = 'pt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500';
 
 /** Inspector del plano cartesiano (`NumberPlane`): intervalos, ejes y flechas, cuadrícula, números y marcas. */
@@ -618,7 +633,10 @@ function PlaneInspector() {
               <input type="color" className={colorInput} aria-label={`Color de ${plot.id}`} value={plot.color}
                 onChange={(event) => patch({ color: event.target.value })} />
               <button className="shrink-0 text-slate-400 hover:text-rose-300" title="Eliminar función" aria-label={`Eliminar ${plot.id}`}
-                onClick={() => set({ plots: (p.plots ?? []).filter((entry) => entry.id !== plot.id) })}>
+                onClick={() => {
+                  set({ plots: (p.plots ?? []).filter((entry) => entry.id !== plot.id) });
+                  removePlaneClips(object, `plot:${plot.id}`);
+                }}>
                 <Trash2 size={12} />
               </button>
             </div>
@@ -635,6 +653,12 @@ function PlaneInspector() {
               <Mini label="x hasta">
                 <OptionalNumber label={`x final de ${plot.id}`} placeholder={String(p.xMax)} value={plot.xEnd} onCommit={(xEnd) => patch({ xEnd })} />
               </Mini>
+            </div>
+            <div className="flex gap-1" role="group" aria-label={`Animar ${plot.id}`}>
+              <button className={`${btn} flex-1`} title="Crea un clip Create de esta gráfica en el cabezal"
+                onClick={() => addPlaneClip(object, `plot:${plot.id}`, 'draw', 1.5)}>Animar (Create)</button>
+              <button className={`${btn} flex-1`} title="Crea un clip Indicate de esta gráfica en el cabezal"
+                onClick={() => addPlaneClip(object, `plot:${plot.id}`, 'indicate', 1)}>Indicate</button>
             </div>
           </div>
         );
@@ -657,7 +681,10 @@ function PlaneInspector() {
               <input type="color" className={colorInput} aria-label={`Color de ${point.id}`} value={point.color}
                 onChange={(event) => patch({ color: event.target.value })} />
               <button className="shrink-0 text-slate-400 hover:text-rose-300" title="Eliminar punto" aria-label={`Eliminar ${point.id}`}
-                onClick={() => set({ points: (p.points ?? []).filter((entry) => entry.id !== point.id) })}>
+                onClick={() => {
+                  set({ points: (p.points ?? []).filter((entry) => entry.id !== point.id) });
+                  removePlaneClips(object, `point:${point.id}`);
+                }}>
                 <Trash2 size={12} />
               </button>
             </div>
@@ -671,6 +698,12 @@ function PlaneInspector() {
             </div>
             <Toggle label="Líneas guía a los ejes" checked={point.showGuideLines === true}
               onChange={(showGuideLines) => patch({ showGuideLines: showGuideLines || undefined })} />
+            <div className="flex gap-1" role="group" aria-label={`Animar ${point.id}`}>
+              <button className={`${btn} flex-1`} title="Crea un clip de brotar (Pop) de este punto en el cabezal"
+                onClick={() => addPlaneClip(object, `point:${point.id}`, 'appear', 0.6, { mode: 'pop' })}>Brotar (Pop)</button>
+              <button className={`${btn} flex-1`} title="Crea un clip Indicate de este punto en el cabezal"
+                onClick={() => addPlaneClip(object, `point:${point.id}`, 'indicate', 1)}>Indicate</button>
+            </div>
           </div>
         );
       })}
