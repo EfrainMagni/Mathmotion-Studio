@@ -1,6 +1,6 @@
 import { STAGE_SIZES, type Box, type Clip, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
-import { gradientId, gradientMarkup } from './vector';
+import { gradientId, gradientMarkup, lineTips, tipLayout } from './vector';
 import { SELECTABLE_SHAPES } from './svgImport';
 import {
   clipGlyphs, connectorPlan, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor,
@@ -773,7 +773,35 @@ export class SceneRuntime {
   private geomsOf(n: NodeRec): Element[] {
     const base = n.isRoot ? this.objs.get(n.id)!.svg : n.el;
     const list = base.matches(PAINT_SEL) ? [base] : Array.from(base.querySelectorAll(PAINT_SEL));
-    return list.filter((e) => !e.closest(NON_RENDERED_SEL));
+    return list.filter((e) => !e.closest(NON_RENDERED_SEL) && !e.hasAttribute('data-mm-tip'));
+  }
+
+  /**
+   * Puntas de líneas/flechas: polígonos sólidos sin trazo (nunca reciben dasharray ni grosor).
+   * Se recalculan con el grosor y el color efectivos del cuerpo y recortan el `<line>` en la muesca/base.
+   */
+  private syncTips(next: Map<Element, Props>, P: (el: Element) => Props) {
+    for (const object of this.project?.objects ?? []) {
+      const vector = object.vector;
+      if (!vector || (vector.tool !== 'line' && vector.tool !== 'arrow')) continue;
+      const svg = this.objs.get(object.id)?.svg;
+      const line = svg?.querySelector('line');
+      if (!svg || !line) continue;
+      const num = (k: string) => Number(line.getAttribute(k)) || 0;
+      const pr = next.get(line);
+      const sw = pr?.['stroke-width'] !== undefined ? parseFloat(pr['stroke-width']) : this.geomInfo(line).sw;
+      const layout = tipLayout({ x: num('x1'), y: num('y1') }, { x: num('x2'), y: num('y2') }, lineTips(vector), Number.isFinite(sw) && sw > 0 ? sw : 1);
+      const color = pr?.stroke ?? this.geomInfo(line).stroke;
+      for (const key of ['start', 'end'] as const) {
+        const tip = svg.querySelector(`[data-mm-tip="${key}"]`);
+        if (!tip) continue;
+        const points = layout[key];
+        if (points && tip.getAttribute('points') !== points) tip.setAttribute('points', points);
+        if (color) P(tip).fill = color;
+      }
+      const clip = svg.querySelector('clipPath polygon');
+      if (clip && layout.clip && clip.getAttribute('points') !== layout.clip) clip.setAttribute('points', layout.clip);
+    }
   }
 
   private geomInfo(el: Element): GeomInfo {
@@ -946,6 +974,8 @@ export class SceneRuntime {
       }
     }
 
+    this.syncTips(next, P);
+
     // 2) transformaciones, opacidad y resplandor por nodo hijo
     for (const id of childIds) {
       const n = this.nodes.get(id);
@@ -1095,6 +1125,7 @@ export class SceneRuntime {
       if (!n) continue;
       const geoms = this.geomsOf(n);
       if (!geoms.length) continue;
+      if (n.isRoot) this.objs.get(id)?.svg.querySelectorAll('[data-mm-tip]').forEach((tip) => mul(tip, 'fill-opacity', clamp01((st.draw! - 0.8) / 0.2), 1));
       const glyphCount = n.isRoot ? this.objs.get(id)?.glyphs.length ?? 0 : 0;
       const count = glyphCount || geoms.length;
       const lag = st.lag;
