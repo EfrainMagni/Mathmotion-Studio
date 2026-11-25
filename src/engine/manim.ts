@@ -1,6 +1,6 @@
 import { BACKGROUND_COLOR, STAGE_SIZES, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
 import { svgWithVertices } from './vertices';
-import { normalizePlane } from './cartesianPlane';
+import { expressionToPython, normalizePlane } from './cartesianPlane';
 import { clipGlyphs, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphRuns } from './glyphs';
 import { VECTOR_FILL, VECTOR_STROKE, VECTOR_STROKE_WIDTH } from './vector';
 
@@ -155,6 +155,33 @@ function planeCode(object: Obj2D, style: NodeStyle, width: number, height: numbe
       const label = (text: string) => (text.trim() ? `MathTex(${quoted(text.trim())}, font_size=${size}, color=${color(plane.axisColor)})` : 'VGroup()');
       commands.push(`${name}.add(${name}.get_axis_labels(x_label=${label(plane.xLabel)}, y_label=${label(plane.yLabel)}))`);
     }
+  }
+  // Gráficas y puntos se añaden al plano: heredan su posición, rotación y animaciones.
+  const pxUnit = object.scale * unit;
+  for (const plot of plane.plots ?? []) {
+    const body = plot.visible ? expressionToPython(plot.expression) : null;
+    const from = Math.max(plot.xStart ?? plane.xMin, plane.xMin);
+    const to = Math.min(plot.xEnd ?? plane.xMax, plane.xMax);
+    if (!body || !(to > from)) continue;
+    const id = `${name}_${plot.id}`;
+    commands.push(`${id} = ${name}.plot(lambda x: ${body}, x_range=[${n(from)}, ${n(to)}], color=${color(plot.color)}, stroke_width=${n(plot.width)})`, `${name}.add(${id})`);
+  }
+  for (const point of plane.points ?? []) {
+    // Igual que en el editor, los puntos fuera del rango del plano no se dibujan.
+    if (!point.visible || point.x < plane.xMin || point.x > plane.xMax || point.y < plane.yMin || point.y > plane.yMax) continue;
+    const id = `${name}_${point.id}`;
+    const at = `${name}.c2p(${n(point.x)}, ${n(point.y)})`;
+    commands.push(`${id} = Dot(${at}, color=${color(point.color)}, radius=${n(point.radius * pxUnit)})`);
+    const parts = [id];
+    if (point.showGuideLines) {
+      commands.push(`${id}_lines = ${name}.get_lines_to_point(${at}, color=${color(point.color)}, stroke_width=1.4)`);
+      parts.push(`${id}_lines`);
+    }
+    if (point.label) {
+      commands.push(`${id}_label = MathTex(${quoted(point.label)}, font_size=${n(Math.max(4, plane.numberSize * 1.3 * pxUnit * 100))}, color=${color(point.color)}).next_to(${id}, UR, buff=${n(3 * pxUnit)})`);
+      parts.push(`${id}_label`);
+    }
+    commands.push(`${name}.add(${parts.join(', ')})`);
   }
   const opacity = style.opacity ?? 1;
   if (opacity !== 1) commands.push(`${name}.fade(${n(1 - opacity)})`);
@@ -495,6 +522,7 @@ export function generateManim(project: Project): { script: string; notes: string
     events.push({ start: last, time: 0.05, id: ref, code: `FadeIn(${ref}, run_time=0.05)`, entrance: true, overlay: false, reveal: [] });
   }
   events.sort((a, b) => a.start - b.start);
+  if (project.objects.some((object) => object.plane?.plots?.length)) notes.add('Gráficas f(x): Manim no recorta al área del plano; las funciones con dominio restringido o asíntotas pueden requerir ajustar x_range o discontinuities.');
   if (project.objects.some((object) => object.plane)) notes.add('Planos cartesianos: se exportan como NumberPlane; el tamaño de los números y los grosores se aproximan a las unidades de Manim.');
   if (svg) notes.add('Los SVG se incrustan. Manim interpreta sus estilos y filtros según su compatibilidad.');
   if (project.voice || project.clips.some((clip) => clip.sound)) notes.add('El audio queda fuera del script.');

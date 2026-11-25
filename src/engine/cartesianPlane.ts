@@ -1,7 +1,8 @@
-import { DEFAULT_PLANE, type PlaneGeometry } from '../types';
+import { DEFAULT_PLANE, type PlaneGeometry, type PlanePlot, type PlanePoint } from '../types';
 
 /** Límite de líneas por dirección (cuadrícula principal + subcuadrícula): protege el DOM de rangos absurdos. */
 const MAX_LINES = 400;
+const PLOT_SAMPLES = 200;
 const HEX = /^#[\da-f]{3,8}$/i;
 const SERIF = `'STIX Two Text','Latin Modern Roman','Times New Roman',Georgia,serif`;
 
@@ -44,7 +45,251 @@ export function normalizePlane(input: Partial<PlaneGeometry> = {}): PlaneGeometr
   if (p.arrowTips !== 'both' && p.arrowTips !== 'positive' && p.arrowTips !== 'none') p.arrowTips = d.arrowTips;
   p.xLabel = p.xLabel.slice(0, 12);
   p.yLabel = p.yLabel.slice(0, 12);
+  const plots = normalizePlots(input.plots);
+  const points = normalizePoints(input.points);
+  if (plots.length) p.plots = plots;
+  else delete p.plots;
+  if (points.length) p.points = points;
+  else delete p.points;
   return p;
+}
+
+// ------------------------------------------------------------------ gráficas y puntos
+
+export const PLOT_COLORS = ['#FFFF00', '#83C167', '#FF8080', '#FC6255', '#58C4DD'];
+const ITEM_ID = /^[a-z]{1,3}\d{1,6}$/;
+const optionalNumber = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
+const hexOr = (value: unknown, fallback: string) => (typeof value === 'string' && HEX.test(value) ? value : fallback);
+
+/** Identificadores únicos con prefijo (`f1`, `pt2`…): se reasignan si faltan, son inválidos o están repetidos. */
+function uniqueId(raw: unknown, prefix: string, taken: Set<string>) {
+  if (typeof raw === 'string' && ITEM_ID.test(raw) && !taken.has(raw)) return raw;
+  let n = 1;
+  while (taken.has(`${prefix}${n}`)) n++;
+  return `${prefix}${n}`;
+}
+
+function normalizePlots(input: unknown): PlanePlot[] {
+  if (!Array.isArray(input)) return [];
+  const taken = new Set<string>();
+  const out: PlanePlot[] = [];
+  for (const item of input.slice(0, 50)) {
+    if (!item || typeof item !== 'object') continue;
+    const id = uniqueId(item.id, 'f', taken);
+    taken.add(id);
+    out.push({
+      id, expression: typeof item.expression === 'string' ? item.expression.slice(0, 200) : '',
+      color: hexOr(item.color, PLOT_COLORS[0]), width: clamp(finite(item.width, 3), 0.5, 40),
+      xStart: optionalNumber(item.xStart), xEnd: optionalNumber(item.xEnd), visible: item.visible !== false,
+    });
+  }
+  return out;
+}
+
+function normalizePoints(input: unknown): PlanePoint[] {
+  if (!Array.isArray(input)) return [];
+  const taken = new Set<string>();
+  const out: PlanePoint[] = [];
+  for (const item of input.slice(0, 200)) {
+    if (!item || typeof item !== 'object') continue;
+    const id = uniqueId(item.id, 'pt', taken);
+    taken.add(id);
+    out.push({
+      id, x: finite(item.x, 0), y: finite(item.y, 0), color: hexOr(item.color, '#FF8080'),
+      radius: clamp(finite(item.radius, 5), 1, 60),
+      label: typeof item.label === 'string' && item.label.trim() ? item.label.slice(0, 24) : undefined,
+      showGuideLines: item.showGuideLines === true ? true : undefined, visible: item.visible !== false,
+    });
+  }
+  return out;
+}
+
+const nextId = (items: { id: string }[] | undefined, prefix: string) =>
+  `${prefix}${(items ?? []).reduce((max, item) => Math.max(max, Number(item.id.replace(/\D/g, '')) || 0), 0) + 1}`;
+
+/** Gráfica nueva (recta `x` por defecto) con el siguiente color de la paleta. */
+export function newPlot(plane: PlaneGeometry): PlanePlot {
+  const plots = plane.plots ?? [];
+  return { id: nextId(plots, 'f'), expression: 'x', color: PLOT_COLORS[plots.length % PLOT_COLORS.length], width: 3, visible: true };
+}
+
+/** Punto nuevo en el origen (o en el centro del rango si el origen queda fuera). */
+export function newPoint(plane: PlaneGeometry): PlanePoint {
+  const p = normalizePlane(plane);
+  const inside = p.xMin <= 0 && p.xMax >= 0 && p.yMin <= 0 && p.yMax >= 0;
+  return {
+    id: nextId(p.points, 'pt'), x: inside ? 0 : clean((p.xMin + p.xMax) / 2), y: inside ? 0 : clean((p.yMin + p.yMax) / 2),
+    color: '#FF8080', radius: 5, visible: true,
+  };
+}
+
+// ------------------------------------------------------------------ evaluador matemático seguro (sin eval)
+
+type Ast =
+  | { t: 'num'; v: number }
+  | { t: 'const'; name: 'pi' | 'e' }
+  | { t: 'x' }
+  | { t: 'neg'; a: Ast }
+  | { t: 'bin'; op: '+' | '-' | '*' | '/' | '^'; a: Ast; b: Ast }
+  | { t: 'fn'; name: FnName; a: Ast };
+type FnName = 'sin' | 'cos' | 'tan' | 'sqrt' | 'abs' | 'ln' | 'log' | 'exp';
+type Token = { k: 'num'; v: number } | { k: 'id'; v: string } | { k: 'op'; v: string };
+
+const FUNCTIONS: Record<FnName, (value: number) => number> = {
+  sin: Math.sin, cos: Math.cos, tan: Math.tan, sqrt: Math.sqrt, abs: Math.abs, ln: Math.log, log: Math.log10, exp: Math.exp,
+};
+const PYTHON_FN: Record<FnName, string> = {
+  sin: 'np.sin', cos: 'np.cos', tan: 'np.tan', sqrt: 'np.sqrt', abs: 'np.abs', ln: 'np.log', log: 'np.log10', exp: 'np.exp',
+};
+const KNOWN_NAMES = ['sqrt', 'sin', 'cos', 'tan', 'abs', 'exp', 'log', 'ln', 'pi', '\u03c0', 'e', 'x'];
+const MAX_EXPRESSION = 200;
+const MAX_DEPTH = 60;
+
+/** Parte «xsin» en [«x», «sin»] y «pix» en [«pi», «x»]; `null` si hay letras desconocidas. */
+function splitName(text: string): string[] | null {
+  if (!text) return [];
+  for (const name of KNOWN_NAMES) {
+    if (!text.startsWith(name)) continue;
+    const rest = splitName(text.slice(name.length));
+    if (rest) return [name, ...rest];
+  }
+  return null;
+}
+
+function tokenize(source: string): Token[] | null {
+  const tokens: Token[] = [];
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i];
+    if (/\s/.test(c)) { i++; continue; }
+    const number = /^(?:\d+\.?\d*|\.\d+)/.exec(source.slice(i));
+    if (number) { tokens.push({ k: 'num', v: Number(number[0]) }); i += number[0].length; continue; }
+    const word = /^[A-Za-z\u03c0]+/.exec(source.slice(i));
+    if (word) {
+      const parts = splitName(word[0].toLowerCase());
+      if (!parts) return null;
+      for (const part of parts) tokens.push({ k: 'id', v: part === '\u03c0' ? 'pi' : part });
+      i += word[0].length;
+      continue;
+    }
+    if (c === '*' && source[i + 1] === '*') { tokens.push({ k: 'op', v: '^' }); i += 2; continue; }
+    if ('+-*/^()'.includes(c)) { tokens.push({ k: 'op', v: c }); i++; continue; }
+    return null;
+  }
+  return tokens;
+}
+
+/** Analiza `expression` (variable `x`); `null` si no es válida. Admite multiplicación implícita (`2x`, `3(x+1)`, `x sin(x)`). */
+function parseExpression(expression: string): Ast | null {
+  if (!expression.trim() || expression.length > MAX_EXPRESSION) return null;
+  const tokens = tokenize(expression);
+  if (!tokens?.length) return null;
+  let pos = 0;
+  let depth = 0;
+  const peek = () => tokens[pos];
+  const isOp = (token: Token | undefined, value: string) => token?.k === 'op' && token.v === value;
+  const fail = (): never => { throw new Error('expresión no válida'); };
+  const guard = <T,>(fn: () => T): T => {
+    if (++depth > MAX_DEPTH) fail();
+    try { return fn(); } finally { depth--; }
+  };
+
+  const expr = (): Ast => guard(() => {
+    let a = term();
+    while (isOp(peek(), '+') || isOp(peek(), '-')) {
+      const op = (tokens[pos++] as { v: '+' | '-' }).v;
+      a = { t: 'bin', op, a, b: term() };
+    }
+    return a;
+  });
+  const term = (): Ast => {
+    let a = unary();
+    for (;;) {
+      const token = peek();
+      if (isOp(token, '*') || isOp(token, '/')) {
+        pos++;
+        a = { t: 'bin', op: (token as { v: '*' | '/' }).v, a, b: unary() };
+      } else if (token && (token.k === 'num' || token.k === 'id' || isOp(token, '('))) {
+        a = { t: 'bin', op: '*', a, b: power() }; // multiplicación implícita
+      } else return a;
+    }
+  };
+  const unary = (): Ast => guard(() => {
+    if (isOp(peek(), '-')) { pos++; return { t: 'neg', a: unary() }; }
+    if (isOp(peek(), '+')) { pos++; return unary(); }
+    return power();
+  });
+  const power = (): Ast => {
+    const base = atom();
+    if (isOp(peek(), '^')) { pos++; return { t: 'bin', op: '^', a: base, b: unary() }; }
+    return base;
+  };
+  const atom = (): Ast => {
+    const token = tokens[pos++];
+    if (!token) return fail();
+    if (token.k === 'num') return { t: 'num', v: token.v };
+    if (isOp(token, '(')) {
+      const inner = expr();
+      if (!isOp(tokens[pos++], ')')) fail();
+      return inner;
+    }
+    if (token.k === 'id') {
+      if (token.v === 'x') return { t: 'x' };
+      if (token.v === 'pi' || token.v === 'e') return { t: 'const', name: token.v };
+      if (token.v in FUNCTIONS) {
+        if (!isOp(tokens[pos++], '(')) fail();
+        const arg = expr();
+        if (!isOp(tokens[pos++], ')')) fail();
+        return { t: 'fn', name: token.v as FnName, a: arg };
+      }
+    }
+    return fail();
+  };
+
+  try {
+    const ast = expr();
+    return pos === tokens.length ? ast : null;
+  } catch {
+    return null;
+  }
+}
+
+function evaluate(ast: Ast, x: number): number {
+  switch (ast.t) {
+    case 'num': return ast.v;
+    case 'const': return ast.name === 'pi' ? Math.PI : Math.E;
+    case 'x': return x;
+    case 'neg': return -evaluate(ast.a, x);
+    case 'fn': return FUNCTIONS[ast.name](evaluate(ast.a, x));
+    case 'bin': {
+      const a = evaluate(ast.a, x);
+      const b = evaluate(ast.b, x);
+      return ast.op === '+' ? a + b : ast.op === '-' ? a - b : ast.op === '*' ? a * b : ast.op === '/' ? a / b : Math.pow(a, b);
+    }
+  }
+}
+
+/** Función JavaScript de `x` para una expresión, o `null` si no es válida. No usa `eval` ni `Function`. */
+export function compileExpression(expression: string): ((x: number) => number) | null {
+  const ast = parseExpression(expression);
+  return ast ? (x) => evaluate(ast, x) : null;
+}
+
+function toPython(ast: Ast): string {
+  switch (ast.t) {
+    case 'num': return String(ast.v);
+    case 'const': return ast.name === 'pi' ? 'np.pi' : 'np.e';
+    case 'x': return 'x';
+    case 'neg': return `(-${toPython(ast.a)})`;
+    case 'fn': return `${PYTHON_FN[ast.name]}(${toPython(ast.a)})`;
+    case 'bin': return `(${toPython(ast.a)} ${ast.op === '^' ? '**' : ast.op} ${toPython(ast.b)})`;
+  }
+}
+
+/** Cuerpo de `lambda x: ...` en Python (NumPy) equivalente a la expresión, o `null` si no es válida. */
+export function expressionToPython(expression: string): string | null {
+  const ast = parseExpression(expression);
+  return ast ? toPython(ast) : null;
 }
 
 /** Decimales necesarios para escribir `step` sin pérdida (máx. 6), p. ej. 0.25 → 2, 1 → 0. */
@@ -185,9 +430,55 @@ export function planeSvg(plane: PlaneGeometry): string {
     }
   }
 
-  const group = (phase: string, layer: string, items: string[]) =>
-    items.length ? `<g data-mm-phase="${phase}" data-mm-layer="${layer}">${items.join('')}</g>` : '';
+  // Gráficas f(x): ~200 muestras en [xStart, xEnd], cortes en asíntotas/indefinidos y recorte al área del plano.
+  const plotPaths: string[] = [];
+  for (const plot of p.plots ?? []) {
+    const fn = plot.visible ? compileExpression(plot.expression) : null;
+    const a = clamp(plot.xStart ?? p.xMin, p.xMin, p.xMax);
+    const b = clamp(plot.xEnd ?? p.xMax, p.xMin, p.xMax);
+    if (!fn || !(b > a) || plot.width <= 0) continue;
+    let d = '';
+    let connected = false;
+    let previous: { y: number; py: number } | null = null;
+    for (let i = 0; i <= PLOT_SAMPLES; i++) {
+      const x = a + ((b - a) * i) / PLOT_SAMPLES;
+      const y = fn(x);
+      if (!Number.isFinite(y)) { connected = false; previous = null; continue; }
+      const py = clamp(sy(y), -4 * H, 5 * H);
+      // Salto de signo con gran desplazamiento vertical = asíntota: no se une con una línea vertical.
+      if (previous && Math.sign(y) !== Math.sign(previous.y) && Math.abs(py - previous.py) > 1.5 * H) connected = false;
+      d += `${connected ? 'L' : 'M'}${f(sx(x))} ${f(py)}`;
+      connected = true;
+      previous = { y, py };
+    }
+    if (d) plotPaths.push(`<path d="${d}" fill="none" stroke="${plot.color}" stroke-width="${plot.width}" stroke-linejoin="round" stroke-linecap="round"/>`);
+  }
+
+  // Puntos (x, y) en píxeles reales del plano; los que quedan fuera del rango no se dibujan.
+  const pointItems: string[] = [];
+  const tolerance = 1e-9;
+  for (const point of p.points ?? []) {
+    if (!point.visible || point.x < p.xMin - tolerance || point.x > p.xMax + tolerance
+      || point.y < p.yMin - tolerance || point.y > p.yMax + tolerance) continue;
+    const cx = sx(point.x);
+    const cy = sy(point.y);
+    if (point.showGuideLines) {
+      const dash = `stroke="${point.color}" stroke-width="1.4" stroke-opacity="0.85" stroke-dasharray="6 5" fill="none"`;
+      pointItems.push(`<line x1="${f(cx)}" y1="${f(cy)}" x2="${f(cx)}" y2="${f(ay)}" ${dash}/>`,
+        `<line x1="${f(cx)}" y1="${f(cy)}" x2="${f(ax)}" y2="${f(cy)}" ${dash}/>`);
+    }
+    pointItems.push(`<circle cx="${f(cx)}" cy="${f(cy)}" r="${f(point.radius)}" fill="${point.color}" stroke="none"/>`);
+    if (point.label) {
+      const size = p.numberSize * 1.3;
+      pointItems.push(`<text x="${f(cx + point.radius + 4)}" y="${f(cy - point.radius - 3)}" text-anchor="start" font-family="${SERIF}" font-size="${f(size)}" fill="${point.color}" xml:space="preserve">${escapeXml(point.label)}</text>`);
+    }
+  }
+
+  const group = (phase: string, layer: string, items: string[], extra = '') =>
+    items.length ? `<g data-mm-phase="${phase}" data-mm-layer="${layer}"${extra}>${items.join('')}</g>` : '';
+  const clip = plotPaths.length ? `<defs><clipPath id="plane-clip" clipPathUnits="userSpaceOnUse"><rect x="0" y="0" width="${f(W)}" height="${f(H)}"/></clipPath></defs>` : '';
   return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 ${f(W)} ${f(H)}" overflow="visible">`
-    + group('grid', 'subGrid', sub) + group('grid', 'grid', main) + group('axis', 'axes', axis) + group('label', 'labels', labels)
+    + clip + group('grid', 'subGrid', sub) + group('grid', 'grid', main) + group('axis', 'axes', axis) + group('label', 'labels', labels)
+    + group('plot', 'plots', plotPaths, ' clip-path="url(#plane-clip)"') + group('point', 'points', pointItems)
     + '</svg>';
 }

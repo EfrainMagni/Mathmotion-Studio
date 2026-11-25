@@ -19,8 +19,8 @@ import {
 const PAINT_SEL = 'path,line,circle,ellipse,rect,polyline,polygon,text';
 const NON_RENDERED_SEL = 'defs,clipPath,mask,pattern,symbol,marker';
 const GEOM_TAGS = new Set(['path', 'line', 'circle', 'ellipse', 'rect', 'polyline', 'polygon']);
-/** Ventanas de `Create` de un plano cartesiano (fracción del clip): cuadrícula → ejes → números. */
-const PLANE_PHASES: Record<string, [number, number]> = { grid: [0, 0.55], axis: [0.35, 0.8], label: [0.6, 0.95] };
+/** Ventanas de `Create` de un plano cartesiano (fracción del clip): cuadrícula → ejes → números → gráficas → puntos. */
+const PLANE_PHASES: Record<string, [number, number]> = { grid: [0, 0.5], axis: [0.3, 0.75], label: [0.55, 0.9], plot: [0.5, 1], point: [0.75, 1] };
 
 type Props = Record<string, string>;
 
@@ -1133,7 +1133,7 @@ export class SceneRuntime {
       const lag = st.lag;
       const win = count > 1 ? (lag !== null ? 0.8 / (1 + (count - 1) * lag) : 0.5) : 0.8;
       const stagger = count > 1 ? (lag !== null ? lag * win : (0.8 - win) / (count - 1)) : 0;
-      // Plano cartesiano: `Create(plane)` revela la cuadrícula, luego los ejes con sus marcas y al final los números.
+      // Plano cartesiano: `Create(plane)` revela la cuadrícula, los ejes con sus marcas, los números, las gráficas y los puntos.
       const planeCounts: Record<string, number> = {};
       const planeSlots = n.isRoot && this.project?.objects.some((o) => o.id === id && o.plane)
         ? geoms.map((el) => {
