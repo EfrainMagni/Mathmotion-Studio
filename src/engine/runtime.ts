@@ -1,6 +1,7 @@
 import { STAGE_SIZES, type Box, type Clip, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
 import { gradientId, gradientMarkup, lineTips, tipLayout } from './vector';
+import { planeSubElementOf } from '../types';
 import { SELECTABLE_SHAPES } from './svgImport';
 import {
   clipGlyphs, connectorPlan, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor,
@@ -182,6 +183,8 @@ export class SceneRuntime {
   private vertexEdits = new Map<string, { element: Element; original: Element; points: Vertex[]; keys: string[] }>();
   private pivots = new WeakMap<Element, { x: number; y: number }>();
   private measureKey = '';
+  /** Sub-elementos de plano (`plot:f1`…) con clip de entrada propio, por objeto: el clip del plano no los anima. */
+  private ownedSubs = new Map<string, Set<string>>();
   private ringsDrawn = false;
   private matches = new Map<string, [number, number][]>();
 
@@ -845,6 +848,9 @@ export class SceneRuntime {
    * colocación de los elementos que ya traen un atributo `transform` (grupos de Illustrator).
    */
   private computePivot(el: Element): { x: number; y: number } {
+    // Pivote explícito (p. ej. el centro de un punto de un plano cartesiano).
+    const fixed = el.getAttribute('data-mm-pivot')?.split(',').map(Number);
+    if (fixed?.length === 2 && fixed.every(Number.isFinite)) return { x: fixed[0], y: fixed[1] };
     const g = el as unknown as SVGGraphicsElement;
     let bb: DOMRect | null = null;
     try {
@@ -897,7 +903,7 @@ export class SceneRuntime {
       this.geomCache = new WeakMap();
     }
 
-    const { states, rings, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds } = this.computeStates(p.clips, t);
+    const { states, rings, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds } = this.computeStates(this.resolveSubClips(p.clips), t);
 
     // Pivotes: se miden con el DOM en estado base para que el resultado no dependa del historial.
     const childIds = new Set<string>();
@@ -1125,7 +1131,12 @@ export class SceneRuntime {
       if (st.draw === null || st.draw >= 1) continue;
       const n = this.nodes.get(id);
       if (!n) continue;
-      const geoms = this.geomsOf(n);
+      // Las gráficas y puntos con clip de entrada propio no siguen el `Create` del plano base.
+      const owned = n.isRoot ? this.ownedSubs.get(id) : undefined;
+      const geoms = this.geomsOf(n).filter((el) => {
+        const sub = owned && el.closest('[data-mm-sub]')?.getAttribute('data-mm-sub');
+        return !(sub && owned!.has(sub));
+      });
       if (!geoms.length) continue;
       if (n.isRoot) this.objs.get(id)?.svg.querySelectorAll('[data-mm-tip]').forEach((tip) => mul(tip, 'fill-opacity', clamp01((st.draw! - 0.8) / 0.2), 1));
       const glyphCount = n.isRoot ? this.objs.get(id)?.glyphs.length ?? 0 : 0;
@@ -1238,6 +1249,41 @@ export class SceneRuntime {
     }
     for (const [el, props] of Array.from(next)) if (!Object.keys(props).length) next.delete(el);
     this.applied = next;
+  }
+
+  /** Grupo SVG (nodo) de un sub-elemento de plano, o `null` si ya no existe o no se dibuja. */
+  private subNodeId(objId: string, sub: string): string | null {
+    const id = this.objs.get(objId)?.svg.querySelector(`[data-mm-sub="${sub}"]`)?.getAttribute('data-mm-id');
+    return id && this.nodes.has(id) ? id : null;
+  }
+
+  /**
+   * Los clips con `parameters.subElementId` (`plot:<id>` / `point:<id>`) se redirigen al grupo SVG de ese
+   * elemento y se animan como un nodo hijo. `Create` sobre un punto equivale a «brotar». Los clips cuyo
+   * elemento ya no existe se omiten. Un elemento con clip de entrada (`draw`/`appear`) queda oculto hasta su inicio.
+   */
+  private resolveSubClips(clips: Clip[]): Clip[] {
+    this.ownedSubs = new Map();
+    if (!clips.some((c) => c.parameters.subElementId !== undefined)) return clips;
+    const out: Clip[] = [];
+    for (const clip of clips) {
+      const sub = planeSubElementOf(clip);
+      if (!sub) {
+        if (clip.parameters.subElementId === undefined) out.push(clip);
+        continue;
+      }
+      const key = `${sub.kind}:${sub.id}`;
+      const nodeId = this.subNodeId(clip.targetId, key);
+      if (!nodeId) continue;
+      if (clip.type === 'draw' || clip.type === 'appear') {
+        const set = this.ownedSubs.get(clip.targetId) ?? new Set<string>();
+        set.add(key);
+        this.ownedSubs.set(clip.targetId, set);
+      }
+      const pop = sub.kind === 'point' && clip.type === 'draw';
+      out.push({ ...clip, targetId: nodeId, type: pop ? 'appear' : clip.type, parameters: pop ? { ...clip.parameters, mode: 'pop' } : clip.parameters });
+    }
+    return out;
   }
 
   private computeStates(clips: Clip[], t: number) {
@@ -1394,6 +1440,13 @@ export class SceneRuntime {
               g.dx += shift.x;
               g.dy += shift.y;
             }
+            break;
+          }
+          if (par.mode === 'pop' && typeof par.subElementId === 'string') {
+            // Punto de un plano: brota desde su centro (escala 0 → 1.2 → 1) con su etiqueta y líneas guía.
+            const sub = get(c.targetId);
+            sub.scale *= Math.max(0.001, p < 0.7 ? 1.2 * smooth(p / 0.7) : 1.2 - 0.2 * smooth((p - 0.7) / 0.3));
+            sub.opacity *= smooth(p);
             break;
           }
           const s = get(c.targetId);

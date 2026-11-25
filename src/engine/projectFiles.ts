@@ -81,7 +81,8 @@ const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()
     (input.to !== undefined && !objectId.safeParse(input.to).success) ||
     (input.term !== undefined && !/^t[1-9]\d*$/.test(String(input.term))) ||
     (input.toTerm !== undefined && !/^t[1-9]\d*$/.test(String(input.toTerm))) ||
-    (input.glyphs !== undefined && !/^[\d,\s-]*$/.test(String(input.glyphs)))
+    (input.glyphs !== undefined && !/^[\d,\s-]*$/.test(String(input.glyphs))) ||
+    (input.subElementId !== undefined && !/^(plot|point):[a-z]{1,3}\d{1,6}$/.test(String(input.subElementId)))
   ) ctx.addIssue({ code: 'custom', message: 'Parámetros de animación no válidos.' });
 });
 const voice = z.object({

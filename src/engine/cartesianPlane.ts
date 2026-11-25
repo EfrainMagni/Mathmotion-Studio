@@ -451,7 +451,8 @@ export function planeSvg(plane: PlaneGeometry): string {
       connected = true;
       previous = { y, py };
     }
-    if (d) plotPaths.push(`<path d="${d}" fill="none" stroke="${plot.color}" stroke-width="${plot.width}" stroke-linejoin="round" stroke-linecap="round"/>`);
+    // Cada gráfica vive en su propio grupo (`data-mm-sub`) para poder animarla de forma independiente.
+    if (d) plotPaths.push(`<g data-mm-sub="plot:${plot.id}"><path d="${d}" fill="none" stroke="${plot.color}" stroke-width="${plot.width}" stroke-linejoin="round" stroke-linecap="round"/></g>`);
   }
 
   // Puntos (x, y) en píxeles reales del plano; los que quedan fuera del rango no se dibujan.
@@ -462,16 +463,19 @@ export function planeSvg(plane: PlaneGeometry): string {
       || point.y < p.yMin - tolerance || point.y > p.yMax + tolerance) continue;
     const cx = sx(point.x);
     const cy = sy(point.y);
+    const parts: string[] = [];
     if (point.showGuideLines) {
       const dash = `stroke="${point.color}" stroke-width="1.4" stroke-opacity="0.85" stroke-dasharray="6 5" fill="none"`;
-      pointItems.push(`<line x1="${f(cx)}" y1="${f(cy)}" x2="${f(cx)}" y2="${f(ay)}" ${dash}/>`,
+      parts.push(`<line x1="${f(cx)}" y1="${f(cy)}" x2="${f(cx)}" y2="${f(ay)}" ${dash}/>`,
         `<line x1="${f(cx)}" y1="${f(cy)}" x2="${f(ax)}" y2="${f(cy)}" ${dash}/>`);
     }
-    pointItems.push(`<circle cx="${f(cx)}" cy="${f(cy)}" r="${f(point.radius)}" fill="${point.color}" stroke="none"/>`);
+    parts.push(`<circle cx="${f(cx)}" cy="${f(cy)}" r="${f(point.radius)}" fill="${point.color}" stroke="none"/>`);
     if (point.label) {
       const size = p.numberSize * 1.3;
-      pointItems.push(`<text x="${f(cx + point.radius + 4)}" y="${f(cy - point.radius - 3)}" text-anchor="start" font-family="${SERIF}" font-size="${f(size)}" fill="${point.color}" xml:space="preserve">${escapeXml(point.label)}</text>`);
+      parts.push(`<text x="${f(cx + point.radius + 4)}" y="${f(cy - point.radius - 3)}" text-anchor="start" font-family="${SERIF}" font-size="${f(size)}" fill="${point.color}" xml:space="preserve">${escapeXml(point.label)}</text>`);
     }
+    // `data-mm-pivot`: el «brotar» (escala 0 → 1.2 → 1) crece desde el centro del punto, no del grupo completo.
+    pointItems.push(`<g data-mm-sub="point:${point.id}" data-mm-pivot="${f(cx)},${f(cy)}">${parts.join('')}</g>`);
   }
 
   const group = (phase: string, layer: string, items: string[], extra = '') =>

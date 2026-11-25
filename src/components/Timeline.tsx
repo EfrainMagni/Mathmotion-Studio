@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { FPS, SOUND_IDS, SOUND_LABEL, clipLabel, glyphTransformOf, parseGlyphIds, sceneDuration, type Clip, type Project, type SoundId } from '../types';
+import { FPS, SOUND_IDS, SOUND_LABEL, clipLabel, glyphTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type Project, type SoundId } from '../types';
 import { formatGlyphList } from '../engine/glyphs';
 import { engine } from '../engine';
 import { NumberInput, btn, input } from './ui';
@@ -15,6 +15,9 @@ const fmt = (n: number) => n.toFixed(2);
 /** Alcance legible de un clip: término, glifos o destino (para bloques y descripciones). */
 function clipSubject(clip: Clip, objects: Project['objects']): string {
   const p = clip.parameters;
+  // Clip de una gráfica o punto de un plano cartesiano: «Plano · f(x) = x^2» / «Plano · Punto (2, 2)».
+  const sub = planeSubElementOf(clip);
+  if (sub) return `Plano · ${planeSubLabel(objects.find((o) => o.id === clip.targetId.split('.')[0])?.plane, sub)}`;
   const directed = glyphTransformOf(clip);
   if (directed) {
     const dest = objects.find((o) => o.id === directed.targetObjectId)?.name ?? directed.targetObjectId;
@@ -91,7 +94,7 @@ function ClipEditor() {
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="max-w-[200px] truncate font-medium text-slate-200" title={runtimeName(clip.targetId)}>
-        {clipLabel(clip)} · {runtimeName(clip.targetId)} {clipSubject(clip, objects)}
+        {clipLabel(clip)} · {planeSubElementOf(clip) ? '' : `${runtimeName(clip.targetId)} `}{clipSubject(clip, objects)}
       </span>
       {glyphTransformOf(clip) && (
         <label className="flex items-center gap-1" title="Los conectores (·, +, =) sin glifo dirigido brotan en el último 40 % del clip que completa a sus vecinos">
