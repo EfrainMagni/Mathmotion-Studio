@@ -334,6 +334,8 @@ async function run(
       busy = false;
       return;
     }
+    // `snap.svg` clona el SVG vivo de cada objeto con su `<defs data-mm-grad>`: los degradados (`fill="url(#mmg-…)"`)
+    // viajan dentro del fotograma, tanto en la ruta normal como en el respaldo `snapshotScene(W, H, true)`.
     const toImage = async (svg: string) => {
       const img = new Image();
       img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;

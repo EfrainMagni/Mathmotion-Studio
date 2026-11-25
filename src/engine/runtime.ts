@@ -1,5 +1,6 @@
 import { STAGE_SIZES, type Box, type Clip, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
+import { gradientId, gradientMarkup } from './vector';
 import { SELECTABLE_SHAPES } from './svgImport';
 import {
   clipGlyphs, connectorPlan, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor,
@@ -713,6 +714,52 @@ export class SceneRuntime {
 
   // ------------------------------------------------------------------ medidas
 
+  /** Líneas y flechas no tienen relleno: su degradado se aplica al trazo. */
+  private gradientOnStroke(n: NodeRec): boolean {
+    const tool = this.project?.objects.find((o) => o.id === n.objId)?.vector?.tool;
+    return n.isRoot && (tool === 'line' || tool === 'arrow');
+  }
+
+  /**
+   * Mantiene un `<defs data-mm-grad>` por objeto con un `<linearGradient>`/`<radialGradient>` por cada nodo con degradado.
+   * Vive dentro del SVG del objeto, de modo que `snapshotScene()` (y la grabación MP4) lo clonan junto con las formas.
+   */
+  private syncGradients(p: Project) {
+    const perObject = new Map<string, string>();
+    for (const [id, style] of Object.entries(p.styles)) {
+      const g = style.fillGradient;
+      const n = this.nodes.get(id);
+      if (!g || g.mode === 'solid' || !n) continue;
+      let box: { x: number; y: number; w: number; h: number } | undefined;
+      if (this.gradientOnStroke(n)) {
+        try {
+          const b = (this.geomsOf(n)[0] as SVGGraphicsElement | undefined)?.getBBox();
+          if (b) box = { x: b.x, y: b.y, w: b.width, h: b.height };
+        } catch {
+          /* sin caja medible: se usa objectBoundingBox */
+        }
+      }
+      perObject.set(n.objId, (perObject.get(n.objId) ?? '') + gradientMarkup(gradientId(id), g, box));
+    }
+    for (const [objId, rec] of this.objs) {
+      const markup = perObject.get(objId) ?? '';
+      let defs = rec.svg.querySelector(':scope > defs[data-mm-grad]');
+      if (!markup) {
+        defs?.remove();
+        continue;
+      }
+      if (!defs) {
+        defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        defs.setAttribute('data-mm-grad', '');
+        rec.svg.insertBefore(defs, rec.svg.firstChild);
+      }
+      if (defs.getAttribute('data-key') !== markup) {
+        defs.innerHTML = markup;
+        defs.setAttribute('data-key', markup);
+      }
+    }
+  }
+
   private geomsOf(n: NodeRec): Element[] {
     const base = n.isRoot ? this.objs.get(n.id)!.svg : n.el;
     const list = base.matches(PAINT_SEL) ? [base] : Array.from(base.querySelectorAll(PAINT_SEL));
@@ -797,7 +844,7 @@ export class SceneRuntime {
       p.objects.map((o) => `${o.id}:${o.markup.length}`).join('|') +
       '#' +
       Object.entries(p.styles)
-        .map(([id, s]) => `${id}:${s.fill ?? ''},${s.stroke ?? ''},${s.strokeWidth ?? ''}`)
+        .map(([id, s]) => `${id}:${s.fill ?? ''},${s.stroke ?? ''},${s.strokeWidth ?? ''},${s.fillGradient?.mode ?? ''}`)
         .join('|') +
       '#' +
       p.clips
@@ -840,8 +887,9 @@ export class SceneRuntime {
     };
 
     // 1) overrides de pintura del inspector (el más profundo gana)
+    this.syncGradients(p);
     const styled = Object.entries(p.styles)
-      .filter(([, s]) => s.fill !== undefined || s.stroke !== undefined || s.strokeWidth !== undefined || s.lineStyle !== undefined)
+      .filter(([, s]) => s.fill !== undefined || s.fillGradient !== undefined || s.stroke !== undefined || s.strokeWidth !== undefined || s.lineStyle !== undefined)
       .map(([id]) => this.nodes.get(id))
       .filter((n): n is NodeRec => !!n);
     const depth = (n: NodeRec) => {
@@ -858,8 +906,11 @@ export class SceneRuntime {
       const s = p.styles[n.id];
       for (const el of this.geomsOf(n)) {
         const pr = P(el);
-        if (s.fill !== undefined) pr.fill = s.fill;
-        if (s.stroke !== undefined) pr.stroke = s.stroke;
+        const gradient = s.fillGradient && s.fillGradient.mode !== 'solid' ? `url(#${gradientId(n.id)})` : null;
+        if (gradient && this.gradientOnStroke(n)) pr.stroke = gradient;
+        else if (gradient) pr.fill = gradient;
+        else if (s.fill !== undefined) pr.fill = s.fill;
+        if (s.stroke !== undefined && !(gradient && this.gradientOnStroke(n))) pr.stroke = s.stroke;
         if (s.strokeWidth !== undefined) pr['stroke-width'] = String(s.strokeWidth);
         if (s.lineStyle) {
           const width = Number(pr['stroke-width'] ?? this.geomInfo(el).sw) || 1;

@@ -1,4 +1,4 @@
-import { fontStack, type VectorGeometry, type VectorTool, type Vertex } from '../types';
+import { fontStack, type FillGradient, type GradientStop, type VectorGeometry, type VectorTool, type Vertex } from '../types';
 
 export const VECTOR_LABEL: Record<VectorTool, string> = {
   rectangle: 'Rectángulo', ellipse: 'Círculo / Elipse', line: 'Línea',
@@ -8,6 +8,53 @@ export const VECTOR_LABEL: Record<VectorTool, string> = {
 export const VECTOR_FILL = '#38bdf8';
 export const VECTOR_STROKE = '#38bdf8';
 export const VECTOR_STROKE_WIDTH = 4;
+
+export const GRADIENT_PRESETS: { id: string; label: string; colors: [string, string] }[] = [
+  { id: 'manim', label: 'Manim Azul-Menta', colors: ['#58C4DD', '#83C167'] },
+  { id: 'solar', label: 'Solar / Dorado', colors: ['#F7971E', '#FFD200'] },
+  { id: 'neon', label: 'Neón Cian-Violeta', colors: ['#00F5D4', '#7B2CBF'] },
+  { id: 'carmesi', label: 'Carmesí-Ámbar', colors: ['#FF4D6D', '#FF9E00'] },
+];
+
+let stopSerial = 0;
+export const newStopId = () => `s${Date.now().toString(36)}${(stopSerial++).toString(36)}`;
+
+export function makeGradient(mode: 'linear' | 'radial', colors: string[], angle = 0): FillGradient {
+  const last = Math.max(1, colors.length - 1);
+  return { mode, angle, stops: colors.map((color, i): GradientStop => ({ id: newStopId(), offset: Math.round((100 * i) / last), color })) };
+}
+
+/** Id único (por nodo) del degradado dentro del documento SVG compuesto. */
+export const gradientId = (nodeId: string) => `mmg-${nodeId.replace(/[^\w-]/g, '-')}`;
+
+const attr = (value: string) => value.replace(/[^\w#(),.%\s/+-]/g, '');
+
+/** CSS `linear-gradient()` equivalente, para la barra de vista previa del inspector (0° = izquierda → derecha). */
+export function gradientCss(g: FillGradient) {
+  const stops = [...g.stops].sort((a, b) => a.offset - b.offset).map((s) => `${attr(s.color)} ${s.offset}%`).join(', ');
+  return g.mode === 'radial' ? `radial-gradient(circle, ${stops})` : `linear-gradient(${g.angle + 90}deg, ${stops})`;
+}
+
+/**
+ * `<linearGradient>` / `<radialGradient>` con id `id`. Por defecto usa `objectBoundingBox`; con `box` (líneas y flechas,
+ * cuya caja puede tener alto 0) usa coordenadas de usuario.
+ */
+export function gradientMarkup(id: string, g: FillGradient, box?: { x: number; y: number; w: number; h: number }) {
+  const stops = [...g.stops].sort((a, b) => a.offset - b.offset)
+    .map((s) => `<stop offset="${Math.min(100, Math.max(0, s.offset))}%" stop-color="${attr(s.color)}"/>`).join('');
+  const b = box ? { x: box.x, y: box.y, w: Math.max(1, box.w), h: Math.max(1, box.h) } : { x: 0, y: 0, w: 1, h: 1 };
+  const units = box ? 'userSpaceOnUse' : 'objectBoundingBox';
+  if (g.mode === 'radial') {
+    const r = box ? Math.hypot(b.w, b.h) / 2 : 0.5;
+    return `<radialGradient id="${id}" gradientUnits="${units}" cx="${b.x + b.w / 2}" cy="${b.y + b.h / 2}" r="${r}">${stops}</radialGradient>`;
+  }
+  const t = (g.angle * Math.PI) / 180;
+  const dx = Math.cos(t) / 2;
+  const dy = Math.sin(t) / 2;
+  const cx = b.x + b.w / 2;
+  const cy = b.y + b.h / 2;
+  return `<linearGradient id="${id}" gradientUnits="${units}" x1="${cx - dx * b.w}" y1="${cy - dy * b.h}" x2="${cx + dx * b.w}" y2="${cy + dy * b.h}">${stops}</linearGradient>`;
+}
 
 export function regularPolygon(center: Vertex, radius: number, sides: number, angle = -Math.PI / 2) {
   const diameter = radius * 2;

@@ -215,8 +215,16 @@ export interface Obj2D {
 /** El editor es 100% 2D: un objeto de escena es siempre un `Obj2D`. */
 export type SceneObject = Obj2D;
 
+export type GradientMode = 'solid' | 'linear' | 'radial';
+/** Parada de color de un degradado; `offset` en % (0–100). */
+export interface GradientStop { id: string; offset: number; color: string }
+/** Relleno en degradado de un nodo (`solid` equivale a no tener degradado). `angle` en grados (solo lineal). */
+export interface FillGradient { mode: GradientMode; angle: number; stops: GradientStop[] }
+
 export interface NodeStyle {
   fill?: string;
+  /** Tiene prioridad sobre `fill` cuando `mode` es `linear` o `radial`. */
+  fillGradient?: FillGradient;
   stroke?: string;
   strokeWidth?: number;
   lineStyle?: 'solid' | 'dotted';

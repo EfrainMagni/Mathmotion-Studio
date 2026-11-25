@@ -34,8 +34,13 @@ const object2D = z.object({
 });
 /** Compatibilidad: los archivos antiguos pueden traer objetos 3D; se leen solo para descartarlos. */
 const legacyObject3D = z.object({ id: objectId, kind: z.literal('shape3d') });
+const gradientStop = z.object({ id: z.string().min(1).max(40), offset: number.min(0).max(100), color: paint });
+const fillGradient = z.object({
+  mode: z.enum(['solid', 'linear', 'radial']), angle: number.min(0).max(360),
+  stops: z.array(gradientStop).min(2).max(16),
+});
 const style = z.object({
-  fill: paint.optional(), stroke: paint.optional(), strokeWidth: nonnegative.optional(),
+  fill: paint.optional(), fillGradient: fillGradient.optional(), stroke: paint.optional(), strokeWidth: nonnegative.optional(),
   lineStyle: z.enum(['solid', 'dotted']).optional(), opacity: number.min(0).max(1).optional(),
   vertices: z.array(vertex).min(2).max(2048).optional(),
   scale: positive.optional(), tx: number.optional(), ty: number.optional(),
