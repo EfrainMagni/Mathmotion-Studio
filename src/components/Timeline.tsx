@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { FPS, SOUND_IDS, SOUND_LABEL, clipLabel, glyphTransformOf, is2D, parseGlyphIds, sceneDuration, type Clip, type Project, type SoundId } from '../types';
+import { FPS, SOUND_IDS, SOUND_LABEL, clipLabel, glyphTransformOf, parseGlyphIds, sceneDuration, type Clip, type Project, type SoundId } from '../types';
 import { formatGlyphList } from '../engine/glyphs';
 import { engine } from '../engine';
 import { NumberInput, btn, input } from './ui';
@@ -22,7 +22,7 @@ function clipSubject(clip: Clip, objects: Project['objects']): string {
     return `#${list(directed.sourceObjectId, directed.sourceGlyphIds)} → ${dest} #${list(directed.targetObjectId, directed.targetGlyphIds)}`;
   }
   const source = objects.find((o) => o.id === clip.targetId.split('.')[0]);
-  const term = typeof p.term === 'string' && source && is2D(source) ? source.terms?.find((t) => t.id === p.term) : undefined;
+  const term = typeof p.term === 'string' && source ? source.terms?.find((t) => t.id === p.term) : undefined;
   const parts: string[] = [];
   if (term) parts.push(`«${term.name}»`);
   else if (typeof p.glyphs === 'string' && p.glyphs) parts.push(`#${p.glyphs}`);

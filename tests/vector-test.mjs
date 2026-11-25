@@ -116,14 +116,11 @@ try {
   await button('Insertar fórmula').click();
   await button('Escribir / Dibujar').click();
   await button('Ejemplo').click();
-  await button('Esfera').click();
-  await button('Orbitar cámara').click();
   await page.getByLabel('Grosor', { exact: true }).fill('5');
   await page.getByLabel('Estilo de línea').selectOption('dotted');
 
   await page.reload();
   await tree(/Flecha vectorial/).waitFor();
-  await tree(/Esfera/).waitFor();
   const arrow = object('o5');
   await assert.doesNotReject(() => arrow.locator('line[marker-start]').waitFor({ state: 'attached' }));
   assert.equal(await arrow.evaluate((element) => element.style.opacity), '0.55');
@@ -135,10 +132,10 @@ try {
   await modal.waitFor();
   const code = await modal.getByLabel('Vista previa del código Python').inputValue();
   for (const pattern of [
-    /class EscenaMathMotion\(ThreeDScene\)/, /Rectangle\(width=/, /Ellipse\(width=/, /Line\(np.array/,
+    /class EscenaMathMotion\(Scene\)/, /Rectangle\(width=/, /Ellipse\(width=/, /Line\(np.array/,
     /add_tip\(at_start=True/, /DashedVMobject/, /set_stroke\(color="#aa4411", width=8/,
-    /Text\("Texto «libre»/, /MathTex\("x\^2\+1"\)/, /embedded_svg\("/, /Sphere\(radius=/,
-    /lambda: Create\(o1/, /lambda: FadeIn/, /lambda: Rotate/, /lambda: Write/, /ApplyMethod\(orbit_camera.increment_value/,
+    /Text\("Texto «libre»/, /MathTex\("x\^2\+1"\)/, /embedded_svg\("/,
+    /lambda: Create\(o1/, /lambda: FadeIn/, /lambda: Rotate/, /lambda: Write/,
     /config.pixel_width = 1920/, /config.pixel_height = 1080/,
   ]) assert.match(code, pattern);
   await modal.getByRole('button', { name: 'Copiar código' }).click();

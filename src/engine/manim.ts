@@ -1,4 +1,4 @@
-import { BACKGROUND_COLOR, STAGE_SIZES, is2D, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
+import { BACKGROUND_COLOR, STAGE_SIZES, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
 import { svgWithVertices } from './vertices';
 import { clipGlyphs, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphRuns } from './glyphs';
 import { VECTOR_FILL, VECTOR_STROKE, VECTOR_STROKE_WIDTH } from './vector';
@@ -12,12 +12,6 @@ function stagePoint(object: Obj2D, width: number, height: number) {
   const unit = FRAME_HEIGHT / height;
   return point((object.x - width / 2) * unit, (height / 2 - object.y) * unit);
 }
-const shape3d = {
-  axes: 'ThreeDAxes(x_length=6.4, y_length=6.4, z_length=6.4)',
-  sphere: 'Sphere(radius=1.4, resolution=(18, 24))',
-  paraboloid: 'Surface(lambda u, v: np.array([u * np.cos(v), u * np.sin(v), 0.5 * u ** 2]), u_range=[0, 2], v_range=[0, TAU], resolution=(12, 24))',
-  vector: 'Arrow3D(start=ORIGIN, end=3 * normalize(np.array([1, 0.8, 1.2])))',
-};
 
 function cssColor(value: string | undefined) {
   if (!value || value === 'none' || value === 'currentColor' || value === 'transparent') return undefined;
@@ -123,24 +117,21 @@ function glyphCommands(object: Obj2D, info: TexInfo) {
 function objectCode(object: SceneObject, style: NodeStyle, width: number, height: number, styles: Project['styles']) {
   const name = object.id;
   const unit = FRAME_HEIGHT / height;
-  const info = is2D(object) && object.kind === 'formula' && object.tex && !object.vector ? texInfo(object) : null;
+  const info = object.kind === 'formula' && object.tex && !object.vector ? texInfo(object) : null;
   let constructor: string;
-  if (!is2D(object)) constructor = shape3d[object.shape];
-  else if (object.vector) constructor = vectorConstructor(object, unit);
+  if (object.vector) constructor = vectorConstructor(object, unit);
   else if (object.kind === 'formula' && object.tex) constructor = `MathTex(${info?.tokens ? info.tokens.map(quoted).join(', ') : quoted(object.tex)})`;
   else constructor = `embedded_svg(${quoted(svgWithVertices(object.markup, object.id, styles))})`;
 
   const commands = [`${name} = ${constructor}`];
-  const vector = is2D(object) ? object.vector : undefined;
+  const vector = object.vector;
   const linear = vector?.tool === 'line' || vector?.tool === 'arrow';
-  if (is2D(object)) {
-    if (vector?.tool === 'text' || !vector) {
-      commands.push(`if ${name}.width > 0: ${name}.scale_to_fit_width(${n(object.bw * unit)})`);
-      if (vector?.tool === 'text') commands.push(`if ${name}.height > 0: ${name}.stretch_to_fit_height(${n(object.bh * unit)})`);
-    }
+  if (vector?.tool === 'text' || !vector) {
+    commands.push(`if ${name}.width > 0: ${name}.scale_to_fit_width(${n(object.bw * unit)})`);
+    if (vector?.tool === 'text') commands.push(`if ${name}.height > 0: ${name}.stretch_to_fit_height(${n(object.bh * unit)})`);
   }
 
-  const defaultFormulaColor = is2D(object) && object.kind === 'formula'
+  const defaultFormulaColor = object.kind === 'formula'
     ? object.markup.match(/style="[^"]*\bcolor:(#[\da-f]{6})/i)?.[1] : undefined;
   const fill = cssColor(style.fill) ?? (vector && !linear ? VECTOR_FILL : defaultFormulaColor);
   const stroke = cssColor(style.stroke) ?? (linear ? VECTOR_STROKE : undefined);
@@ -156,13 +147,13 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
       `opacity=${hiddenStroke ? 0 : 1}`].filter(Boolean);
     commands.push(`${name}.set_stroke(${args.join(', ')})`);
   }
-  if (is2D(object) && vector?.tool === 'arrow' && vector.tip !== 'none') {
+  if (vector?.tool === 'arrow' && vector.tip !== 'none') {
     const tip = vector.tip === 'open' ? 'ArrowTriangleTip' : 'ArrowTriangleFilledTip';
     const tipLength = n(Math.min(0.16, 0.25 * Math.hypot(object.bw, object.bh) * unit));
     commands.push(`${name}.add_tip(tip_shape=${tip}, tip_length=${tipLength})`);
     if (vector.tip === 'both') commands.push(`${name}.add_tip(at_start=True, tip_length=${tipLength})`);
   }
-  if (style.lineStyle === 'dotted' && is2D(object) && !hiddenStroke && (strokeWidth ?? 1) > 0) {
+  if (style.lineStyle === 'dotted' && !hiddenStroke && (strokeWidth ?? 1) > 0) {
     const count = Math.max(2, Math.min(180, Math.round(object.bw / ((strokeWidth ?? 4) * 2.5))));
     const outline = `DashedVMobject(${name}.copy().set_fill(opacity=0), num_dashes=${count}, dashed_ratio=0.18)`;
     if (vector?.tool === 'arrow' && vector.tip !== 'none') {
@@ -176,10 +167,9 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
   if (opacity !== 1) commands.push(`${name}.fade(${n(1 - opacity)})`);
   const pivot = vector?.tool === 'polygon' ? ', about_point=ORIGIN' : '';
   if (object.scale !== 1) commands.push(`${name}.scale(${n(object.scale)}${pivot})`);
-  if (object.rotation) commands.push(`${name}.rotate(${n(is2D(object) ? -object.rotation : object.rotation)} * DEGREES, axis=${is2D(object) ? 'OUT' : 'UP'}${pivot})`);
-  if (is2D(object)) commands.push(`${name}.${pivot ? 'shift' : 'move_to'}(${stagePoint(object, width, height)})`);
-  else if (style.tx || style.ty) commands.push(`${name}.shift(${point((style.tx ?? 0) * unit, -(style.ty ?? 0) * unit)})`);
-  if (is2D(object) && info) commands.push(...glyphCommands(object, info));
+  if (object.rotation) commands.push(`${name}.rotate(${n(-object.rotation)} * DEGREES, axis=OUT${pivot})`);
+  commands.push(`${name}.${pivot ? 'shift' : 'move_to'}(${stagePoint(object, width, height)})`);
+  if (info) commands.push(...glyphCommands(object, info));
   return commands;
 }
 
@@ -190,7 +180,7 @@ function animation(clip: Clip, object: SceneObject, width: number, height: numbe
   const duration = `run_time=${n(clip.duration)}`;
   switch (clip.type) {
     case 'draw': {
-      const write = is2D(object) && (object.kind === 'formula' || object.vector?.tool === 'text');
+      const write = (object.kind === 'formula' || object.vector?.tool === 'text');
       const lag = write && typeof params.lagRatio === 'number' && params.lagRatio >= 0 ? `, lag_ratio=${n(params.lagRatio)}` : '';
       return `${write ? 'Write' : 'Create'}(${id}${lag}, ${duration})`;
     }
@@ -203,18 +193,13 @@ function animation(clip: Clip, object: SceneObject, width: number, height: numbe
     case 'rotate': {
       const degrees = params.mode === 'spin' && typeof params.speed === 'number'
         ? params.speed * clip.duration : typeof params.angle === 'number' ? params.angle : 360;
-      const axis = is2D(object) || params.axis === 'z' ? 'OUT' : params.axis === 'x' ? 'RIGHT' : 'UP';
-      const pivot = is2D(object) && object.vector?.tool === 'polygon'
+      const pivot = object.vector?.tool === 'polygon'
         ? `, about_point=${stagePoint(object, width, height)}` : '';
-      return `Rotate(${id}, angle=${n(is2D(object) ? -degrees : degrees)} * DEGREES, axis=${axis}${pivot}, ${duration})`;
+      return `Rotate(${id}, angle=${n(-degrees)} * DEGREES, axis=OUT${pivot}, ${duration})`;
     }
     case 'glow':
     case 'radar':
       return `Indicate(${id}, color=${quoted(cssColor(String(params.color)) ?? '#fde047')}, ${duration})`;
-    case 'orbit': {
-      const angle = typeof params.angle === 'number' ? params.angle : 180;
-      return `ApplyMethod(orbit_camera.increment_value, ${n(angle)} * DEGREES, ${duration})`;
-    }
     default:
       return undefined;
   }
@@ -245,7 +230,7 @@ function equationAnimation(
   const key = `${object.id}|${selection}`;
   const color = cssColor(typeof params.color === 'string' ? params.color : undefined) ?? '#ffff00';
   const destination = typeof params.to === 'string' && params.to !== object.id ? project.objects.find((entry) => entry.id === params.to) : undefined;
-  const target = destination && is2D(destination) ? destination : undefined;
+  const target = destination;
 
   switch (clip.type) {
     case 'indicate':
@@ -366,8 +351,7 @@ const TIMELINE_HELPER = `def play_timeline(scene, objects, events, duration):
 
 export function generateManim(project: Project): { script: string; notes: string[] } {
   const { w, h } = STAGE_SIZES[project.format];
-  const any3d = project.objects.some((object) => !is2D(object));
-  const svg = project.objects.some((object) => is2D(object) && !object.vector && (object.kind === 'svg' || !object.tex));
+  const svg = project.objects.some((object) => !object.vector && (object.kind === 'svg' || !object.tex));
   const notes = new Set<string>();
   const byId = new Map(project.objects.map((object) => [object.id, object]));
   const ends = new Map<string, number>();
@@ -390,7 +374,7 @@ export function generateManim(project: Project): { script: string; notes: string
     if (dg) {
       const from = byId.get(dg.spec.sourceObjectId);
       const to = byId.get(dg.spec.targetObjectId);
-      if (!from || !to || !is2D(from) || !is2D(to)) {
+      if (!from || !to) {
         notes.add('Se omitieron clips de ecuaciones sin objeto de destino válido.');
         continue;
       }
@@ -412,7 +396,7 @@ export function generateManim(project: Project): { script: string; notes: string
       continue;
     }
     if (EQUATION_CLIPS.has(clip.type)) {
-      const built = is2D(object) && clip.targetId === object.id ? equationAnimation(clip, object, project, infoOf, notes, FRAME_HEIGHT / h) : null;
+      const built = clip.targetId === object.id ? equationAnimation(clip, object, project, infoOf, notes, FRAME_HEIGHT / h) : null;
       if (!built) {
         notes.add('Se omitieron clips de ecuaciones sin objeto de destino válido.');
         continue;
@@ -423,11 +407,9 @@ export function generateManim(project: Project): { script: string; notes: string
       events.push({ start, time: clip.duration, id: object.id, code: built.code, entrance: false, overlay: built.overlay, keep: built.keep, reveal: built.reveal });
       continue;
     }
-    const orbit = clip.type === 'orbit';
-    if (orbit && !any3d) continue;
-    let target = orbit ? 'orbit_camera' : object.id;
+    let target = object.id;
     let scoped: string | undefined;
-    if (isEntrance(clip) && is2D(object) && object.kind === 'formula' && !object.vector && object.tex && clip.targetId === object.id) {
+    if (isEntrance(clip) && object.kind === 'formula' && !object.vector && object.tex && clip.targetId === object.id) {
       // Write / FadeIn sobre glifos concretos (o sobre los que no llegan desde otro objeto).
       const info = infoOf(object);
       const scope = entranceScope(object, clip.parameters, targeted.get(object.id), info.count);
@@ -449,7 +431,7 @@ export function generateManim(project: Project): { script: string; notes: string
   // Glifos de una ecuación destino que no llegan de otro objeto ni tienen clip de entrada: aparecen al llegar el último.
   for (const [objectId, set] of targeted) {
     const object = byId.get(objectId);
-    if (!object || !is2D(object)) continue;
+    if (!object) continue;
     const info = infoOf(object);
     const last = directed.filter((entry) => entry.spec.targetObjectId === objectId)
       .reduce((max, entry) => Math.max(max, entry.clip.start + entry.clip.duration), 0);
@@ -462,26 +444,16 @@ export function generateManim(project: Project): { script: string; notes: string
     events.push({ start: last, time: 0.05, id: ref, code: `FadeIn(${ref}, run_time=0.05)`, entrance: true, overlay: false, reveal: [] });
   }
   events.sort((a, b) => a.start - b.start);
-  const hasOrbit = ends.has('orbit_camera');
   if (svg) notes.add('Los SVG se incrustan. Manim interpreta sus estilos y filtros según su compatibilidad.');
   if (project.voice || project.clips.some((clip) => clip.sound)) notes.add('El audio queda fuera del script.');
   if (project.background === 'grid') notes.add('La cuadrícula se exporta como fondo liso.');
-  if (project.objects.some((object) => !is2D(object) && project.styles[object.id]?.lineStyle === 'dotted')) {
-    notes.add('Los contornos 3D punteados se exportan como contornos sólidos.');
-  }
   if (Object.entries(project.styles).some(([id, style]) => id.includes('.') && Object.keys(style).some((key) => key !== 'vertices'))) notes.add('Los estilos del inspector aplicados a nodos SVG no se trasladan a Manim.');
 
   const body = project.objects.flatMap((object, index) =>
-    [...objectCode(object, project.styles[object.id] ?? {}, w, h, project.styles), `${object.id}.set_z_index(${any3d && is2D(object) ? project.objects.length + index : index})`, '']);
-  if (any3d) {
-    body.unshift(`self.set_camera_orientation(phi=${n(90 - project.camera.el)} * DEGREES, theta=${n(project.camera.az - 90)} * DEGREES, zoom=${n(9 / project.camera.dist)})`, '');
-    const flat = project.objects.filter(is2D).map((object) => object.id);
-    if (flat.length) body.push(`self.add_fixed_in_frame_mobjects(${flat.join(', ')})`);
-  }
+    [...objectCode(object, project.styles[object.id] ?? {}, w, h, project.styles), `${object.id}.set_z_index(${index})`, '']);
   const ids = project.objects.map((object) => object.id);
   const length = [...ends.values()].reduce((max, end) => Math.max(max, end), sceneDuration(project));
   if (events.length) {
-    if (hasOrbit) body.push('orbit_camera = self.camera.theta_tracker');
     const options = (event: (typeof events)[number]) => {
       const entries = [event.overlay && '"overlay": True', event.keep && '"keep": True', event.reveal.length && `"reveal": [${event.reveal.join(', ')}]`].filter(Boolean);
       return `{${entries.join(', ')}}`;
@@ -500,12 +472,11 @@ export function generateManim(project: Project): { script: string; notes: string
       'from manim import *', 'import numpy as np',
       ...(svg ? ['from pathlib import Path', 'from tempfile import TemporaryDirectory'] : []),
       '',
-      ...(hasOrbit ? ['config.renderer = "cairo"'] : []),
       `config.pixel_width = ${w}`, `config.pixel_height = ${h}`,
       `config.frame_width = ${n(FRAME_HEIGHT * w / h)}`, `config.frame_height = ${FRAME_HEIGHT}`,
       `config.background_color = ${quoted(BACKGROUND_COLOR[project.background])}`, '',
       ...(svg ? [SVG_HELPER] : []), ...(events.length ? [TIMELINE_HELPER] : []),
-      `class EscenaMathMotion(${any3d ? 'ThreeDScene' : 'Scene'}):`,
+      `class EscenaMathMotion(Scene):`,
       '    def construct(self):', ...body.map((line) => line ? '        ' + line : ''), '',
     ].join('\n'),
   };

@@ -22,7 +22,6 @@ const built = await esbuild.build({
   globalName: 'H',
   platform: 'browser',
   target: 'es2022',
-  external: ['three'],
   logLevel: 'error',
 });
 const code = built.outputFiles[0].text;

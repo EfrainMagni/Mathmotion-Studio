@@ -1,4 +1,4 @@
-import { FONT_CATALOG, fontInfo, is2D, type Project } from '../types';
+import { FONT_CATALOG, fontInfo, type Project } from '../types';
 
 /** Variante tipográfica realmente usada por algún texto del proyecto. */
 interface Used { family: string; weight: number; italic: boolean }
@@ -14,7 +14,7 @@ export function usedFonts(project: Project): { used: Used[]; text: string } {
   const used: Used[] = [];
   let text = '';
   for (const o of project.objects) {
-    if (!is2D(o) || o.vector?.tool !== 'text' || !o.vector.textStyle) continue;
+    if (o.vector?.tool !== 'text' || !o.vector.textStyle) continue;
     const style = o.vector.textStyle;
     text += o.vector.text ?? '';
     if (!used.some((u) => u.family === style.fontFamily && u.weight === style.fontWeight && u.italic === style.italic)) {

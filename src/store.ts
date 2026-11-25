@@ -4,8 +4,6 @@ import { VECTOR_LABEL, vectorSvg } from './engine/vector';
 import { useSyncExternalStore } from 'react';
 import {
   STAGE_SIZES,
-  is2D,
-  type CameraState,
   type Clip,
   type ClipParams,
   type ClipType,
@@ -13,7 +11,6 @@ import {
   type NodeStyle,
   type Obj2D,
   type Project,
-  type Shape3D,
   type SoundId,
   type SceneObject,
   type StageBackground,
@@ -22,7 +19,6 @@ import {
   type VectorGeometry,
   type VectorTool,
   type Vertex,
-  SHAPE3D_LABEL,
 } from './types';
 
 export type RecordingPhase = 'idle' | 'picker' | 'preparing' | 'recording' | 'finishing';
@@ -40,7 +36,6 @@ export interface UIState {
   time: number;
   playing: boolean;
   speed: 0.5 | 1 | 1.5;
-  cameraMode: boolean;
   vectorTool: VectorTool | null;
   pointerTool: 'select' | 'direct' | 'hand';
   polygonSides: number;
@@ -51,8 +46,6 @@ export interface UIState {
   recordQuality: 'light' | 'standard';
   recording: RecordingState;
   notice: { kind: 'error' | 'info'; text: string } | null;
-  webgl: 'idle' | 'loading' | 'ready' | 'unavailable';
-  webglMessage: string | null;
   /** Se incrementa cuando cambia el árbol de nodos SVG montado. */
   treeVersion: number;
   /** Fórmula en «Modo Edición de Términos» (sus glifos son seleccionables). */
@@ -73,7 +66,6 @@ export function defaultProject(): Project {
     objects: [],
     styles: {},
     clips: [],
-    camera: { az: 35, el: 22, dist: 9 },
     voice: null,
     counters: { obj: 0, clip: 0 },
   };
@@ -86,7 +78,6 @@ function defaultUI(): UIState {
     time: 0,
     playing: false,
     speed: 1,
-    cameraMode: false,
     vectorTool: null,
     pointerTool: 'select',
     polygonSides: 5,
@@ -97,8 +88,6 @@ function defaultUI(): UIState {
     recordQuality: 'light',
     recording: { phase: 'idle', message: null, captureSize: null, lastFile: null },
     notice: null,
-    webgl: 'idle',
-    webglMessage: null,
     treeVersion: 0,
     termEdit: null,
     glyphSel: [],
@@ -170,7 +159,7 @@ export const store = {
       project: p,
       ui: {
         ...state.ui, selection: null, selectedClip: null, time: 0,
-        playing: false, cameraMode: false, vectorTool: null, pointerTool: 'select', polygonRequest: null, notice: null,
+        playing: false, vectorTool: null, pointerTool: 'select', polygonRequest: null, notice: null,
         termEdit: null, glyphSel: [],
       },
     };
@@ -206,8 +195,6 @@ export function defaultClipParams(type: ClipType): ClipParams {
       return { direction: 'up', distance: 120 };
     case 'rotate':
       return { mode: 'angle', angle: 360, speed: 90, axis: 'y' };
-    case 'orbit':
-      return { angle: 180 };
     case 'indicate':
       return { scale: 1.3, color: '#ffff00' };
     case 'circumscribe':
@@ -233,7 +220,7 @@ export const actions = {
       const dx = (b.w - a.w) / 2;
       const dy = (b.h - a.h) / 2;
       // Conserva la posición relativa al centro del lienzo (cambio reversible).
-      const objects = p.objects.map((o) => (is2D(o) ? { ...o, x: o.x + dx, y: o.y + dy } : o));
+      const objects = p.objects.map((o) => ({ ...o, x: o.x + dx, y: o.y + dy }));
       return { ...p, format, objects };
     });
   },
@@ -250,16 +237,6 @@ export const actions = {
       return { ...p, objects: [...p.objects, obj], counters: { ...p.counters, obj: Math.max(p.counters.obj, Number(o.id.slice(1))) } };
     });
     actions.select(o.id);
-  },
-
-  add3D(shape: Shape3D) {
-    const id = actions.reserveObjectId();
-    store.setProject((p) => ({
-      ...p,
-      counters: { ...p.counters, obj: Number(id.slice(1)) },
-      objects: [...p.objects, { id, kind: 'shape3d', name: SHAPE3D_LABEL[shape], shape, scale: 1, rotation: 0 }],
-    }));
-    actions.select(id);
   },
 
   removeObject(id: string) {
@@ -309,9 +286,7 @@ export const actions = {
     if (!object) return;
     const nextId = actions.reserveObjectId();
     const base = { id: nextId, name: `${object.name} (copia)` };
-    const copy = is2D(object)
-      ? { ...object, ...base, x: object.x + 20, y: object.y + 20, markup: prepareSvg(object.sourceSvg, nextId).markup }
-      : { ...object, ...base };
+    const copy: Obj2D = { ...object, ...base, x: object.x + 20, y: object.y + 20, markup: prepareSvg(object.sourceSvg, nextId).markup };
     store.setProject((project) => {
       const styles = { ...project.styles };
       for (const [target, style] of Object.entries(project.styles)) {
@@ -352,10 +327,6 @@ export const actions = {
       else styles[nodeId] = cur;
       return { ...p, styles };
     }, group);
-  },
-
-  setCamera(patch: Partial<CameraState>, group?: symbol) {
-    store.setProject((p) => ({ ...p, camera: { ...p.camera, ...patch } }), group);
   },
 
   addClip(args: {
@@ -439,7 +410,7 @@ export const actions = {
   setGlyphStyle(objectId: string, indices: number[], patch: Partial<GlyphStyle>, group?: symbol) {
     store.setProject((p) => {
       const object = p.objects.find((entry) => entry.id === objectId);
-      if (!object || !is2D(object) || !indices.length) return p;
+      if (!object || !indices.length) return p;
       const styles = { ...object.glyphStyles };
       for (const index of indices) {
         const cur: GlyphStyle = { ...styles[index] };
@@ -467,7 +438,7 @@ export const actions = {
     let id: string | null = null;
     store.setProject((p) => {
       const object = p.objects.find((entry) => entry.id === objectId);
-      if (!object || !is2D(object)) return p;
+      if (!object) return p;
       const terms = object.terms ?? [];
       id = `t${terms.reduce((max, term) => Math.max(max, Number(term.id.slice(1))), 0) + 1}`;
       const updated: Obj2D = { ...object, terms: [...terms, { id, name: label, glyphs: [...new Set(indices)].sort((a, b) => a - b) }] };
@@ -479,7 +450,7 @@ export const actions = {
   removeTerm(objectId: string, termId: string) {
     store.setProject((p) => {
       const object = p.objects.find((entry) => entry.id === objectId);
-      if (!object || !is2D(object) || !object.terms?.some((term) => term.id === termId)) return p;
+      if (!object || !object.terms?.some((term) => term.id === termId)) return p;
       const terms = object.terms.filter((term) => term.id !== termId);
       const updated: Obj2D = { ...object, terms: terms.length ? terms : undefined };
       return { ...p, objects: p.objects.map((entry) => entry === object ? updated : entry) };

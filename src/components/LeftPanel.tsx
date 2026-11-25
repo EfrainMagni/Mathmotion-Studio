@@ -1,7 +1,7 @@
 import { VECTOR_LABEL } from '../engine/vector';
 import { useEffect, useRef, useState } from 'react';
 import {
-  ArrowUpRight, Box, Minus, MousePointer2, Pentagon, Settings2, Type,
+  ArrowUpRight, Minus, MousePointer2, Pentagon, Settings2, Type,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -18,11 +18,10 @@ import {
   Volume2,
 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { SHAPE3D_LABEL, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, type Shape3D, type SoundId, type VectorTool } from '../types';
+import { SOUND_IDS, SOUND_LABEL, STAGE_SIZES, type SoundId, type VectorTool } from '../types';
 import { audio, engine } from '../engine';
 import { SAMPLE_SVG, prepareSvg } from '../engine/svgImport';
 import { formulaToPrepared, loadMathJax, texToSvg } from '../engine/mathjax';
-import { Scene3D } from '../engine/three3d';
 import type { TreeNode } from '../engine/runtime';
 import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
 
@@ -113,7 +112,7 @@ function ObjectsSection() {
 
   return (
     <Section title="Objetos" icon={<Layers size={14} />}>
-      {objects.length === 0 && <p className="text-xs text-slate-500">Importa un SVG, inserta una fórmula o un objeto 3D.</p>}
+      {objects.length === 0 && <p className="text-xs text-slate-500">Importa un SVG o inserta una fórmula.</p>}
       <div ref={boxRef} role="tree" className="scroll-thin max-h-72 overflow-auto rounded border border-bezel bg-ink-900 p-1">
         {objects.map((o) => {
           const tree = o.kind === 'svg' ? engine.runtime?.getTree(o.id) : null;
@@ -143,7 +142,7 @@ function ObjectsSection() {
               style={{ paddingLeft: 20 }}
               onClick={() => actions.select(o.id)}
             >
-              <span className="w-12 shrink-0 truncate font-mono text-[10px] text-slate-500">{o.kind === 'formula' ? 'tex' : o.kind === 'shape3d' ? '3d' : 'svg'}</span>
+              <span className="w-12 shrink-0 truncate font-mono text-[10px] text-slate-500">{o.kind === 'formula' ? 'tex' : 'svg'}</span>
               <span className="truncate">{o.name}</span>
               <button
                 className="ml-auto hidden rounded p-0.5 text-slate-400 hover:text-rose-300 group-hover:block"
@@ -355,49 +354,6 @@ function LatexSection() {
   );
 }
 
-// ------------------------------------------------------------------ 3D
-
-const SHAPES: { id: Shape3D; icon: React.ReactNode }[] = [
-  { id: 'axes', icon: <Layers size={13} /> },
-  { id: 'paraboloid', icon: <Circle size={13} /> },
-  { id: 'sphere', icon: <Circle size={13} /> },
-  { id: 'vector', icon: <Triangle size={13} /> },
-];
-
-function Shapes3DSection() {
-  const webgl = useStore((s) => s.ui.webgl);
-  const msg = useStore((s) => s.ui.webglMessage);
-  const busy = useStore((s) => s.ui.recording.phase !== 'idle');
-  const add = (shape: Shape3D) => {
-    if (!Scene3D.supported()) {
-      actions.notify('error', 'WebGL no está disponible en este navegador o dispositivo. El editor 2D sigue funcionando; los objetos 3D no se pueden insertar.');
-      return;
-    }
-    actions.add3D(shape);
-  };
-  return (
-    <Section title="Objetos 3D" icon={<Box size={14} />}>
-      <div className="grid grid-cols-2 gap-2">
-        {SHAPES.map((s) => (
-          <button key={s.id} className={btn} disabled={busy} onClick={() => add(s.id)}>
-            {s.icon} {SHAPE3D_LABEL[s.id]}
-          </button>
-        ))}
-      </div>
-      {webgl === 'loading' && (
-        <p className="flex items-center gap-1 text-[11px] text-slate-400">
-          <Loader2 size={12} className="animate-spin" /> Cargando Three.js…
-        </p>
-      )}
-      {webgl === 'unavailable' && (
-        <p role="alert" className="rounded bg-amber-500/10 p-2 text-[11px] text-amber-200">
-          {msg ?? 'WebGL no disponible.'} Los objetos 3D no se dibujarán; el editor 2D sigue operativo.
-        </p>
-      )}
-    </Section>
-  );
-}
-
 // ------------------------------------------------------------------ Audio
 
 function AudioSection() {
@@ -545,11 +501,11 @@ const DRAW_TOOLS = [
 function DrawingSection() {
   const active = useStore((s) => s.ui.vectorTool);
   const text = useStore((s) => s.ui.vectorText);
-  const normalSelection = useStore((s) => s.ui.pointerTool === 'select' && !s.ui.cameraMode);
+  const normalSelection = useStore((s) => s.ui.pointerTool === 'select' );
   const polygonSides = useStore((s) => s.ui.polygonSides);
   const disabled = useStore((s) => s.ui.playing || s.ui.recording.phase !== 'idle');
   function select(tool: VectorTool | null) {
-    store.setUi({ vectorTool: tool, cameraMode: false, pointerTool: 'select' });
+    store.setUi({ vectorTool: tool, pointerTool: 'select' });
   }
 
   return (
@@ -585,7 +541,6 @@ export function LeftPanel() {
       <ObjectsSection />
       <SvgSection />
       <LatexSection />
-      <Shapes3DSection />
       <AudioSection />
     </aside>
   );

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { is2D, type Project } from '../types';
+import type { Project } from '../types';
 import { prepareSvg } from './svgImport';
 
 const number = z.number();
@@ -32,9 +32,8 @@ const object2D = z.object({
   x: number, y: number, bw: positive, bh: positive, tex: z.string().optional(),
   glyphStyles: z.record(z.string().regex(/^\d+$/), glyphStyle).optional(), terms: z.array(term).optional(),
 });
-const obj3D = z.object({
-  ...baseObject, kind: z.literal('shape3d'), shape: z.enum(['axes', 'paraboloid', 'sphere', 'vector']),
-});
+/** Compatibilidad: los archivos antiguos pueden traer objetos 3D; se leen solo para descartarlos. */
+const legacyObject3D = z.object({ id: objectId, kind: z.literal('shape3d') });
 const style = z.object({
   fill: paint.optional(), stroke: paint.optional(), strokeWidth: nonnegative.optional(),
   lineStyle: z.enum(['solid', 'dotted']).optional(), opacity: number.min(0).max(1).optional(),
@@ -58,17 +57,17 @@ const voiceFile = voice.extend({ mime: z.string(), base64: z.base64() });
 const project = z.object({
   format: z.enum(['9:16', '16:9']),
   background: z.enum(['board', 'grid', 'light']),
-  objects: z.array(z.union([object2D, obj3D])),
+  objects: z.array(z.union([object2D, legacyObject3D])),
   styles: z.record(targetId, style),
   clips: z.array(z.object({
     id: clipId, targetId, type: z.enum([
-      'draw', 'radar', 'glow', 'appear', 'rotate', 'orbit',
+      'draw', 'radar', 'glow', 'appear', 'rotate', 'orbit', // 'orbit' es legado 3D: se descarta al abrir
       'indicate', 'circumscribe', 'focus', 'transform', 'transformMatch',
     ]),
     start: nonnegative, duration: positive, sound: z.enum(['chalk', 'pop', 'radar', 'sparkle']).nullable(),
     parameters,
   })),
-  camera: z.object({ az: number, el: number, dist: positive }),
+  // `camera` (3D) de archivos antiguos se ignora: zod descarta las claves desconocidas.
   counters: z.object({ obj: z.int().nonnegative(), clip: z.int().nonnegative() }),
 });
 const projectFile = z.object({
@@ -86,11 +85,7 @@ function toBase64(blob: Blob): Promise<string> {
 }
 
 export async function serializeProject(p: Project): Promise<string> {
-  const objects = p.objects.map((object) => {
-    if (!is2D(object)) return object;
-    const { markup, ...rest } = object;
-    return rest;
-  });
+  const objects = p.objects.map(({ markup, ...rest }) => rest);
   let track: z.infer<typeof voiceFile> | null = null;
   if (p.voice) {
     const { source, ...metadata } = p.voice;
@@ -102,12 +97,21 @@ export async function serializeProject(p: Project): Promise<string> {
 export function parseProject(text: string): Project {
   const result = projectFile.safeParse(JSON.parse(text));
   if (!result.success) throw new Error('El archivo no es un proyecto MathMotion válido de la versión 1.');
-  const p = result.data.project;
-  const objects = p.objects.map((object) => {
-    if (object.kind === 'shape3d') return object;
+  const data = result.data.project;
+  // Proyecto 100% 2D: se ignoran objetos 3D, clips de cámara y todo lo que dependa de ellos.
+  const dropped = new Set(data.objects.filter((object) => object.kind === 'shape3d').map((object) => object.id));
+  const owner = (id: string) => id.split('.')[0];
+  const p = {
+    ...data,
+    styles: Object.fromEntries(Object.entries(data.styles).filter(([id]) => !dropped.has(owner(id)))),
+    clips: data.clips.filter((clip) =>
+      clip.type !== 'orbit' && !dropped.has(owner(clip.targetId)) && !dropped.has(String(clip.parameters.to ?? ''))),
+  };
+  const objects = data.objects.flatMap((object) => {
+    if (object.kind === 'shape3d') return [];
     // El archivo nunca se monta directamente. Se reconstruyen los mismos IDs de nodo.
     const { markup } = prepareSvg(object.sourceSvg, object.id);
-    return { ...object, markup };
+    return [{ ...object, markup }];
   });
   const targets = new Set(objects.map((object) => object.id));
   const clipIds = new Set(p.clips.map((clip) => clip.id));
@@ -125,5 +129,5 @@ export function parseProject(text: string): Project {
     const bytes = Uint8Array.from(atob(base64), (byte) => byte.charCodeAt(0));
     track = { ...metadata, source: new Blob([bytes], { type: mime }) };
   }
-  return { ...p, objects, voice: track };
+  return { ...p, clips: p.clips as Project['clips'], objects, voice: track };
 }

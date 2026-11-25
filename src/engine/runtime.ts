@@ -1,14 +1,13 @@
-import { STAGE_SIZES, is2D, type Box, type Clip, type Obj2D, type Obj3D, type Project, type Shape3D, type Vertex } from '../types';
+import { STAGE_SIZES, type Box, type Clip, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
 import { SELECTABLE_SHAPES } from './svgImport';
 import {
   clipGlyphs, connectorPlan, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor,
   type DirectedGlyphClip,
 } from './glyphs';
-import { Scene3D, defaultState3D, type State3D } from './three3d';
 
 /**
- * SceneRuntime: dueño del DOM del escenario (capa SVG, capa de efectos, capa 3D).
+ * SceneRuntime: dueño del DOM del escenario (capa SVG, capa de efectos).
  *
  * Principio: el aspecto en el instante `t` es una función pura de (proyecto, t).
  * `renderAt(t)` parte siempre del estado base y aplica cada clip según su progreso,
@@ -26,10 +25,9 @@ export interface NodeInfo {
   id: string;
   name: string;
   tag: string;
-  kind: 'root-svg' | 'formula' | 'group' | 'shape' | 'text' | 'shape3d';
+  kind: 'root-svg' | 'formula' | 'group' | 'shape' | 'text';
   objId: string;
   isRoot: boolean;
-  shape3d?: Shape3D;
 }
 
 /** Glifo de una fórmula: índice secuencial, carácter y caja local en px del objeto. */
@@ -51,11 +49,9 @@ export interface RuntimeEls {
   stage: HTMLElement;
   layer: HTMLElement;
   fx: SVGSVGElement;
-  host3d: HTMLElement;
 }
 
 export interface RuntimeHooks {
-  onWebgl?: (status: 'idle' | 'loading' | 'ready' | 'unavailable', message: string | null) => void;
   onTree?: () => void;
 }
 
@@ -119,7 +115,6 @@ interface NState {
   dy: number;
   scale: number;
   rot: number;
-  rot3: { x: number; y: number; z: number };
   glow: number;
   glowColor: string;
   draw: number | null;
@@ -173,9 +168,6 @@ export class SceneRuntime {
   private project: Project | null = null;
   private objs = new Map<string, ObjRec>();
   private nodes = new Map<string, NodeRec>();
-  private scene3d: Scene3D | null = null;
-  private creating3d: Promise<void> | null = null;
-  private webglError: string | null = null;
   private alive = true;
   private k = 1;
   private applied = new Map<Element, Props>();
@@ -189,7 +181,6 @@ export class SceneRuntime {
   private measureKey = '';
   private ringsDrawn = false;
   private matches = new Map<string, [number, number][]>();
-  private sync3dToken = 0;
 
   constructor(
     private els: RuntimeEls,
@@ -204,9 +195,8 @@ export class SceneRuntime {
   /**
    * Instantánea síncrona del escenario para la grabación directa a canvas: un único SVG con las
    * capas 2D (posición, rotación, escala, opacidad y brillo ya aplicados) más las capas de efectos,
-   * y los `<canvas>` WebGL de la capa 3D, que deben copiarse en el mismo turno en que se dibujaron.
    */
-  snapshotScene(W: number, H: number, safe = false): { svg: string; gl: HTMLCanvasElement[] } {
+  snapshotScene(W: number, H: number, safe = false): { svg: string } {
     const ser = new XMLSerializer();
     const parts: string[] = [];
     // Propiedades que en la copia aislada (imagen SVG) ya no heredan las hojas de estilo de la página.
@@ -257,14 +247,14 @@ export class SceneRuntime {
     const svg =
       `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ` +
       `width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${parts.join('')}</svg>`;
-    return { svg, gl: Array.from(this.els.host3d.querySelectorAll('canvas')) };
+    return { svg };
   }
 
   // ------------------------------------------------------------------ proyecto
 
   setProject(p: Project) {
     this.project = p;
-    const list = p.objects.filter(is2D);
+    const list = p.objects;
     const ids = new Set(list.map((o) => o.id));
     let treeChanged = false;
 
@@ -294,12 +284,10 @@ export class SceneRuntime {
     const { w, h } = STAGE_SIZES[p.format];
     this.els.stage.style.width = `${w}px`;
     this.els.stage.style.height = `${h}px`;
-    this.scene3d?.resize(w, h);
 
     this.syncVertexEdits(p.styles);
     this.renderAt(this.time);
     if (treeChanged) this.hooks.onTree?.();
-    void this.sync3D();
   }
 
   private syncVertexEdits(styles: Project['styles']) {
@@ -427,10 +415,6 @@ export class SceneRuntime {
             : 'shape';
       return { id, name: n.name, tag: n.tag, kind, objId: n.objId, isRoot: n.isRoot };
     }
-    const o = this.project?.objects.find((x) => x.id === id);
-    if (o && o.kind === 'shape3d') {
-      return { id, name: o.name, tag: o.shape, kind: 'shape3d', objId: id, isRoot: true, shape3d: o.shape };
-    }
     return null;
   }
 
@@ -477,7 +461,7 @@ export class SceneRuntime {
     if (!wrapper) return null;
     const objId = wrapper.dataset.mmObj!;
     const rec = this.objs.get(objId);
-    if (!rec || rec.kind === 'formula' || shift || this.project?.objects.some((o) => o.id === objId && is2D(o) && o.vector)) return objId;
+    if (!rec || rec.kind === 'formula' || shift || this.project?.objects.some((o) => o.id === objId && o.vector)) return objId;
     let el: Element | null = target;
     while (el && el !== rec.svg) {
       const id = el.getAttribute('data-mm-id');
@@ -491,7 +475,7 @@ export class SceneRuntime {
     const node = this.nodes.get(id);
     if (!node) return null;
     const object = this.project?.objects.find((entry) => entry.id === node.objId);
-    if (!object || !is2D(object) || object.kind === 'formula') return null;
+    if (!object || object.kind === 'formula') return null;
     const svg = this.objs.get(node.objId)?.svg;
     const native = object.vector?.tool === 'polygon' || object.vector?.tool === 'rectangle';
     if (native) {
@@ -535,7 +519,7 @@ export class SceneRuntime {
     const n = this.nodes.get(id);
     if (n) {
       const svg = n.isRoot ? this.objs.get(id)?.svg : undefined;
-      const polygon = this.project?.objects.some((object) => object.id === id && is2D(object) && object.vector?.tool === 'polygon');
+      const polygon = this.project?.objects.some((object) => object.id === id && object.vector?.tool === 'polygon');
       const el = (polygon && svg?.querySelector('polygon')) || svg || n.el;
       const r = el.getBoundingClientRect();
       const sr = this.els.stage.getBoundingClientRect();
@@ -545,7 +529,7 @@ export class SceneRuntime {
       const ky = h / sr.height;
       return { x: (r.left - sr.left) * kx, y: (r.top - sr.top) * ky, w: r.width * kx, h: r.height * ky };
     }
-    return this.scene3d?.getBox(id) ?? null;
+    return null;
   }
 
   /** Escala de "px de escenario por unidad local" del contenedor de `el`. */
@@ -575,7 +559,7 @@ export class SceneRuntime {
 
   private obj2d(id: string): Obj2D | undefined {
     const o = this.project?.objects.find((entry) => entry.id === id);
-    return o && is2D(o) ? o : undefined;
+    return o;
   }
 
   private formulaOf(id: string): Obj2D | undefined {
@@ -810,7 +794,7 @@ export class SceneRuntime {
 
     // Invalida medidas cuando cambian estilos de pintura o clips de dibujo.
     const key =
-      p.objects.filter(is2D).map((o) => `${o.id}:${o.markup.length}`).join('|') +
+      p.objects.map((o) => `${o.id}:${o.markup.length}`).join('|') +
       '#' +
       Object.entries(p.styles)
         .map(([id, s]) => `${id}:${s.fill ?? ''},${s.stroke ?? ''},${s.strokeWidth ?? ''}`)
@@ -826,7 +810,7 @@ export class SceneRuntime {
       this.geomCache = new WeakMap();
     }
 
-    const { states, rings, camAz, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds } = this.computeStates(p.clips, t);
+    const { states, rings, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds } = this.computeStates(p.clips, t);
 
     // Pivotes: se miden con el DOM en estado base para que el resultado no dependa del historial.
     const childIds = new Set<string>();
@@ -969,7 +953,7 @@ export class SceneRuntime {
       }
     };
     for (const o of p.objects) {
-      if (!is2D(o) || o.kind !== 'formula') continue;
+      if (o.kind !== 'formula') continue;
       const rec = this.objs.get(o.id);
       const effects = glyphStates.get(o.id);
       if (!rec || !rec.glyphs.length || (!o.glyphStyles && !effects)) continue;
@@ -979,7 +963,6 @@ export class SceneRuntime {
     // 2c) copias visuales de la ecuación origen («Mantener ecuación origen»)
     const liveGhosts = new Set<string>();
     for (const o of p.objects) {
-      if (!is2D(o)) continue;
       const rec = this.objs.get(o.id);
       const objFx = ghostStates.get(o.id);
       const glyphFxMap = ghostGlyphs.get(o.id);
@@ -1006,7 +989,6 @@ export class SceneRuntime {
 
     // 3) contenedores raíz (posición, escala, rotación, opacidad, resplandor)
     for (const o of p.objects) {
-      if (!is2D(o)) continue;
       const rec = this.objs.get(o.id);
       if (!rec) continue;
       const st = states.get(o.id);
@@ -1081,24 +1063,6 @@ export class SceneRuntime {
     // 5) Radar (capa de efectos del escenario)
     this.drawRings(rings, frames);
 
-    // 6) 3D
-    if (this.scene3d) {
-      const objs3 = p.objects.filter((o): o is Obj3D => o.kind === 'shape3d');
-      const st3 = new Map<string, State3D>();
-      for (const { id } of objs3) {
-        const s = states.get(id);
-        st3.set(id, {
-          opacity: (s?.opacity ?? 1) * (p.styles[id]?.opacity ?? 1),
-          dx: (s?.dx ?? 0) + (p.styles[id]?.tx ?? 0),
-          dy: (s?.dy ?? 0) + (p.styles[id]?.ty ?? 0),
-          scale: s?.scale ?? 1,
-          rot: s?.rot3 ?? { x: 0, y: 0, z: 0 },
-          glow: s?.glow ?? 0,
-          draw: s?.draw ?? null,
-        });
-      }
-      this.scene3d.apply(objs3, st3, p.camera, camAz);
-    }
   }
 
   /** Copia limpia del objeto origen, fija en su sitio; la animación solo mueve esta copia. */
@@ -1160,7 +1124,6 @@ export class SceneRuntime {
     const ghostStates = new Map<string, NState>();
     const ghostGlyphs = new Map<string, Map<number, GState>>();
     const hiddenIds = new Set<string>();
-    let camAz = 0;
     const glyphState = (objId: string, index: number, ghost = false): GState => {
       const store = ghost ? ghostGlyphs : glyphStates;
       let list = store.get(objId);
@@ -1200,12 +1163,11 @@ export class SceneRuntime {
       const store = ghost ? ghostStates : states;
       let s = store.get(id);
       if (!s) {
-        s = { opacity: 1, dx: 0, dy: 0, scale: 1, rot: 0, rot3: { x: 0, y: 0, z: 0 }, glow: 0, glowColor: '#fde047', draw: null, lag: null };
+        s = { opacity: 1, dx: 0, dy: 0, scale: 1, rot: 0, glow: 0, glowColor: '#fde047', draw: null, lag: null };
         store.set(id, s);
       }
       return s;
     };
-    const is3d = (id: string) => this.project!.objects.some((o) => o.id === id && o.kind === 'shape3d');
     const sorted = clips.slice().sort((a, b) => a.start - b.start);
     // Transformaciones dirigidas glifo → glifo: cada glifo destino se oculta hasta que llega el suyo.
     const directed = directedGlyphClips(sorted);
@@ -1263,7 +1225,7 @@ export class SceneRuntime {
       }
     }
     for (const c of sorted) {
-      if (!this.nodes.has(c.targetId) && !is3d(c.targetId)) continue;
+      if (!this.nodes.has(c.targetId)) continue;
       const raw = (t - c.start) / c.duration;
       const p = clamp01(raw);
       const live = raw >= 0 && raw <= 1;
@@ -1337,17 +1299,11 @@ export class SceneRuntime {
           const spin = str(par.mode, 'angle') === 'spin';
           const total = spin ? num(par.speed, 90) * c.duration : num(par.angle, 360);
           const r = total * (spin ? p : easeInOut(p));
-          if (is3d(c.targetId)) {
-            const axis = str(par.axis, 'y') as 'x' | 'y' | 'z';
-            s.rot3[axis] += r;
-          } else s.rot += r;
+          s.rot += r;
           break;
         }
         case 'radar':
           if (live) rings.push({ targetId: c.targetId, p, color: str(par.color, '#38bdf8'), max: typeof par.size === 'number' ? par.size : null });
-          break;
-        case 'orbit':
-          camAz += num(par.angle, 180) * easeInOut(p);
           break;
         case 'indicate': {
           if (!live) break;
@@ -1574,7 +1530,7 @@ export class SceneRuntime {
     for (const [objId, moving] of ghostMoving) {
       for (const g of this.objs.get(objId)?.glyphs ?? []) if (!moving.has(g.index)) glyphState(objId, g.index, true).opacity *= 0;
     }
-    return { states, rings, camAz, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds };
+    return { states, rings, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds };
   }
 
   private drawRings(rings: Ring[], frames: Frame[] = []) {
@@ -1647,65 +1603,9 @@ export class SceneRuntime {
     fx.appendChild(r);
   }
 
-  // ------------------------------------------------------------------ 3D
-
-  private async sync3D() {
-    const p = this.project;
-    if (!p || !this.alive) return;
-    const token = ++this.sync3dToken;
-    const objs3 = p.objects.filter((o): o is Obj3D => o.kind === 'shape3d');
-    if (!objs3.length) {
-      if (this.scene3d) {
-        this.scene3d.dispose(); // libera WebGL al retirar el último objeto 3D
-        this.scene3d = null;
-      }
-      this.webglError = null;
-      this.hooks.onWebgl?.('idle', null);
-      return;
-    }
-    if (!this.scene3d) {
-      if (this.webglError) return;
-      if (!this.creating3d) {
-        this.hooks.onWebgl?.('loading', null);
-        const { w, h } = STAGE_SIZES[p.format];
-        this.creating3d = Scene3D.create(this.els.host3d, w, h)
-          .then((s) => {
-            const still = this.alive && this.project?.objects.some((o) => o.kind === 'shape3d');
-            if (!still) {
-              s.dispose();
-              return;
-            }
-            this.scene3d = s;
-            this.hooks.onWebgl?.('ready', null);
-          })
-          .catch((e: unknown) => {
-            this.webglError = e instanceof Error ? e.message : String(e);
-            this.hooks.onWebgl?.('unavailable', this.webglError);
-          })
-          .finally(() => {
-            this.creating3d = null;
-          });
-      }
-      await this.creating3d;
-    }
-    if (token !== this.sync3dToken || !this.scene3d || !this.project) return;
-    this.scene3d.sync(
-      this.project.objects.filter((o): o is Obj3D => o.kind === 'shape3d'),
-      this.project.styles,
-    );
-    this.renderAt(this.time);
-  }
-
-  /** Espera a que la capa 3D esté lista (para la vista de grabación). */
-  async whenReady(): Promise<void> {
-    await this.sync3D();
-  }
-
   dispose() {
     this.alive = false;
     this.restoreAll();
-    this.scene3d?.dispose();
-    this.scene3d = null;
     for (const rec of this.objs.values()) rec.wrapper.remove();
     for (const ghost of this.ghosts.values()) ghost.wrapper.remove();
     this.ghosts.clear();
@@ -1713,5 +1613,3 @@ export class SceneRuntime {
     this.nodes.clear();
   }
 }
-
-export { defaultState3D };
