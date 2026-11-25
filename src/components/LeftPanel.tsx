@@ -115,7 +115,7 @@ function ObjectsSection() {
       {objects.length === 0 && <p className="text-xs text-slate-500">Importa un SVG o inserta una fórmula.</p>}
       <div ref={boxRef} role="tree" className="scroll-thin max-h-72 overflow-auto rounded border border-bezel bg-ink-900 p-1">
         {objects.map((o) => {
-          const tree = o.kind === 'svg' ? engine.runtime?.getTree(o.id) : null;
+          const tree = o.kind === 'svg' && !o.plane ? engine.runtime?.getTree(o.id) : null;
           if (tree) {
             return (
               <div key={o.id} className="group relative">
@@ -142,7 +142,7 @@ function ObjectsSection() {
               style={{ paddingLeft: 20 }}
               onClick={() => actions.select(o.id)}
             >
-              <span className="w-12 shrink-0 truncate font-mono text-[10px] text-slate-500">{o.kind === 'formula' ? 'tex' : 'svg'}</span>
+              <span className="w-12 shrink-0 truncate font-mono text-[10px] text-slate-500">{o.kind === 'formula' ? 'tex' : o.plane ? 'plano' : 'svg'}</span>
               <span className="truncate">{o.name}</span>
               <button
                 className="ml-auto hidden rounded p-0.5 text-slate-400 hover:text-rose-300 group-hover:block"
@@ -494,6 +494,17 @@ function AudioSection() {
   );
 }
 
+/** Plano cartesiano: ejes cruzados con puntas de flecha sobre una retícula sutil. */
+function CartesianPlaneIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden="true">
+      <path d="M5.5 3.5v17M18.5 3.5v17M3.5 5.5h17M3.5 18.5h17" strokeWidth="1" opacity="0.35" />
+      <path d="M2.5 12h16.2M12 21.5V5.3" strokeWidth="1.8" />
+      <path d="M22 12l-3.6-2 1 2-1 2zM12 2l-2 3.6 2-1 2 1z" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 const DRAW_TOOLS = [
   { id: 'select', label: 'Selección', shortcut: 'V', icon: MousePointer2 },
   { id: 'direct', label: 'Selección Directa (Vértices)', shortcut: 'A', icon: MousePointer },
@@ -531,6 +542,11 @@ export function LeftPanel({ visible }: { visible: boolean }) {
       store.setUi({ vectorTool: tool, pointerTool: 'select' });
     }
     setOpen((current) => tool === 'text' ? 'text' : current === 'text' ? null : current);
+  }
+
+  function insertPlane() {
+    store.setUi({ vectorTool: null, pointerTool: 'select' });
+    actions.addCartesianPlane();
   }
 
   function close(flyout: Flyout) {
@@ -600,6 +616,10 @@ export function LeftPanel({ visible }: { visible: boolean }) {
               <Icon size={20} aria-hidden="true" />
             </button>
           ))}
+          <button type="button" className="studio-rail-button" aria-label="Plano cartesiano"
+            title="Plano cartesiano (G)" aria-keyshortcuts="G" disabled={disabled} onClick={insertPlane}>
+            <CartesianPlaneIcon />
+          </button>
           {active === 'polygon' && (
             <button type="button" className="studio-rail-button" disabled={disabled}
               aria-label="Opciones de polígono" title="Opciones de polígono"

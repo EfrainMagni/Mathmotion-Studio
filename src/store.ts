@@ -1,6 +1,7 @@
 import { History } from './engine/history';
 import { prepareSvg } from './engine/svgImport';
 import { VECTOR_LABEL, vectorSvg } from './engine/vector';
+import { normalizePlane, planeSvg } from './engine/cartesianPlane';
 import { useSyncExternalStore } from 'react';
 import {
   STAGE_SIZES,
@@ -10,6 +11,7 @@ import {
   type GlyphStyle,
   type NodeStyle,
   type Obj2D,
+  type PlaneGeometry,
   type Project,
   type SoundId,
   type SceneObject,
@@ -270,6 +272,31 @@ export const actions = {
     const vector = { ...object.vector, ...patch };
     const sourceSvg = vectorSvg(vector, object.bw, object.bh);
     actions.updateObject(object.id, { vector, sourceSvg, markup: prepareSvg(sourceSvg, object.id).markup }, group);
+  },
+
+  /** Inserta un plano cartesiano estilo Manim `NumberPlane` centrado en el lienzo y lo deja seleccionado. */
+  addCartesianPlane(position?: { x: number; y: number }) {
+    const id = actions.reserveObjectId();
+    const plane = normalizePlane();
+    const sourceSvg = planeSvg(plane);
+    const n = state.project.objects.filter((o) => o.plane).length + 1;
+    actions.addObject2D({
+      id, kind: 'svg', name: n === 1 ? 'Plano cartesiano' : `Plano cartesiano ${n}`, plane, bw: plane.width, bh: plane.height,
+      position, fit: 1, sourceSvg, markup: prepareSvg(sourceSvg, id).markup,
+    });
+  },
+
+  /**
+   * Edita la geometría de un plano y regenera su SVG (dimensiones incluidas). `extra` permite mover el
+   * objeto en la misma entrada de historial (p. ej. al redimensionar desde una esquina).
+   */
+  editPlane(object: Obj2D, patch: Partial<PlaneGeometry>, group?: symbol, extra?: Partial<SceneObject>) {
+    if (!object.plane) return;
+    const plane = normalizePlane({ ...object.plane, ...patch });
+    const sourceSvg = planeSvg(plane);
+    actions.updateObject(object.id, {
+      ...extra, plane, sourceSvg, bw: plane.width, bh: plane.height, markup: prepareSvg(sourceSvg, object.id).markup,
+    }, group);
   },
 
   orderObject(id: string, front: boolean) {

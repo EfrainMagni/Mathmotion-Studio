@@ -165,6 +165,15 @@ export function App() {
         store.setUi({ pointerTool: key === 'a' ? 'direct' : 'select', vectorTool: null });
         return;
       }
+      // G: inserta un plano cartesiano centrado en el escenario (no se dispara al editar texto: ver guarda inicial).
+      if (key === 'g' && !event.shiftKey && !ui.playing) {
+        event.preventDefault();
+        if (!event.repeat) {
+          store.setUi({ vectorTool: null, pointerTool: 'select' });
+          actions.addCartesianPlane();
+        }
+        return;
+      }
       if (event.key === 'Escape' && ui.termEdit) {
         event.preventDefault();
         actions.exitTermEdit();

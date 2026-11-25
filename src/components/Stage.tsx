@@ -10,6 +10,7 @@ import { PolygonOptions } from './PolygonOptions';
 type Drag =
   | { kind: 'root'; id: string; sx: number; sy: number; ox: number; oy: number }
   | { kind: 'child'; id: string; sx: number; sy: number; ox: number; oy: number; inv: DOMMatrix }
+  | { kind: 'resize'; id: string; sx: 1 | -1; sy: 1 | -1; anchor: Vertex }
   | { kind: 'vertex'; id: string; native: Obj2D | null; index: number; points: Vertex[]; start: Vertex; inverse: DOMMatrix; matrix: DOMMatrix; linear: boolean };
 
 type Sketch = { start: Vertex; end: Vertex; vector: VectorGeometry; constrain: boolean; polygonSides: number };
@@ -72,6 +73,10 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const selection = useStore((s) => s.ui.selection);
   const termEdit = useStore((s) => s.ui.termEdit);
   const glyphSel = useStore((s) => s.ui.glyphSel);
+  const selectedPlane = useStore((s) => {
+    const id = s.ui.selection;
+    return id && !id.includes('.') ? s.project.objects.find((o) => o.id === id && o.plane) ?? null : null;
+  });
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -212,6 +217,18 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       return;
     }
 
+    if (!ui.termEdit && e.target instanceof HTMLElement && e.target.dataset.resizeCorner && ui.selection) {
+      const object = project.objects.find((o) => o.id === ui.selection && o.plane);
+      const b = rt.getBox(ui.selection);
+      if (!object || !b) return;
+      const corner = e.target.dataset.resizeCorner;
+      const sx = corner.endsWith('e') ? 1 : -1;
+      const sy = corner.startsWith('s') ? 1 : -1;
+      // La esquina opuesta queda fija mientras se arrastra.
+      dragRef.current = { kind: 'resize', id: object.id, sx, sy, anchor: { x: sx > 0 ? b.x : b.x + b.w, y: sy > 0 ? b.y : b.y + b.h } };
+      return;
+    }
+
     if (!ui.termEdit && e.target instanceof HTMLElement && e.target.dataset.vertexIndex !== undefined && ui.selection) {
       const target = rt.getVertexTarget(ui.selection, ui.pointerTool !== 'direct');
       const index = Number(e.target.dataset.vertexIndex);
@@ -291,6 +308,10 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       moveVertex(d, e, active.group);
       return;
     }
+    if (d.kind === 'resize') {
+      resizePlane(d, e, active.group);
+      return;
+    }
     const dx = e.clientX - d.sx;
     const dy = e.clientY - d.sy;
     if (d.kind === 'root') {
@@ -305,6 +326,18 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       actions.setStyle(d.id, { tx: d.ox + lx, ty: d.oy + ly }, active.group);
     }
   };
+
+  /** Redimensiona un plano desde una esquina (ancho/alto del plano, no su escala), con la esquina opuesta fija. */
+  function resizePlane(drag: Extract<Drag, { kind: 'resize' }>, event: PointerEvent, group: symbol) {
+    const object = store.getState().project.objects.find((entry) => entry.id === drag.id);
+    if (!object?.plane) return;
+    const point = position(event);
+    const stageW = Math.max(60, (point.x - drag.anchor.x) * drag.sx);
+    const stageH = Math.max(60, (point.y - drag.anchor.y) * drag.sy);
+    actions.editPlane(object, { width: Math.round(stageW / object.scale), height: Math.round(stageH / object.scale) }, group, {
+      x: drag.anchor.x + (drag.sx * stageW) / 2, y: drag.anchor.y + (drag.sy * stageH) / 2,
+    });
+  }
 
   function moveVertex(drag: Extract<Drag, { kind: 'vertex' }>, event: PointerEvent, group: symbol) {
     const point = transformVertex(drag.inverse, event.clientX, event.clientY);
@@ -433,6 +466,19 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
                     outlineOffset: `${3 / k}px`,
                   }}
                 />
+              )}
+              {selectedPlane && box && selectedPlane.rotation === 0 && !selectedPlane.id.includes('.') && (
+                (['nw', 'ne', 'sw', 'se'] as const).map((corner) => {
+                  const size = 9 / (k * viewportScale);
+                  const cx = box.x + (corner.endsWith('e') ? box.w : 0);
+                  const cy = box.y + (corner.startsWith('s') ? box.h : 0);
+                  return (
+                    <span key={corner} data-resize-corner={corner} title="Redimensionar plano"
+                      className="pointer-events-auto absolute border border-accent bg-white"
+                      style={{ left: cx - size / 2, top: cy - size / 2, width: size, height: size, borderWidth: size / 8,
+                        cursor: corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize' }} />
+                  );
+                })
               )}
               {termEdit && glyphBoxes.map((b, i) => {
                 if (!b) return null;

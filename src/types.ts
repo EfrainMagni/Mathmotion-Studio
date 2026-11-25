@@ -181,6 +181,61 @@ export interface VectorGeometry {
   vertices?: Vertex[];
 }
 
+export type PlaneArrowTips = 'both' | 'positive' | 'none';
+
+/**
+ * Geometría de un plano cartesiano estilo Manim `NumberPlane` (objeto nativo `cartesianPlane`).
+ * `width`/`height` son px lógicos del escenario antes de aplicar `scale` del objeto; posición, rotación
+ * y opacidad viven en el propio objeto (`x`, `y`, `rotation`) y en su estilo (`opacity`).
+ */
+export interface PlaneGeometry {
+  width: number;
+  height: number;
+  xMin: number; xMax: number; xStep: number;
+  yMin: number; yMax: number; yStep: number;
+  /** Líneas de cuadrícula por cada paso principal (1 = sin subdivisión). */
+  subdivisions: number;
+  showAxes: boolean;
+  axisColor: string;
+  axisWidth: number;
+  arrowTips: PlaneArrowTips;
+  showAxisLabels: boolean;
+  xLabel: string;
+  yLabel: string;
+  showGrid: boolean;
+  gridColor: string;
+  gridOpacity: number;
+  gridWidth: number;
+  showSubGrid: boolean;
+  subGridColor: string;
+  subGridOpacity: number;
+  subGridWidth: number;
+  showTicks: boolean;
+  tickLength: number;
+  showNumbers: boolean;
+  numberColor: string;
+  numberSize: number;
+  showOriginZero: boolean;
+}
+
+/** Colores clásicos 3Blue1Brown (cuadrícula principal, subcuadrícula, ejes). */
+export const PLANE_STYLE_3B1B = {
+  gridColor: '#58C4DD', gridOpacity: 0.45, subGridColor: '#29ABCA', subGridOpacity: 0.18, axisColor: '#FFFFFF',
+} as const;
+
+export const DEFAULT_PLANE: PlaneGeometry = {
+  width: 720, height: 450,
+  xMin: -5, xMax: 5, xStep: 1,
+  yMin: -3, yMax: 3, yStep: 1,
+  subdivisions: 2,
+  showAxes: true, axisColor: '#FFFFFF', axisWidth: 2.2, arrowTips: 'positive',
+  showAxisLabels: true, xLabel: 'x', yLabel: 'y',
+  showGrid: true, gridColor: '#58C4DD', gridOpacity: 0.45, gridWidth: 1.1,
+  showSubGrid: true, subGridColor: '#29ABCA', subGridOpacity: 0.18, subGridWidth: 0.6,
+  showTicks: true, tickLength: 8,
+  showNumbers: true, numberColor: '#E5E7EB', numberSize: 13, showOriginZero: false,
+};
+
 /** Propiedades propias de un glifo de fórmula (clave: índice del glifo). */
 export interface GlyphStyle {
   color?: string;
@@ -211,6 +266,8 @@ export interface Obj2D {
   rotation: number;
   tex?: string;
   vector?: VectorGeometry;
+  /** Plano cartesiano nativo (`cartesianPlane`): su SVG se genera siempre a partir de esta geometría. */
+  plane?: PlaneGeometry;
   /** SVG original o generado por MathJax, para reconstruir el objeto al abrir un archivo. */
   sourceSvg: string;
   /** Solo fórmulas: estilo por glifo (índice → propiedades). */

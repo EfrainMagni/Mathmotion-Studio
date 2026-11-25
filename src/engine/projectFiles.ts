@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import type { Project } from '../types';
+import type { Obj2D, Project } from '../types';
 import { prepareSvg } from './svgImport';
+import { normalizePlane, planeSvg } from './cartesianPlane';
 
 const number = z.number();
 const lineTip = z.enum(['none', 'stealth', 'right', 'triangle', 'open', 'circle']);
@@ -16,6 +17,19 @@ const glyphStyle = z.object({ color: paint.optional(), scale: positive.optional(
 const term = z.object({
   id: z.string().regex(/^t[1-9]\d*$/), name: z.string().max(60), glyphs: z.array(z.int().nonnegative()).max(2000),
 });
+const hex = z.string().regex(/^#[\da-f]{3,8}$/i);
+/** Plano cartesiano: todos los campos son opcionales; `normalizePlane` completa y sanea al abrir. */
+const plane = z.object({
+  width: positive, height: positive,
+  xMin: number, xMax: number, xStep: positive, yMin: number, yMax: number, yStep: positive,
+  subdivisions: z.int().min(1).max(10),
+  showAxes: z.boolean(), axisColor: hex, axisWidth: nonnegative, arrowTips: z.enum(['both', 'positive', 'none']),
+  showAxisLabels: z.boolean(), xLabel: z.string().max(12), yLabel: z.string().max(12),
+  showGrid: z.boolean(), gridColor: hex, gridOpacity: number.min(0).max(1), gridWidth: nonnegative,
+  showSubGrid: z.boolean(), subGridColor: hex, subGridOpacity: number.min(0).max(1), subGridWidth: nonnegative,
+  showTicks: z.boolean(), tickLength: nonnegative, showNumbers: z.boolean(), numberColor: hex,
+  numberSize: positive, showOriginZero: z.boolean(),
+}).partial();
 const baseObject = { id: objectId, name: z.string(), scale: positive, rotation: number };
 const object2D = z.object({
   ...baseObject, kind: z.enum(['svg', 'formula']), sourceSvg: z.string(),
@@ -32,6 +46,7 @@ const object2D = z.object({
     }).optional(),
     vertices: z.array(vertex).min(3).max(20).optional(),
   }).refine((vector) => vector.tool !== 'polygon' || !!vector.vertices).optional(),
+  plane: plane.optional(),
   x: number, y: number, bw: positive, bh: positive, tex: z.string().optional(),
   glyphStyles: z.record(z.string().regex(/^\d+$/), glyphStyle).optional(), terms: z.array(term).optional(),
 });
@@ -116,11 +131,17 @@ export function parseProject(text: string): Project {
     clips: data.clips.filter((clip) =>
       clip.type !== 'orbit' && !dropped.has(owner(clip.targetId)) && !dropped.has(String(clip.parameters.to ?? ''))),
   };
-  const objects = data.objects.flatMap((object) => {
+  const objects = data.objects.flatMap((object): Obj2D[] => {
     if (object.kind === 'shape3d') return [];
+    if (object.plane) {
+      // El SVG de un plano se regenera siempre desde su geometría (saneada).
+      const plane = normalizePlane(object.plane);
+      const sourceSvg = planeSvg(plane);
+      return [{ ...object, plane, sourceSvg, bw: plane.width, bh: plane.height, markup: prepareSvg(sourceSvg, object.id).markup }];
+    }
     // El archivo nunca se monta directamente. Se reconstruyen los mismos IDs de nodo.
     const { markup } = prepareSvg(object.sourceSvg, object.id);
-    return [{ ...object, markup }];
+    return [{ ...object, plane: undefined, markup }];
   });
   const targets = new Set(objects.map((object) => object.id));
   const clipIds = new Set(p.clips.map((clip) => clip.id));

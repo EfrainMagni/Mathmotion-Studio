@@ -1,5 +1,6 @@
 import { BACKGROUND_COLOR, STAGE_SIZES, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
 import { svgWithVertices } from './vertices';
+import { normalizePlane } from './cartesianPlane';
 import { clipGlyphs, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphRuns } from './glyphs';
 import { VECTOR_FILL, VECTOR_STROKE, VECTOR_STROKE_WIDTH } from './vector';
 
@@ -114,7 +115,56 @@ function glyphCommands(object: Obj2D, info: TexInfo) {
   return commands;
 }
 
+/** Plano cartesiano → `NumberPlane` de Manim (cuadrícula, subcuadrícula, ejes con punta Stealth, coordenadas). */
+function planeCode(object: Obj2D, style: NodeStyle, width: number, height: number) {
+  const plane = normalizePlane(object.plane);
+  const name = object.id;
+  const unit = FRAME_HEIGHT / height;
+  const color = (value: string) => quoted(cssColor(value) ?? '#ffffff');
+  const tip = Math.min(9 + 3.2 * plane.axisWidth, Math.min(plane.width, plane.height) / 4) * object.scale * unit;
+  const decimals = Math.max(0, Math.min(6, Math.ceil(-Math.log10(Math.min(plane.xStep, plane.yStep)) - 1e-9)));
+  const axis = [
+    `"color": ${color(plane.axisColor)}`, `"stroke_width": ${n(plane.axisWidth)}`,
+    `"include_tip": ${plane.showAxes && plane.arrowTips !== 'none' ? 'True' : 'False'}`,
+    `"tip_shape": StealthTip`, `"tip_width": ${n(tip * 0.76)}`, `"tip_height": ${n(tip)}`,
+    `"include_ticks": ${plane.showTicks ? 'True' : 'False'}`, `"tick_size": ${n((plane.tickLength / 2) * object.scale * unit)}`,
+    `"font_size": ${n(Math.max(4, plane.numberSize * object.scale * unit * 100))}`,
+    `"decimal_number_config": {"num_decimal_places": ${decimals}, "color": ${color(plane.numberColor)}}`,
+  ];
+  const mainOpacity = plane.showGrid ? plane.gridOpacity : 0;
+  const commands = [
+    `${name} = NumberPlane(`,
+    `    x_range=[${n(plane.xMin)}, ${n(plane.xMax)}, ${n(plane.xStep)}], y_range=[${n(plane.yMin)}, ${n(plane.yMax)}, ${n(plane.yStep)}],`,
+    `    x_length=${n(plane.width * object.scale * unit)}, y_length=${n(plane.height * object.scale * unit)},`,
+    `    background_line_style={"stroke_color": ${color(plane.gridColor)}, "stroke_width": ${n(plane.gridWidth)}, "stroke_opacity": ${n(mainOpacity)}},`,
+    `    faded_line_style={"stroke_color": ${color(plane.subGridColor)}, "stroke_width": ${n(plane.subGridWidth)}, "stroke_opacity": ${n(plane.showSubGrid ? plane.subGridOpacity : 0)}},`,
+    `    faded_line_ratio=${plane.showSubGrid ? plane.subdivisions : 1},`,
+    `    axis_config={${axis.join(', ')}},`,
+    ')',
+  ];
+  if (!plane.showAxes) commands.push(`${name}.x_axis.set_opacity(0)`, `${name}.y_axis.set_opacity(0)`);
+  else {
+    if (plane.arrowTips === 'both') commands.push(`${name}.x_axis.add_tip(tip_shape=StealthTip, at_start=True, tip_length=${n(tip)})`, `${name}.y_axis.add_tip(tip_shape=StealthTip, at_start=True, tip_length=${n(tip)})`);
+    if (plane.showNumbers) commands.push(`${name}.add_coordinates()`);
+    if (plane.showNumbers && plane.showOriginZero && plane.xMin <= 0 && plane.xMax >= 0 && plane.yMin <= 0 && plane.yMax >= 0) {
+      const size = n(Math.max(4, plane.numberSize * object.scale * unit * 100));
+      commands.push(`${name}.add(MathTex("0", font_size=${size}, color=${color(plane.numberColor)}).next_to(${name}.c2p(0, 0), DL, buff=${n(0.35 * plane.numberSize * object.scale * unit)}))`);
+    }
+    if (plane.showAxisLabels && (plane.xLabel.trim() || plane.yLabel.trim())) {
+      const size = n(Math.max(4, plane.numberSize * 1.5 * object.scale * unit * 100));
+      const label = (text: string) => (text.trim() ? `MathTex(${quoted(text.trim())}, font_size=${size}, color=${color(plane.axisColor)})` : 'VGroup()');
+      commands.push(`${name}.add(${name}.get_axis_labels(x_label=${label(plane.xLabel)}, y_label=${label(plane.yLabel)}))`);
+    }
+  }
+  const opacity = style.opacity ?? 1;
+  if (opacity !== 1) commands.push(`${name}.fade(${n(1 - opacity)})`);
+  if (object.rotation) commands.push(`${name}.rotate(${n(-object.rotation)} * DEGREES, axis=OUT)`);
+  commands.push(`${name}.move_to(${stagePoint(object, width, height)})`);
+  return commands;
+}
+
 function objectCode(object: SceneObject, style: NodeStyle, width: number, height: number, styles: Project['styles']) {
+  if (object.plane) return planeCode(object, style, width, height);
   const name = object.id;
   const unit = FRAME_HEIGHT / height;
   const info = object.kind === 'formula' && object.tex && !object.vector ? texInfo(object) : null;
@@ -182,6 +232,7 @@ function animation(clip: Clip, object: SceneObject, width: number, height: numbe
     case 'draw': {
       const write = (object.kind === 'formula' || object.vector?.tool === 'text');
       const lag = write && typeof params.lagRatio === 'number' && params.lagRatio >= 0 ? `, lag_ratio=${n(params.lagRatio)}` : '';
+      if (object.plane) return `Create(${id}, lag_ratio=0.02, ${duration})`;
       return `${write ? 'Write' : 'Create'}(${id}${lag}, ${duration})`;
     }
     case 'appear': {
@@ -351,7 +402,7 @@ const TIMELINE_HELPER = `def play_timeline(scene, objects, events, duration):
 
 export function generateManim(project: Project): { script: string; notes: string[] } {
   const { w, h } = STAGE_SIZES[project.format];
-  const svg = project.objects.some((object) => !object.vector && (object.kind === 'svg' || !object.tex));
+  const svg = project.objects.some((object) => !object.vector && !object.plane && (object.kind === 'svg' || !object.tex));
   const notes = new Set<string>();
   const byId = new Map(project.objects.map((object) => [object.id, object]));
   const ends = new Map<string, number>();
@@ -444,6 +495,7 @@ export function generateManim(project: Project): { script: string; notes: string
     events.push({ start: last, time: 0.05, id: ref, code: `FadeIn(${ref}, run_time=0.05)`, entrance: true, overlay: false, reveal: [] });
   }
   events.sort((a, b) => a.start - b.start);
+  if (project.objects.some((object) => object.plane)) notes.add('Planos cartesianos: se exportan como NumberPlane; el tamaño de los números y los grosores se aproximan a las unidades de Manim.');
   if (svg) notes.add('Los SVG se incrustan. Manim interpreta sus estilos y filtros según su compatibilidad.');
   if (project.voice || project.clips.some((clip) => clip.sound)) notes.add('El audio queda fuera del script.');
   if (project.background === 'grid') notes.add('La cuadrícula se exporta como fondo liso.');
