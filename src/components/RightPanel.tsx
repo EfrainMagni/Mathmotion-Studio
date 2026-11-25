@@ -4,11 +4,12 @@ import { actions, store, useStore } from '../store';
 import {
   DEFAULT_TEXT_STYLE, FONT_CATALOG, SCALE_MAX, SCALE_MIN, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
   glyphTransformParams,
-  type ClipType, type FontId, type FontWeight, type Obj2D, type SoundId, type TextAlign, type TextStyle,
+  type ClipType, type FillGradient, type FontId, type FontWeight, type Obj2D, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
 import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
 import { preloadFont } from '../engine/fonts';
+import { GRADIENT_PRESETS, gradientCss, makeGradient, newStopId } from '../engine/vector';
 import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
 
 function toHex(css: string | undefined): string | null {
@@ -63,6 +64,80 @@ function PaintRow({
         </button>
       )}
     </Field>
+  );
+}
+
+const MODE_TABS = [['solid', 'Sólido'], ['linear', 'Lineal'], ['radial', 'Radial']] as const;
+
+/** Pestañas Sólido | Lineal | Radial y, para degradados, vista previa, paradas de color, ángulo y presets. */
+function GradientControls({ selection, gradient, solidHex }: { selection: string; gradient: FillGradient | undefined; solidHex: string | null }) {
+  const mode = gradient && gradient.mode !== 'solid' ? gradient.mode : 'solid';
+  const set = (next: FillGradient | undefined) => actions.setStyle(selection, { fillGradient: next });
+  const pick = (m: 'solid' | 'linear' | 'radial') => {
+    if (m === 'solid') return set(undefined);
+    set(gradient ? { ...gradient, mode: m } : makeGradient(m, [solidHex ?? GRADIENT_PRESETS[0].colors[0], GRADIENT_PRESETS[0].colors[1]]));
+  };
+  const stops = gradient?.stops ?? [];
+  const setStops = (next: FillGradient['stops']) => gradient && set({ ...gradient, stops: next });
+  const patchStop = (id: string, patch: Partial<FillGradient['stops'][number]>) =>
+    setStops(stops.map((stop) => (stop.id === id ? { ...stop, ...patch } : stop)));
+  const addStop = () => {
+    const sorted = [...stops].sort((a, b) => a.offset - b.offset);
+    let best = 0;
+    // Se inserta en el hueco más ancho entre dos paradas consecutivas.
+    for (let i = 1; i < sorted.length; i++) if (sorted[i].offset - sorted[i - 1].offset > sorted[best + 1].offset - sorted[best].offset) best = i - 1;
+    const offset = Math.round((sorted[best].offset + sorted[best + 1].offset) / 2);
+    setStops([...stops, { id: newStopId(), offset, color: sorted[best].color }]);
+  };
+  return (
+    <div className="space-y-1.5">
+      <div role="tablist" aria-label="Tipo de relleno" className="grid grid-cols-3 gap-0.5 rounded bg-ink-900 p-0.5">
+        {MODE_TABS.map(([id, label]) => (
+          <button key={id} role="tab" aria-selected={mode === id} onClick={() => pick(id)}
+            className={`rounded px-1 py-0.5 text-[11px] ${mode === id ? 'bg-accent-soft text-accent-light' : 'text-slate-400 hover:bg-ink-600'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {gradient && mode !== 'solid' && (
+        <>
+          <div className="h-4 rounded border border-bezel" style={{ background: gradientCss(gradient) }} aria-label="Vista previa del degradado" />
+          <ul className="space-y-1">
+            {stops.map((stop) => (
+              <li key={stop.id} className="flex items-center gap-1">
+                <input type="color" className="h-6 w-8 cursor-pointer rounded border border-bezel bg-transparent" aria-label="Color de la parada"
+                  value={toHex(stop.color) ?? '#ffffff'} onChange={(e) => patchStop(stop.id, { color: e.target.value })} />
+                <NumberInput className={`${input} w-16`} value={stop.offset} min={0} max={100} step={1} ariaLabel="Posición de la parada (%)"
+                  onChange={(v) => patchStop(stop.id, { offset: Math.min(100, Math.max(0, v)) })} />
+                <span className="text-[11px] text-slate-500">%</span>
+                <button className="ml-auto text-slate-400 hover:text-red-300 disabled:opacity-30" disabled={stops.length <= 2}
+                  aria-label="Eliminar parada" title="Eliminar parada" onClick={() => setStops(stops.filter((x) => x.id !== stop.id))}>
+                  <Trash2 size={12} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <button className={`${btn} w-full justify-center text-[11px]`} disabled={stops.length >= 16} onClick={addStop}>+ Color</button>
+          {mode === 'linear' && (
+            <Field label="Ángulo (°)">
+              <input type="range" className="min-w-0 flex-1 accent-sky-400" min={0} max={360} step={1} aria-label="Ángulo (control deslizante)"
+                value={gradient.angle} onChange={(e) => set({ ...gradient, angle: parseFloat(e.target.value) })} />
+              <NumberInput className={`${input} w-16`} value={gradient.angle} min={0} max={360} step={5} ariaLabel="Ángulo del degradado"
+                onChange={(v) => set({ ...gradient, angle: Math.min(360, Math.max(0, v)) })} />
+            </Field>
+          )}
+        </>
+      )}
+      <div className="grid grid-cols-2 gap-1" aria-label="Presets de degradado">
+        {GRADIENT_PRESETS.map((preset) => (
+          <button key={preset.id} className={`${btn} justify-start gap-1.5 text-[11px]`} title={preset.label}
+            onClick={() => set(makeGradient(mode === 'radial' ? 'radial' : 'linear', preset.colors, gradient?.angle ?? 0))}>
+            <span className="h-3 w-5 shrink-0 rounded-sm border border-bezel" style={{ background: `linear-gradient(90deg, ${preset.colors[0]}, ${preset.colors[1]})` }} />
+            <span className="truncate">{preset.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -213,16 +288,19 @@ function Inspector() {
 
       {paint ? (
         <>
-          <PaintRow
-            label="Relleno"
-            value={fill}
-            fallbackHex="#ffffff"
-            hasOverride={style.fill !== undefined}
-            noneLabel="ninguno"
-            onColor={(hex) => actions.setStyle(selection, { fill: hex })}
-            onNone={(n) => actions.setStyle(selection, { fill: n ? 'none' : undefined })}
-            onReset={() => actions.setStyle(selection, { fill: undefined })}
-          />
+          <GradientControls selection={selection} gradient={style.fillGradient} solidHex={toHex(fill)} />
+          {(!style.fillGradient || style.fillGradient.mode === 'solid') && (
+            <PaintRow
+              label="Relleno"
+              value={fill}
+              fallbackHex="#ffffff"
+              hasOverride={style.fill !== undefined}
+              noneLabel="ninguno"
+              onColor={(hex) => actions.setStyle(selection, { fill: hex })}
+              onNone={(n) => actions.setStyle(selection, { fill: n ? 'none' : undefined })}
+              onReset={() => actions.setStyle(selection, { fill: undefined })}
+            />
+          )}
           <PaintRow
             label="Trazo"
             value={stroke}
