@@ -183,6 +183,8 @@ export interface ColorChangeParams {
   targetFillOpacity?: number;
   strokeEnabled?: boolean;
   targetStrokeColor?: string;
+  /** Grosor de trazo destino en px (0–20). En glifos sin contorno, 2 por defecto; crece hacia fuera. */
+  targetStrokeWidth?: number;
   revertOnEnd?: boolean;
   /** Alcance en ecuaciones: glifos (`"0,2-4"`) o término con nombre. */
   glyphs?: string;

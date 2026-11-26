@@ -51,6 +51,13 @@ export function ColorChangeFields({ value, onChange, compact }: {
         <input type="color" className={swatch} aria-label="Nuevo color de trazo" disabled={!strokeOn}
           value={hex(value.targetStrokeColor, '#ffff00')} onChange={(e) => onChange({ targetStrokeColor: e.target.value, strokeEnabled: true })} />
       </label>
+      {strokeOn && (
+        <label className={row} title="Grosor del trazo al terminar, en px (targetStrokeWidth). En glifos crece hacia fuera">
+          <span>Grosor (px)</span>
+          <NumberInput className={`${input} w-14`} value={typeof value.targetStrokeWidth === 'number' ? value.targetStrokeWidth : 2} min={0.5} max={20} step={0.5}
+            ariaLabel="Grosor de trazo objetivo (px)" onChange={(v) => onChange({ targetStrokeWidth: Math.min(20, Math.max(0.5, v)) })} />
+        </label>
+      )}
       <label className={row} title="Activo: 25 % entra al color nuevo, 50 % lo mantiene y 25 % regresa al color previo. Inactivo: el cambio es permanente">
         <span className="flex items-center gap-1">
           <input type="checkbox" checked={value.revertOnEnd === true}

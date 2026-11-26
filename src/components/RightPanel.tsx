@@ -1110,6 +1110,9 @@ function EquationAnimations() {
   const [color, setColor] = useState('#ffff00');
   const [glyphColor, setGlyphColor] = useState('#58C4DD');
   const [glyphRevert, setGlyphRevert] = useState(false);
+  const [glyphStroke, setGlyphStroke] = useState(false);
+  const [glyphStrokeColor, setGlyphStrokeColor] = useState('#ffff00');
+  const [glyphStrokeWidth, setGlyphStrokeWidth] = useState(2);
   const [dest, setDest] = useState('');
   const [destTerm, setDestTerm] = useState('');
   const [dx, setDx] = useState(0);
@@ -1220,7 +1223,8 @@ function EquationAnimations() {
           <button className={`${btn} flex-1 justify-start`}
             title={glyphRevert ? 'Tiñe los glifos elegidos y regresa a su color al terminar' : 'Cambio de color permanente de los glifos elegidos'}
             onClick={() => add('colorChange', {
-              ...scopeParams(), fillEnabled: true, targetFillColor: glyphColor, strokeEnabled: false, ...(glyphRevert ? { revertOnEnd: true } : {}),
+              ...scopeParams(), fillEnabled: true, targetFillColor: glyphColor, ...(glyphStroke ? { strokeEnabled: true, targetStrokeColor: glyphStrokeColor, targetStrokeWidth: glyphStrokeWidth } : { strokeEnabled: false }),
+              ...(glyphRevert ? { revertOnEnd: true } : {}),
             })}>
             <Palette size={14} /> Cambiar Color
           </button>
@@ -1231,6 +1235,16 @@ function EquationAnimations() {
           <input type="checkbox" checked={glyphRevert} onChange={(e) => setGlyphRevert(e.target.checked)} />
           Regresar al terminar
         </label>
+        <div className="flex items-center gap-1.5 text-[11px] text-slate-300">
+          <label className="flex flex-1 items-center gap-1" title="Añade un contorno exterior a los glifos">
+            <input type="checkbox" checked={glyphStroke} onChange={(e) => setGlyphStroke(e.target.checked)} />
+            Trazo
+          </label>
+          <input type="color" className="h-6 w-8 shrink-0 cursor-pointer rounded border border-bezel bg-transparent disabled:opacity-30" disabled={!glyphStroke}
+            aria-label="Color de trazo de los glifos" title="Color de trazo de los glifos" value={glyphStrokeColor} onChange={(e) => setGlyphStrokeColor(e.target.value)} />
+          <NumberInput className={`${input} w-14`} value={glyphStrokeWidth} min={0.5} max={20} step={0.5} disabled={!glyphStroke}
+            ariaLabel="Grosor (px)" onChange={(v) => setGlyphStrokeWidth(Math.min(20, Math.max(0.5, v)))} />
+        </div>
         <button className={`${btn} w-full justify-start`} onClick={() => add('circumscribe', { ...scopeParams(), color })}>
           <Radio size={14} /> Circumscribe
         </button>
