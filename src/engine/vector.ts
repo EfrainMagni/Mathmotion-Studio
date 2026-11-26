@@ -1,15 +1,15 @@
-import { fontStack, isPathTool, type FillGradient, type PathNode, type GradientStop, type LegacyLineTip, type LineTip, type VectorGeometry, type VectorTool, type Vertex } from '../types';
+import { DEFAULT_ARC, fontStack, isPathTool, type FillGradient, type PathNode, type GradientStop, type LegacyLineTip, type LineTip, type VectorGeometry, type VectorTool, type Vertex } from '../types';
 
 export const VECTOR_LABEL: Record<VectorTool, string> = {
   rectangle: 'Rectángulo', ellipse: 'Círculo / Elipse', line: 'Línea / Vector',
   arrow: 'Flecha vectorial', text: 'Texto libre', polygon: 'Polígono',
-  pen: 'Pluma Bézier / Ángulos', curve: 'Curva suavizada',
+  pen: 'Pluma Bézier / Ángulos', curve: 'Curva suavizada', arc: 'Arco circular / Flecha curva',
 };
 
 /** Líneas, flechas y trazados abiertos: su pintura principal es el trazo (degradado en el trazo, puntas de flecha). */
 export function isLinearVector(vector: VectorGeometry | undefined): boolean {
   if (!vector) return false;
-  return vector.tool === 'line' || vector.tool === 'arrow' || (isPathTool(vector.tool) && !vector.closed);
+  return vector.tool === 'line' || vector.tool === 'arrow' || vector.tool === 'arc' || (isPathTool(vector.tool) && !vector.closed);
 }
 
 export const VECTOR_FILL = '#38bdf8';
@@ -302,6 +302,50 @@ export function nodesBounds(nodes: PathNode[]) {
   return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 }
 
+// ------------------------------------------------------------------ arco circular / flecha curva
+
+/** Punto del arco (ángulo en grados, convención matemática con el eje y hacia abajo de SVG). */
+export function arcPoint(cx: number, cy: number, r: number, degrees: number): Vertex {
+  const t = (degrees * Math.PI) / 180;
+  return { x: cx + r * Math.cos(t), y: cy - r * Math.sin(t) };
+}
+
+/** Centro y radio del círculo inscrito en una caja `w×h`. */
+export const arcCircle = (w: number, h: number) => ({ cx: w / 2, cy: h / 2, r: Math.max(0.5, Math.min(w, h) / 2) });
+
+/**
+ * Nodos Bézier de un arco circular exacto: tramos de ≤ 90° con manejadores `k = 4/3·tan(Δ/4)` (error < 0.03 %).
+ * Así el arco reutiliza el recorte de puntas, la tangente real en los extremos y el dibujo progresivo de los trazados.
+ */
+export function arcNodes(vector: VectorGeometry, w: number, h: number): PathNode[] {
+  const { startAngle, sweep } = vector.arc ?? DEFAULT_ARC;
+  const { cx, cy, r } = arcCircle(w, h);
+  const total = Math.max(-360, Math.min(360, sweep)) || 0.001;
+  const steps = Math.max(1, Math.ceil(Math.abs(total) / 90 - 1e-9));
+  const delta = total / steps;
+  const k = (4 / 3) * Math.tan((Math.abs(delta) * Math.PI) / 720) * r;
+  const dir = Math.sign(delta);
+  const tangent = (deg: number) => {
+    // Derivada respecto del ángulo (convención y-abajo), escalada por el sentido del barrido.
+    const t = (deg * Math.PI) / 180;
+    return { x: -Math.sin(t) * dir, y: -Math.cos(t) * dir };
+  };
+  return Array.from({ length: steps + 1 }, (_, i) => {
+    const deg = startAngle + delta * i;
+    const p = arcPoint(cx, cy, r, deg);
+    const u = tangent(deg);
+    return {
+      x: p.x, y: p.y, type: 'smooth',
+      in: i > 0 ? { x: p.x - u.x * k, y: p.y - u.y * k } : undefined,
+      out: i < steps ? { x: p.x + u.x * k, y: p.y + u.y * k } : undefined,
+    };
+  });
+}
+
+/** Trazado del arco como geometría de nodos (abierto) para `pathLayout`. */
+export const arcAsPath = (vector: VectorGeometry, w: number, h: number): VectorGeometry =>
+  ({ ...vector, nodes: arcNodes(vector, w, h), closed: false });
+
 /** Contorno por defecto de rectángulos, elipses y polígonos (desactivado hasta que el inspector le dé color). */
 export const CLOSED_STROKE_WIDTH_MIN = 0.5;
 export const CLOSED_STROKE_WIDTH_MAX = 30;
@@ -326,14 +370,16 @@ export function vectorSvg(vector: VectorGeometry, width: number, height: number)
   const heads = layout?.clip ? `<defs><clipPath id="tip-clip" clipPathUnits="userSpaceOnUse"><polygon points="${layout.clip}"/></clipPath></defs>` : '';
   const line = `<line x1="${start.x}" y1="${start.y}" x2="${end.x}" y2="${end.y}" ${stroke}${layout?.clip ? ' clip-path="url(#tip-clip)"' : ''}/>`
     + (['start', 'end'] as const).map((k) => layout?.[k] ? `<polygon data-mm-tip="${k}" points="${layout[k]}" fill="${VECTOR_STROKE}" stroke="none"/>` : '').join('');
-  const path = isPathTool(tool) ? pathLayout(vector, VECTOR_STROKE_WIDTH) : null;
-  const pathMarkup = !path ? '' : vector.closed
+  const path = isPathTool(tool) ? pathLayout(vector, VECTOR_STROKE_WIDTH)
+    : tool === 'arc' ? pathLayout(arcAsPath(vector, width, height), VECTOR_STROKE_WIDTH) : null;
+  const pathMarkup = !path ? '' : vector.closed && tool !== 'arc'
     ? `<path d="${path.d}" ${shape}/>`
     : `<path d="${path.d}" fill="none" ${stroke}/>`
       + (['start', 'end'] as const).map((k) => path[k] ? `<polygon data-mm-tip="${k}" points="${path[k]}" fill="${VECTOR_STROKE}" stroke="none"/>` : '').join('');
   const markup = {
     pen: pathMarkup,
     curve: pathMarkup,
+    arc: pathMarkup,
     polygon: `<polygon points="${vector.vertices?.map(({ x, y }) => `${x},${y}`).join(' ') ?? ''}" ${shape}/>`,
     rectangle: `<rect width="${width}" height="${height}" ${shape}/>`,
     ellipse: `<ellipse cx="${width / 2}" cy="${height / 2}" rx="${width / 2}" ry="${height / 2}" ${shape}/>`,

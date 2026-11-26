@@ -1,8 +1,8 @@
-import { VECTOR_STROKE_WIDTH, nodesBounds, pathLayout, regularPolygon, simplifyPoints, smoothPath, translateNodes, vectorSvg } from '../engine/vector';
+import { VECTOR_STROKE_WIDTH, arcCircle, nodesBounds, pathLayout, regularPolygon, translateNodes, vectorSvg } from '../engine/vector';
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
 import {
   SCENE_GRID_LINE_WIDTH, STAGE_SIZES, resolveSceneBackground, sceneBackgroundGeometry, sceneBackgroundTile,
-  type Box, type SceneBackground, type Obj2D, type PathNode, type VectorGeometry, type Vertex } from '../types';
+  ARC_LIMITS, DEFAULT_ARC, type Box, type SceneBackground, type Obj2D, type PathNode, type VectorGeometry, type Vertex } from '../types';
 import { actions, selectedObjectIds, store, useStore } from '../store';
 import { audio, engine } from '../engine';
 import { SceneRuntime } from '../engine/runtime';
@@ -17,14 +17,31 @@ type Drag =
   | { kind: 'marquee'; start: Vertex; base: string[] }
   | { kind: 'vertex'; id: string; native: Obj2D | null; index: number; points: Vertex[]; start: Vertex; inverse: DOMMatrix; matrix: DOMMatrix; linear: boolean }
   /** Nodo (`side: null`) o manejador Bézier de un trazado, editado con Selección Directa. `base` = objeto al empezar. */
-  | { kind: 'path'; base: Obj2D; index: number; side: 'in' | 'out' | null; start: Vertex; inverse: DOMMatrix };
+  | { kind: 'path'; base: Obj2D; index: number; side: 'in' | 'out' | null; start: Vertex; inverse: DOMMatrix }
+  /** Manejador de inicio (`end: false`) o fin del arco; `last` = último ángulo del puntero (para barridos > 180°). */
+  | { kind: 'arc'; id: string; end: boolean; inverse: DOMMatrix; last: number };
 
 /** Manejador Bézier visible: posición del manejador y de su nodo, en coordenadas del escenario. */
 type HandleMark = { index: number; side: 'in' | 'out'; at: Vertex; node: Vertex };
 /** Distancia (px de pantalla) para cerrar el trazado de la pluma sobre su primer nodo. */
 const CLOSE_RADIUS = 8;
 
-type Sketch = { start: Vertex; end: Vertex; vector: VectorGeometry; constrain: boolean; polygonSides: number };
+type Sketch = { start: Vertex; end: Vertex; vector: VectorGeometry; constrain: boolean; polygonSides: number; centered?: boolean };
+
+/** Restringe `p` a la dirección múltiplo de 45° más cercana desde `origin` (Mayús, estilo Illustrator). */
+function snap45(origin: Vertex, p: Vertex): Vertex {
+  const dx = p.x - origin.x;
+  const dy = p.y - origin.y;
+  const length = Math.hypot(dx, dy);
+  if (!length) return p;
+  const angle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
+  return { x: origin.x + length * Math.cos(angle), y: origin.y + length * Math.sin(angle) };
+}
+
+/** Ángulo (grados, antihorario con y hacia abajo) de `p` respecto de `c`. */
+const angleAt = (c: Vertex, p: Vertex) => (Math.atan2(c.y - p.y, p.x - c.x) * 180) / Math.PI;
+/** Diferencia angular reducida a (−180, 180]. */
+const wrap180 = (d: number) => d - 360 * Math.ceil((d - 180) / 360);
 
 const NO_BOXES: (Box | null)[] = [];
 const DOUBLE_CLICK_MS = 400;
@@ -63,9 +80,19 @@ function transformVertex(matrix: DOMMatrix, x: number, y: number): Vertex {
   return { x: matrix.a * x + matrix.c * y + matrix.e, y: matrix.b * x + matrix.d * y + matrix.f };
 }
 
-function sketchBounds({ start, end, vector, constrain, polygonSides }: Sketch) {
+function sketchBounds({ start, end, vector, constrain, polygonSides, centered }: Sketch) {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
+  if (vector.tool === 'arc') {
+    // Arco circular: caja cuadrada encuadrada en el arrastre, o centrada en el punto inicial con Alt.
+    // Un clic sin arrastre crea un arco de 200 px centrado en el clic.
+    const side = centered ? 2 * Math.hypot(dx, dy) : Math.max(Math.abs(dx), Math.abs(dy));
+    const click = side < 3;
+    const size = click ? 200 : side;
+    const x = click || centered ? start.x - size / 2 : start.x - (dx < 0 ? size : 0);
+    const y = click || centered ? start.y - size / 2 : start.y - (dy < 0 ? size : 0);
+    return { x, y, bw: size, bh: size, vector };
+  }
   if (vector.tool === 'polygon') {
     const radius = Math.hypot(dx, dy);
     return radius >= 1 ? regularPolygon(start, radius, polygonSides, Math.atan2(dy, dx)) : null;
@@ -139,6 +166,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const multiSelection = useStore((s) => s.ui.multiSelection);
   const termEdit = useStore((s) => s.ui.termEdit);
   const glyphSel = useStore((s) => s.ui.glyphSel);
+  const selectedTool = useStore((s) => s.project.objects.find((o) => o.id === s.ui.selection)?.vector?.tool);
   const selectedPlane = useStore((s) => {
     const id = s.ui.selection;
     return id && !id.includes('.') ? s.project.objects.find((o) => o.id === id && o.plane) ?? null : null;
@@ -167,9 +195,6 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const penDrag = useRef<number | null>(null);
   const lastPenClick = useRef<{ t: number; p: Vertex } | null>(null);
   const [penView, setPenView] = useState<{ nodes: PathNode[]; cursor: Vertex | null } | null>(null);
-  // Curva suavizada (N): puntos capturados a mano alzada.
-  const freehand = useRef<Vertex[] | null>(null);
-  const [freehandView, setFreehandView] = useState<Vertex[] | null>(null);
 
   const { w: W, h: H } = STAGE_SIZES[format];
   const hideUi = playing || recPhase === 'recording' || recPhase === 'preparing' || recPhase === 'finishing';
@@ -299,7 +324,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   }, [selection, direct]);
 
   /** Crea el objeto de un trazado a partir de nodos en coordenadas del escenario. */
-  function createPath(tool: 'pen' | 'curve', nodes: PathNode[], closed: boolean) {
+  function createPath(tool: 'pen', nodes: PathNode[], closed: boolean) {
     if (nodes.length < 2) return;
     const box = nodesBounds(nodes);
     const bw = Math.max(1, box.w);
@@ -334,10 +359,6 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   // Cambiar de herramienta (o empezar a reproducir) termina el trazado en curso.
   useEffect(() => {
     if (vectorTool !== 'pen' && pen.current) finishPen(false);
-    if (vectorTool !== 'curve' && freehand.current) {
-      freehand.current = null;
-      setFreehandView(null);
-    }
   }, [vectorTool]);
 
   /** Píxeles de pantalla entre dos puntos del escenario. */
@@ -346,19 +367,6 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     return Math.hypot((a.x - b.x) * rect.width / W, (a.y - b.y) * rect.height / H);
   }
 
-  function finishCurve() {
-    const points = freehand.current;
-    freehand.current = null;
-    setFreehandView(null);
-    if (!points || points.length < 2) return;
-    const rect = stageRef.current!.getBoundingClientRect();
-    // Tolerancia RDP de ~2.5 px de pantalla: elimina el temblor de la mano sin perder la forma.
-    let simple = simplifyPoints(points, 2.5 * W / Math.max(1, rect.width));
-    if (simple.length < 2 || screenDistance(simple[0], simple[simple.length - 1]) < 4 && simple.length < 3) return;
-    const closed = simple.length >= 4 && screenDistance(simple[0], simple[simple.length - 1]) < 12;
-    if (closed) simple = simple.slice(0, -1);
-    createPath('curve', smoothPath(simple, closed), closed);
-  }
 
   function position(event: PointerEvent): Vertex {
     const rect = stageRef.current!.getBoundingClientRect();
@@ -392,17 +400,13 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
         finishPen(false);
         return;
       }
-      const nodes: PathNode[] = [...(current ?? []), { x: p.x, y: p.y, type: 'corner' }];
+      // Mayús: el nuevo nodo queda a 0°/45°/90°… del anterior.
+      const last = current?.[current.length - 1];
+      const at = e.shiftKey && last ? snap45(last, p) : p;
+      const nodes: PathNode[] = [...(current ?? []), { x: at.x, y: at.y, type: 'corner' }];
       pen.current = nodes;
       penDrag.current = nodes.length - 1;
       setPenView({ nodes, cursor: p });
-      return;
-    }
-
-    if (ui.vectorTool === 'curve') {
-      const p = position(e);
-      freehand.current = [p];
-      setFreehandView([p]);
       return;
     }
 
@@ -411,7 +415,11 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       const vector: VectorGeometry = { tool: ui.vectorTool };
       if (vector.tool === 'text') vector.text = ui.vectorText;
       if (vector.tool === 'arrow') vector.tip = 'triangle';
-      draft.current = { start, end: start, vector, constrain: e.shiftKey, polygonSides: ui.polygonSides };
+      if (vector.tool === 'arc') {
+        vector.arc = { ...DEFAULT_ARC };
+        vector.endTip = 'right';
+      }
+      draft.current = { start, end: start, vector, constrain: e.shiftKey, polygonSides: ui.polygonSides, centered: e.altKey };
       setSketch(draft.current);
       return;
     }
@@ -449,6 +457,12 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       const inverse = target.matrix.inverse();
       if (!Number.isFinite(inverse.a)) return;
       setActiveAnchor(index);
+      if (target.arc && target.native) {
+        const local = transformVertex(inverse, e.clientX, e.clientY);
+        const { cx, cy } = arcCircle(target.native.bw, target.native.bh);
+        dragRef.current = { kind: 'arc', id: target.id, end: index === 1, inverse, last: angleAt({ x: cx, y: cy }, local) };
+        return;
+      }
       if (target.path && target.native) {
         store.setUi({ pathNode: index });
         // Doble clic en un nodo: alterna ángulo (corner) ↔ curva suave (smooth).
@@ -567,14 +581,17 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     const active = pointer.current;
     // Pluma: guía de vista previa desde el último nodo hasta el cursor (también sin botón pulsado).
     if (pen.current && !active) {
-      setPenView({ nodes: pen.current, cursor: position(e) });
+      const last = pen.current[pen.current.length - 1];
+      const p = position(e);
+      setPenView({ nodes: pen.current, cursor: e.shiftKey && last ? snap45(last, p) : p });
       return;
     }
     if (!active || active.id !== e.pointerId || active.generation !== store.projectGeneration()) return;
     if (pen.current && penDrag.current !== null) {
-      const p = position(e);
       const index = penDrag.current;
       const node = pen.current[index];
+      // Mayús: el manejador se restringe a múltiplos de 45° alrededor del nodo.
+      const p = e.shiftKey ? snap45(node, position(e)) : position(e);
       // Clic y arrastrar: nodo suave con manejadores simétricos que siguen al cursor.
       const nodes = screenDistance(p, node) < 3
         ? pen.current.map((n, i): PathNode => (i === index ? { x: n.x, y: n.y, type: 'corner' } : n))
@@ -585,17 +602,8 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       setPenView({ nodes, cursor: p });
       return;
     }
-    if (freehand.current) {
-      const p = position(e);
-      const last = freehand.current[freehand.current.length - 1];
-      if (screenDistance(p, last) >= 1.5) {
-        freehand.current = [...freehand.current, p];
-        setFreehandView(freehand.current);
-      }
-      return;
-    }
     if (draft.current) {
-      draft.current = { ...draft.current, end: position(e), constrain: e.shiftKey };
+      draft.current = { ...draft.current, end: position(e), constrain: e.shiftKey, centered: e.altKey };
       setSketch(draft.current);
       return;
     }
@@ -614,6 +622,10 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     }
     if (d.kind === 'path') {
       movePathPoint(d, e, active.group);
+      return;
+    }
+    if (d.kind === 'arc') {
+      moveArcHandle(d, e, active.group);
       return;
     }
     if (d.kind === 'resize') {
@@ -693,6 +705,40 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     } else if (!drag.native) actions.setStyle(drag.id, { vertices: points }, group);
   }
 
+  /**
+   * Arrastre de un extremo del arco: el ángulo avanza de forma continua (se acumulan diferencias), de modo que el
+   * barrido puede pasar de 180° y llegar a ±360°. El extremo contrario queda fijo. Mayús ajusta a pasos de 15°.
+   */
+  function moveArcHandle(drag: Extract<Drag, { kind: 'arc' }>, event: PointerEvent, group: symbol) {
+    const object = store.getState().project.objects.find((o) => o.id === drag.id);
+    const arc = object?.vector?.arc;
+    if (!object || !arc) return;
+    const { cx, cy } = arcCircle(object.bw, object.bh);
+    const local = transformVertex(drag.inverse, event.clientX, event.clientY);
+    const angle = angleAt({ x: cx, y: cy }, local);
+    if (!Number.isFinite(angle)) return;
+    const delta = wrap180(angle - drag.last);
+    drag.last = angle;
+    const clampSweep = (v: number) => Math.max(ARC_LIMITS.sweep.min, Math.min(ARC_LIMITS.sweep.max, v));
+    const norm = (v: number) => ((v % 360) + 360) % 360;
+    let startAngle = arc.startAngle;
+    let sweep = arc.sweep;
+    if (drag.end) {
+      sweep = clampSweep(sweep + delta);
+      if (event.shiftKey) sweep = clampSweep(Math.round((startAngle + sweep) / 15) * 15 - startAngle);
+    } else {
+      const endAngle = startAngle + sweep;
+      let next = startAngle + delta;
+      if (event.shiftKey) next = Math.round(next / 15) * 15;
+      sweep = clampSweep(endAngle - next);
+      startAngle = endAngle - sweep;
+    }
+    startAngle = Math.round(norm(startAngle) * 100) / 100;
+    sweep = Math.round(sweep * 100) / 100;
+    if (startAngle === arc.startAngle && sweep === arc.sweep) return;
+    actions.editVector(object, { arc: { startAngle, sweep } }, group);
+  }
+
   /** Mueve un nodo (con sus manejadores) o un manejador; en nodos suaves el manejador opuesto se mantiene colineal. */
   function movePathPoint(drag: Extract<Drag, { kind: 'path' }>, event: PointerEvent, group: symbol) {
     const nodes = drag.base.vector?.nodes;
@@ -723,11 +769,6 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     const active = pointer.current;
     if (!active || active.id !== event.pointerId) return;
     penDrag.current = null;
-    if (event.type === 'pointerup' && freehand.current && active.generation === store.projectGeneration()) finishCurve();
-    else if (freehand.current) {
-      freehand.current = null;
-      setFreehandView(null);
-    }
     if (event.type === 'pointerup' && dragRef.current?.kind === 'vertex' && active.generation === store.projectGeneration()) {
       moveVertex(dragRef.current, event, active.group);
     }
@@ -809,18 +850,26 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
               dangerouslySetInnerHTML={{ __html: vectorSvg(preview.vector, preview.bw, preview.bh) }} />
           )}
 
-          {!hideUi && (penView || freehandView) && (
+          {!hideUi && penView && (
             <svg data-path-preview className="pointer-events-none absolute inset-0" width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
               {penView && penView.nodes.length > 1 && (
                 <path d={pathLayout({ tool: 'pen', nodes: penView.nodes }, VECTOR_STROKE_WIDTH).d} fill="none"
                   stroke="#38bdf8" strokeWidth={VECTOR_STROKE_WIDTH} opacity={0.85} />
               )}
               {penView?.cursor && penDrag.current === null && (() => {
+                // Vista previa exacta del próximo tramo: si el último nodo tiene manejador de salida, la curva Bézier
+                // (último, out, cursor, cursor) es la misma que producirá el siguiente clic.
                 const last = penView.nodes[penView.nodes.length - 1];
                 const c = last.out ?? last;
                 const end = penView.cursor;
-                return <path d={`M${last.x} ${last.y} C${c.x} ${c.y} ${end.x} ${end.y} ${end.x} ${end.y}`} fill="none"
-                  stroke="#58C4DD" strokeWidth={1.5 / k} strokeDasharray={`${6 / k} ${4 / k}`} />;
+                const d = `M${last.x} ${last.y} C${c.x} ${c.y} ${end.x} ${end.y} ${end.x} ${end.y}`;
+                return (
+                  <>
+                    <path d={d} fill="none" stroke="#38bdf8" strokeWidth={VECTOR_STROKE_WIDTH} strokeLinecap="round" opacity={0.45} />
+                    <path d={d} fill="none" stroke="#58C4DD" strokeWidth={1.5 / k} strokeDasharray={`${6 / k} ${4 / k}`} />
+                    <circle cx={end.x} cy={end.y} r={3 / k} fill="none" stroke="#58C4DD" strokeWidth={1.2 / k} />
+                  </>
+                );
               })()}
               {penView?.nodes.map((node, i) => (
                 <g key={i}>
@@ -835,10 +884,6 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
                     fill={i === 0 ? '#58C4DD' : '#ffffff'} stroke="#58C4DD" strokeWidth={1.5 / k} />
                 </g>
               ))}
-              {freehandView && freehandView.length > 1 && (
-                <polyline points={freehandView.map(({ x, y }) => `${x},${y}`).join(' ')} fill="none" stroke="#38bdf8"
-                  strokeWidth={VECTOR_STROKE_WIDTH} strokeLinecap="round" strokeLinejoin="round" opacity={0.85} />
-              )}
             </svg>
           )}
 
@@ -921,7 +966,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
                   style={{ left: h.at.x - anchorSize * 0.4, top: h.at.y - anchorSize * 0.4, width: anchorSize * 0.8, height: anchorSize * 0.8 }} />
               ))}
               {anchorsEnabled && anchors.map((vertex, index) => (
-                <span key={index} data-vertex-index={index} title={`Vértice ${index + 1}`}
+                <span key={index} data-vertex-index={index} title={selectedTool === 'arc' ? (index === 0 ? 'Inicio del arco · arrastra para cambiar el ángulo inicial (Mayús: 15°)' : 'Fin del arco · arrastra para cambiar el barrido (Mayús: 15°)') : selectedTool === 'pen' || selectedTool === 'curve' ? `Nodo ${index + 1} · doble clic: ángulo ↔ curva` : `Vértice ${index + 1}`}
                   className={`pointer-events-auto absolute cursor-move border border-accent ${activeAnchor === index ? 'bg-accent' : 'bg-white'}`}
                   style={{ left: vertex.x - anchorSize / 2, top: vertex.y - anchorSize / 2,
                     width: anchorSize, height: anchorSize, borderWidth: anchorSize / 8 }} />

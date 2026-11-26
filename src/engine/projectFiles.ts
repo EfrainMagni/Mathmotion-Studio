@@ -44,7 +44,7 @@ const baseObject = { id: objectId, name: z.string(), scale: positive, rotation: 
 const object2D = z.object({
   ...baseObject, kind: z.enum(['svg', 'formula']), sourceSvg: z.string(),
   vector: z.object({
-    tool: z.enum(['rectangle', 'ellipse', 'line', 'arrow', 'text', 'polygon', 'pen', 'curve']),
+    tool: z.enum(['rectangle', 'ellipse', 'line', 'arrow', 'text', 'polygon', 'pen', 'curve', 'arc']),
     reverseX: z.boolean().optional(), reverseY: z.boolean().optional(),
     tip: z.enum(['triangle', 'open', 'both', 'none']).optional(), text: z.string().optional(),
     startTip: lineTip.optional(), endTip: lineTip.optional(),
@@ -60,8 +60,11 @@ const object2D = z.object({
       x: number, y: number, type: z.enum(['corner', 'smooth']), in: vertex.optional(), out: vertex.optional(),
     })).min(2).max(4096).optional(),
     closed: z.boolean().optional(),
+    // Arco circular / flecha curva.
+    arc: z.object({ startAngle: number.min(0).max(360), sweep: number.min(-360).max(360) }).optional(),
   }).refine((vector) => vector.tool !== 'polygon' || !!vector.vertices)
-    .refine((vector) => (vector.tool !== 'pen' && vector.tool !== 'curve') || !!vector.nodes).optional(),
+    .refine((vector) => (vector.tool !== 'pen' && vector.tool !== 'curve') || !!vector.nodes)
+    .refine((vector) => vector.tool !== 'arc' || !!vector.arc).optional(),
   plane: plane.optional(),
   x: number, y: number, bw: positive, bh: positive, tex: z.string().optional(),
   glyphStyles: z.record(z.string().regex(/^\d+$/), glyphStyle).optional(), terms: z.array(term).optional(),
