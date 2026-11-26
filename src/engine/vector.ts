@@ -1,9 +1,16 @@
-import { fontStack, type FillGradient, type GradientStop, type LegacyLineTip, type LineTip, type VectorGeometry, type VectorTool, type Vertex } from '../types';
+import { fontStack, isPathTool, type FillGradient, type PathNode, type GradientStop, type LegacyLineTip, type LineTip, type VectorGeometry, type VectorTool, type Vertex } from '../types';
 
 export const VECTOR_LABEL: Record<VectorTool, string> = {
   rectangle: 'Rectángulo', ellipse: 'Círculo / Elipse', line: 'Línea / Vector',
   arrow: 'Flecha vectorial', text: 'Texto libre', polygon: 'Polígono',
+  pen: 'Pluma Bézier / Ángulos', curve: 'Curva suavizada',
 };
+
+/** Líneas, flechas y trazados abiertos: su pintura principal es el trazo (degradado en el trazo, puntas de flecha). */
+export function isLinearVector(vector: VectorGeometry | undefined): boolean {
+  if (!vector) return false;
+  return vector.tool === 'line' || vector.tool === 'arrow' || (isPathTool(vector.tool) && !vector.closed);
+}
 
 export const VECTOR_FILL = '#38bdf8';
 export const VECTOR_STROKE = '#38bdf8';
@@ -107,7 +114,7 @@ function tipInset(tip: LineTip, sw: number, scale: number) {
 }
 
 /** Vértices del polígono de una punta en `(x, y)` apuntando hacia `theta`. */
-function tipPoints(tip: LineTip, x: number, y: number, theta: number, sw: number, scale: number) {
+export function tipPoints(tip: LineTip, x: number, y: number, theta: number, sw: number, scale: number) {
   const { length, half } = tipSize(tip, sw, scale);
   const ux = Math.cos(theta);
   const uy = Math.sin(theta);
@@ -138,6 +145,163 @@ export function tipLayout(start: Vertex, end: Vertex, tips: ReturnType<typeof li
   };
 }
 
+// ------------------------------------------------------------------ trazados Bézier (pluma y curva suavizada)
+
+type Cubic = [Vertex, Vertex, Vertex, Vertex];
+const fmt = (v: number) => (Math.round(v * 1000) / 1000).toString();
+const same = (a: Vertex, b: Vertex) => Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9;
+const lerp = (a: Vertex, b: Vertex, t: number): Vertex => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+
+/** Segmentos cúbicos del trazado (el último une fin e inicio si está cerrado). */
+export function pathSegments(nodes: PathNode[], closed: boolean): Cubic[] {
+  const count = closed ? nodes.length : nodes.length - 1;
+  const segments: Cubic[] = [];
+  for (let i = 0; i < count; i++) {
+    const a = nodes[i];
+    const b = nodes[(i + 1) % nodes.length];
+    segments.push([{ x: a.x, y: a.y }, a.out ?? { x: a.x, y: a.y }, b.in ?? { x: b.x, y: b.y }, { x: b.x, y: b.y }]);
+  }
+  return segments;
+}
+
+function splitCubic([p0, p1, p2, p3]: Cubic, t: number): [Cubic, Cubic] {
+  const a = lerp(p0, p1, t), b = lerp(p1, p2, t), c = lerp(p2, p3, t);
+  const d = lerp(a, b, t), e = lerp(b, c, t), f = lerp(d, e, t);
+  return [[p0, a, d, f], [f, e, c, p3]];
+}
+
+const cubicAt = (c: Cubic, t: number) => splitCubic(c, t)[0][3];
+
+/** Recorta `inset` px desde el extremo final (`fromEnd`) o inicial de un segmento (búsqueda binaria sobre t). */
+function trimCubic(c: Cubic, inset: number, fromEnd: boolean): Cubic {
+  if (inset <= 0) return c;
+  const anchor = fromEnd ? c[3] : c[0];
+  const dist = (t: number) => Math.hypot(cubicAt(c, t).x - anchor.x, cubicAt(c, t).y - anchor.y);
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 30; i++) {
+    const mid = (lo + hi) / 2;
+    const d = dist(fromEnd ? 1 - mid : mid);
+    if (d < inset) lo = mid; else hi = mid;
+  }
+  const t = (lo + hi) / 2;
+  if (t >= 1) return fromEnd ? [c[0], c[0], c[0], c[0]] : [c[3], c[3], c[3], c[3]];
+  return fromEnd ? splitCubic(c, 1 - t)[0] : splitCubic(c, t)[1];
+}
+
+/** Dirección de llegada al extremo final (`end`) o de salida (invertida) en el inicio, a partir del primer control distinto. */
+function endDirection(c: Cubic, end: boolean): number {
+  const [p0, p1, p2, p3] = c;
+  const tip = end ? p3 : p0;
+  const from = (end ? [p2, p1, p0] : [p1, p2, p3]).find((p) => !same(p, tip)) ?? tip;
+  return Math.atan2(tip.y - from.y, tip.x - from.x);
+}
+
+function segmentsToD(segments: Cubic[], closed: boolean): string {
+  if (!segments.length) return '';
+  const [s0] = segments[0];
+  let d = `M${fmt(s0.x)} ${fmt(s0.y)}`;
+  for (const [p0, p1, p2, p3] of segments) {
+    const straight = same(p0, p1) && same(p2, p3);
+    d += straight ? ` L${fmt(p3.x)} ${fmt(p3.y)}` : ` C${fmt(p1.x)} ${fmt(p1.y)} ${fmt(p2.x)} ${fmt(p2.y)} ${fmt(p3.x)} ${fmt(p3.y)}`;
+  }
+  return closed ? `${d} Z` : d;
+}
+
+/**
+ * Datos `d` del trazado y polígonos de sus puntas para un grosor `sw`. En los trazados abiertos con punta, el
+ * cuerpo se recorta en la muesca/base de la punta (igual que `tipLayout` en las líneas).
+ */
+export function pathLayout(vector: VectorGeometry, sw: number) {
+  const nodes = vector.nodes ?? [];
+  const closed = !!vector.closed && nodes.length > 2;
+  const segments = pathSegments(nodes, closed);
+  if (!segments.length) return { d: '', start: null as string | null, end: null as string | null };
+  if (closed) return { d: segmentsToD(segments, true), start: null, end: null };
+  const tips = lineTips(vector);
+  const first = segments[0];
+  const last = segments[segments.length - 1];
+  const startTheta = endDirection(first, false);
+  const endTheta = endDirection(last, true);
+  const start = tips.start === 'none' ? null : tipPoints(tips.start, first[0].x, first[0].y, startTheta, sw, tips.scale);
+  const end = tips.end === 'none' ? null : tipPoints(tips.end, last[3].x, last[3].y, endTheta, sw, tips.scale);
+  const body = segments.slice();
+  body[body.length - 1] = trimCubic(body[body.length - 1], tipInset(tips.end, sw, tips.scale), true);
+  body[0] = trimCubic(body[0], tipInset(tips.start, sw, tips.scale), false);
+  return { d: segmentsToD(body, false), start, end };
+}
+
+/** Manejadores simétricos de un nodo suave a partir de sus vecinos (tangente tipo Catmull-Rom). */
+function smoothHandles(prev: Vertex | null, node: Vertex, next: Vertex | null): { in: Vertex; out: Vertex } {
+  // Interior: (siguiente − anterior)/6 (Catmull-Rom). Extremo abierto: 1/3 hacia su único vecino.
+  const a = prev ?? node;
+  const b = next ?? node;
+  const k = prev && next ? 1 / 6 : 1 / 3;
+  const tx = (b.x - a.x) * k;
+  const ty = (b.y - a.y) * k;
+  return { in: { x: node.x - tx, y: node.y - ty }, out: { x: node.x + tx, y: node.y + ty } };
+}
+
+/** Alterna un nodo entre ángulo (`corner`, sin manejadores) y curva suave (`smooth`, manejadores simétricos). */
+export function toggleNodeType(nodes: PathNode[], index: number, closed: boolean): PathNode[] {
+  const node = nodes[index];
+  if (!node) return nodes;
+  if (node.type === 'smooth') return nodes.map((n, i) => (i === index ? { x: n.x, y: n.y, type: 'corner' } : n));
+  const n = nodes.length;
+  const prev = index > 0 ? nodes[index - 1] : closed && n > 2 ? nodes[n - 1] : null;
+  const next = index < n - 1 ? nodes[index + 1] : closed && n > 2 ? nodes[0] : null;
+  return nodes.map((p, i) => (i === index ? { x: p.x, y: p.y, type: 'smooth', ...smoothHandles(prev, p, next) } : p));
+}
+
+/** Simplificación Ramer-Douglas-Peucker de una polilínea. */
+export function simplifyPoints(points: Vertex[], epsilon: number): Vertex[] {
+  if (points.length < 3) return points.slice();
+  const keep = new Uint8Array(points.length);
+  keep[0] = keep[points.length - 1] = 1;
+  const stack: [number, number][] = [[0, points.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    const pa = points[a], pb = points[b];
+    const len = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+    let max = -1, at = -1;
+    for (let i = a + 1; i < b; i++) {
+      const p = points[i];
+      const d = len < 1e-9 ? Math.hypot(p.x - pa.x, p.y - pa.y)
+        : Math.abs((pb.x - pa.x) * (pa.y - p.y) - (pa.x - p.x) * (pb.y - pa.y)) / len;
+      if (d > max) { max = d; at = i; }
+    }
+    if (max > epsilon && at > 0) {
+      keep[at] = 1;
+      stack.push([a, at], [at, b]);
+    }
+  }
+  return points.filter((_, i) => keep[i]);
+}
+
+/** Convierte una polilínea (ya simplificada) en un trazado de nodos suaves. */
+export function smoothPath(points: Vertex[], closed: boolean): PathNode[] {
+  const n = points.length;
+  return points.map((p, i) => {
+    const prev = i > 0 ? points[i - 1] : closed ? points[n - 1] : null;
+    const next = i < n - 1 ? points[i + 1] : closed ? points[0] : null;
+    return { x: p.x, y: p.y, type: 'smooth', ...smoothHandles(prev, p, next) };
+  });
+}
+
+/** Desplaza todos los puntos (nodos y manejadores) de un trazado. */
+export function translateNodes(nodes: PathNode[], dx: number, dy: number): PathNode[] {
+  const t = (v: Vertex | undefined) => v && { x: v.x + dx, y: v.y + dy };
+  return nodes.map((node) => ({ ...node, x: node.x + dx, y: node.y + dy, in: t(node.in), out: t(node.out) }));
+}
+
+/** Caja de nodos y manejadores (los manejadores contienen siempre la curva cúbica). */
+export function nodesBounds(nodes: PathNode[]) {
+  const all = nodes.flatMap((node) => [node, node.in, node.out].filter((v): v is Vertex => !!v));
+  const xs = all.map((v) => v.x);
+  const ys = all.map((v) => v.y);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+}
+
 /** Contorno por defecto de rectángulos, elipses y polígonos (desactivado hasta que el inspector le dé color). */
 export const CLOSED_STROKE_WIDTH_MIN = 0.5;
 export const CLOSED_STROKE_WIDTH_MAX = 30;
@@ -162,7 +326,14 @@ export function vectorSvg(vector: VectorGeometry, width: number, height: number)
   const heads = layout?.clip ? `<defs><clipPath id="tip-clip" clipPathUnits="userSpaceOnUse"><polygon points="${layout.clip}"/></clipPath></defs>` : '';
   const line = `<line x1="${start.x}" y1="${start.y}" x2="${end.x}" y2="${end.y}" ${stroke}${layout?.clip ? ' clip-path="url(#tip-clip)"' : ''}/>`
     + (['start', 'end'] as const).map((k) => layout?.[k] ? `<polygon data-mm-tip="${k}" points="${layout[k]}" fill="${VECTOR_STROKE}" stroke="none"/>` : '').join('');
+  const path = isPathTool(tool) ? pathLayout(vector, VECTOR_STROKE_WIDTH) : null;
+  const pathMarkup = !path ? '' : vector.closed
+    ? `<path d="${path.d}" ${shape}/>`
+    : `<path d="${path.d}" fill="none" ${stroke}/>`
+      + (['start', 'end'] as const).map((k) => path[k] ? `<polygon data-mm-tip="${k}" points="${path[k]}" fill="${VECTOR_STROKE}" stroke="none"/>` : '').join('');
   const markup = {
+    pen: pathMarkup,
+    curve: pathMarkup,
     polygon: `<polygon points="${vector.vertices?.map(({ x, y }) => `${x},${y}`).join(' ') ?? ''}" ${shape}/>`,
     rectangle: `<rect width="${width}" height="${height}" ${shape}/>`,
     ellipse: `<ellipse cx="${width / 2}" cy="${height / 2}" rx="${width / 2}" ry="${height / 2}" ${shape}/>`,

@@ -1,6 +1,6 @@
-import { STAGE_SIZES, type Box, type Clip, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
+import { STAGE_SIZES, isPathTool, type Box, type Clip, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
-import { gradientId, gradientMarkup, lineTips, tipLayout } from './vector';
+import { gradientId, gradientMarkup, isLinearVector, lineTips, pathLayout, tipLayout } from './vector';
 import { planeSubElementOf } from '../types';
 import { SELECTABLE_SHAPES } from './svgImport';
 import {
@@ -477,12 +477,20 @@ export class SceneRuntime {
     return objId;
   }
 
-  getVertexTarget(id: string, linesOnly = false) {
+  getVertexTarget(id: string, linesOnly = false): {
+    id: string; native: Obj2D | null; points: Vertex[]; matrix: DOMMatrix; linear: boolean; path?: boolean;
+  } | null {
     const node = this.nodes.get(id);
     if (!node) return null;
     const object = this.project?.objects.find((entry) => entry.id === node.objId);
     if (!object || object.kind === 'formula') return null;
     const svg = this.objs.get(node.objId)?.svg;
+    // Trazados Bézier (pluma / curva suavizada): solo con Selección Directa; los puntos son los nodos.
+    if (isPathTool(object.vector?.tool)) {
+      if (linesOnly || !object.vector?.nodes?.length) return null;
+      const matrix = svg?.querySelector<SVGGraphicsElement>('path')?.getScreenCTM();
+      return matrix ? { id: object.id, native: object, points: object.vector.nodes.map(({ x, y }) => ({ x, y })), matrix, linear: false, path: true } : null;
+    }
     const linear = object.vector?.tool === 'line' || object.vector?.tool === 'arrow';
     if (linear) {
       const element = svg?.querySelector('line');
@@ -535,7 +543,7 @@ export class SceneRuntime {
     if (n) {
       const svg = n.isRoot ? this.objs.get(id)?.svg : undefined;
       const tool = this.project?.objects.find((object) => object.id === id)?.vector?.tool;
-      const geometry = tool === 'line' || tool === 'arrow' ? 'line' : tool === 'polygon' ? 'polygon' : null;
+      const geometry = tool === 'line' || tool === 'arrow' ? 'line' : tool === 'polygon' ? 'polygon' : isPathTool(tool) ? 'path' : null;
       const el = (geometry && svg?.querySelector(geometry)) || svg || n.el;
       const r = el.getBoundingClientRect();
       const sr = this.els.stage.getBoundingClientRect();
@@ -731,8 +739,7 @@ export class SceneRuntime {
 
   /** Líneas y flechas no tienen relleno: su degradado se aplica al trazo. */
   private gradientOnStroke(n: NodeRec): boolean {
-    const tool = this.project?.objects.find((o) => o.id === n.objId)?.vector?.tool;
-    return n.isRoot && (tool === 'line' || tool === 'arrow');
+    return n.isRoot && isLinearVector(this.project?.objects.find((o) => o.id === n.objId)?.vector);
   }
 
   /**
@@ -788,6 +795,10 @@ export class SceneRuntime {
   private syncTips(next: Map<Element, Props>, P: (el: Element) => Props) {
     for (const object of this.project?.objects ?? []) {
       const vector = object.vector;
+      if (vector && isPathTool(vector.tool) && !vector.closed) {
+        this.syncPathTips(object.id, vector, next, P);
+        continue;
+      }
       if (!vector || (vector.tool !== 'line' && vector.tool !== 'arrow')) continue;
       const svg = this.objs.get(object.id)?.svg;
       const line = svg?.querySelector('line');
@@ -806,6 +817,25 @@ export class SceneRuntime {
       }
       const clip = svg.querySelector('clipPath polygon');
       if (clip && layout.clip && clip.getAttribute('points') !== layout.clip) clip.setAttribute('points', layout.clip);
+    }
+  }
+
+  /** Trazado abierto: recalcula el recorte del cuerpo (`d`) y las puntas con el grosor y color efectivos. */
+  private syncPathTips(id: string, vector: NonNullable<Obj2D['vector']>, next: Map<Element, Props>, P: (el: Element) => Props) {
+    const svg = this.objs.get(id)?.svg;
+    const path = svg?.querySelector('path');
+    if (!svg || !path) return;
+    const pr = next.get(path);
+    const sw = pr?.['stroke-width'] !== undefined ? parseFloat(pr['stroke-width']) : this.geomInfo(path).sw;
+    const layout = pathLayout(vector, Number.isFinite(sw) && sw > 0 ? sw : 1);
+    if (layout.d && path.getAttribute('d') !== layout.d) path.setAttribute('d', layout.d);
+    const color = pr?.stroke ?? this.geomInfo(path).stroke;
+    for (const key of ['start', 'end'] as const) {
+      const tip = svg.querySelector(`[data-mm-tip="${key}"]`);
+      const points = layout[key];
+      if (!tip) continue;
+      if (points && tip.getAttribute('points') !== points) tip.setAttribute('points', points);
+      if (color) P(tip).fill = color;
     }
   }
 

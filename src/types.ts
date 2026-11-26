@@ -249,12 +249,20 @@ export function clipLabel(clip: Pick<Clip, 'type' | 'targetId' | 'parameters'>):
   return CLIP_LABEL[clip.type];
 }
 
-export type VectorTool = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'polygon';
+export type VectorTool = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'polygon' | 'pen' | 'curve';
+/** Herramientas que producen un trazado Bézier (`VectorGeometry.nodes`). */
+export const isPathTool = (tool: VectorTool | null | undefined) => tool === 'pen' || tool === 'curve';
 export type ArrowTip = 'triangle' | 'open' | 'both' | 'none';
 export type LineTip = 'none' | 'stealth' | 'right';
 /** Valores de puntas de proyectos antiguos; se normalizan a `stealth` o `right` al leerlos. */
 export type LegacyLineTip = 'triangle' | 'open' | 'circle';
 export interface Vertex { x: number; y: number }
+/**
+ * Nodo de un trazado Bézier (estilo Illustrator). `corner` = ángulo agudo; `smooth` = curva con manejadores
+ * colineales. `in`/`out` son los manejadores (coordenadas absolutas del objeto); si faltan, coinciden con el nodo.
+ */
+export type PathNodeType = 'corner' | 'smooth';
+export interface PathNode { x: number; y: number; type: PathNodeType; in?: Vertex; out?: Vertex }
 
 export type FontId = 'Inter' | 'Space Grotesk' | 'Lora' | 'Playfair Display' | 'Great Vibes' | 'Dancing Script';
 export type FontCategory = 'Divulgación' | 'Letra corrida';
@@ -305,6 +313,10 @@ export interface VectorGeometry {
   text?: string;
   textStyle?: TextStyle;
   vertices?: Vertex[];
+  /** Solo `pen`/`curve`: nodos del trazado Bézier. */
+  nodes?: PathNode[];
+  /** Solo `pen`/`curve`: trazado cerrado (admite relleno y degradado de relleno). */
+  closed?: boolean;
 }
 
 export type PlaneArrowTips = 'both' | 'positive' | 'none';

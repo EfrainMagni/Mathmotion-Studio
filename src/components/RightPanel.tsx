@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'r
 import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
 import {
-  DEFAULT_TEXT_STYLE, FONT_CATALOG, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
+  DEFAULT_TEXT_STYLE, FONT_CATALOG, isPathTool, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
   glyphTransformParams,
   type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SceneBackground, type SceneBackgroundType, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
@@ -10,7 +10,7 @@ import { engine } from '../engine';
 import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
 import { preloadFont } from '../engine/fonts';
 import { compileExpression, newPlot, newPoint } from '../engine/cartesianPlane';
-import { CLOSED_STROKE_WIDTH_MAX, CLOSED_STROKE_WIDTH_MIN, GRADIENT_PRESETS, LINE_TIPS, gradientCss, lineTips, makeGradient, newStopId } from '../engine/vector';
+import { CLOSED_STROKE_WIDTH_MAX, CLOSED_STROKE_WIDTH_MIN, GRADIENT_PRESETS, LINE_TIPS, gradientCss, isLinearVector, lineTips, makeGradient, newStopId } from '../engine/vector';
 import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
 
 function toHex(css: string | undefined): string | null {
@@ -222,6 +222,41 @@ function LineTipFields({ object }: { object: Obj2D }) {
           onChange={(tipScale) => actions.editVector(object, { tipScale })} />
       </Field>
     </>
+  );
+}
+
+/** Trazado Bézier: tipo del nodo activo (Selección Directa) y apertura/cierre del camino. */
+function PathNodeFields({ object }: { object: Obj2D }) {
+  const pathNode = useStore((s) => s.ui.pathNode);
+  const nodes = object.vector?.nodes ?? [];
+  const node = pathNode !== null ? nodes[pathNode] : undefined;
+  const closed = !!object.vector?.closed;
+  const kinds = [['corner', 'Ángulo recto'], ['smooth', 'Curva suave']] as const;
+  return (
+    <div className={BLOCK}>
+      <div className={BLOCK_HEAD}><span>Trazado · {nodes.length} nodos</span></div>
+      {node && pathNode !== null ? (
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] text-slate-400">Nodo {pathNode + 1}</span>
+          <div className="grid grid-cols-2 gap-1" role="radiogroup" aria-label="Tipo de nodo">
+            {kinds.map(([type, label]) => (
+              <button key={type} type="button" role="radio" aria-checked={node.type === type}
+                className={`${btn} justify-center px-1 text-[11px] ${node.type === type ? 'border-accent text-accent-light' : ''}`}
+                onClick={() => { if (node.type !== type) actions.togglePathNode(object.id, pathNode); }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="text-[11px] text-slate-500">Con Selección Directa (A) elige un nodo; doble clic alterna ángulo ↔ curva.</p>
+      )}
+      <div className="flex items-center justify-between text-[11px] text-slate-300">
+        <span>Trazado cerrado</span>
+        <Switch label="Trazado cerrado" checked={closed}
+          onChange={(on) => { if (on !== closed && (!on || nodes.length > 2)) actions.setPathNodes(object, nodes, undefined, { closed: on }); }} />
+      </div>
+    </div>
   );
 }
 
@@ -440,7 +475,7 @@ function Inspector() {
 
       {obj.plane ? null : paint ? (
         <PaintBlocks selection={selection} style={style} fill={fill} stroke={stroke} strokeWidth={strokeWidth}
-          linear={info.isRoot && (obj.vector?.tool === 'line' || obj.vector?.tool === 'arrow')} />
+          linear={info.isRoot && isLinearVector(obj.vector)} />
       ) : (
         <p className="text-[11px] text-slate-500">Este elemento no tiene geometría con relleno ni trazo.</p>
       )}
@@ -450,7 +485,8 @@ function Inspector() {
           onChange={(value) => actions.setStyle(selection, { opacity: value / 100 })} />
       </Field>
 
-      {(obj.vector?.tool === 'line' || obj.vector?.tool === 'arrow') && <LineTipFields object={obj} />}
+      {isPathTool(obj.vector?.tool) && <PathNodeFields object={obj} />}
+      {isLinearVector(obj.vector) && <LineTipFields object={obj} />}
       {obj.vector?.tool === 'text' && (
         <Field label="Contenido del texto">
           <input className={input} value={obj.vector.text ?? ''} maxLength={250}
