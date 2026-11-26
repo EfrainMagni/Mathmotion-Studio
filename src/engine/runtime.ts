@@ -1,6 +1,6 @@
 import { STAGE_SIZES, isPathTool, type Box, type Clip, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
-import { gradientId, gradientMarkup, isLinearVector, lineTips, pathLayout, tipLayout } from './vector';
+import { arcAsPath, arcCircle, arcPoint, gradientId, gradientMarkup, isLinearVector, lineTips, pathLayout, tipLayout } from './vector';
 import { planeSubElementOf } from '../types';
 import { SELECTABLE_SHAPES } from './svgImport';
 import {
@@ -478,13 +478,21 @@ export class SceneRuntime {
   }
 
   getVertexTarget(id: string, linesOnly = false): {
-    id: string; native: Obj2D | null; points: Vertex[]; matrix: DOMMatrix; linear: boolean; path?: boolean;
+    id: string; native: Obj2D | null; points: Vertex[]; matrix: DOMMatrix; linear: boolean; path?: boolean; arc?: boolean;
   } | null {
     const node = this.nodes.get(id);
     if (!node) return null;
     const object = this.project?.objects.find((entry) => entry.id === node.objId);
     if (!object || object.kind === 'formula') return null;
     const svg = this.objs.get(node.objId)?.svg;
+    // Arco circular: manejadores de inicio y fin (con Selección y con Selección Directa).
+    if (object.vector?.tool === 'arc' && object.vector.arc) {
+      const matrix = svg?.querySelector<SVGGraphicsElement>('path')?.getScreenCTM();
+      const { cx, cy, r } = arcCircle(object.bw, object.bh);
+      const { startAngle, sweep } = object.vector.arc;
+      const points = [arcPoint(cx, cy, r, startAngle), arcPoint(cx, cy, r, startAngle + sweep)];
+      return matrix ? { id: object.id, native: object, points, matrix, linear: false, arc: true } : null;
+    }
     // Trazados Bézier (pluma / curva suavizada): solo con Selección Directa; los puntos son los nodos.
     if (isPathTool(object.vector?.tool)) {
       if (linesOnly || !object.vector?.nodes?.length) return null;
@@ -543,7 +551,7 @@ export class SceneRuntime {
     if (n) {
       const svg = n.isRoot ? this.objs.get(id)?.svg : undefined;
       const tool = this.project?.objects.find((object) => object.id === id)?.vector?.tool;
-      const geometry = tool === 'line' || tool === 'arrow' ? 'line' : tool === 'polygon' ? 'polygon' : isPathTool(tool) ? 'path' : null;
+      const geometry = tool === 'line' || tool === 'arrow' ? 'line' : tool === 'polygon' ? 'polygon' : isPathTool(tool) || tool === 'arc' ? 'path' : null;
       const el = (geometry && svg?.querySelector(geometry)) || svg || n.el;
       const r = el.getBoundingClientRect();
       const sr = this.els.stage.getBoundingClientRect();
@@ -797,6 +805,10 @@ export class SceneRuntime {
       const vector = object.vector;
       if (vector && isPathTool(vector.tool) && !vector.closed) {
         this.syncPathTips(object.id, vector, next, P);
+        continue;
+      }
+      if (vector?.tool === 'arc') {
+        this.syncPathTips(object.id, arcAsPath(vector, object.bw, object.bh), next, P);
         continue;
       }
       if (!vector || (vector.tool !== 'line' && vector.tool !== 'arrow')) continue;

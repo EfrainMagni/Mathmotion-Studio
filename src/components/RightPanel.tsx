@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'r
 import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
 import {
-  DEFAULT_TEXT_STYLE, FONT_CATALOG, isPathTool, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
+  ARC_LIMITS, DEFAULT_ARC, DEFAULT_TEXT_STYLE, FONT_CATALOG, isPathTool, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
   glyphTransformParams,
   type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SceneBackground, type SceneBackgroundType, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
@@ -222,6 +222,51 @@ function LineTipFields({ object }: { object: Obj2D }) {
           onChange={(tipScale) => actions.editVector(object, { tipScale })} />
       </Field>
     </>
+  );
+}
+
+const ARC_PRESETS = [
+  { label: '90°', sweep: -90 }, { label: '180°', sweep: -180 }, { label: '270°', sweep: -270 }, { label: '360°', sweep: -360 },
+] as const;
+
+/** Arco circular / flecha curva: ángulo inicial y barrido (también editables arrastrando sus extremos en el lienzo). */
+function ArcFields({ object }: { object: Obj2D }) {
+  const arc = object.vector?.arc ?? DEFAULT_ARC;
+  const group = useRef<symbol>(Symbol('arc'));
+  const restart = () => { group.current = Symbol('arc'); };
+  const set = (patch: Partial<typeof arc>, grouped = false) => {
+    const startAngle = Math.min(ARC_LIMITS.startAngle.max, Math.max(ARC_LIMITS.startAngle.min, patch.startAngle ?? arc.startAngle));
+    const sweep = Math.min(ARC_LIMITS.sweep.max, Math.max(ARC_LIMITS.sweep.min, patch.sweep ?? arc.sweep));
+    if (startAngle === arc.startAngle && sweep === arc.sweep) return;
+    actions.editVector(object, { arc: { startAngle, sweep } }, grouped ? group.current : undefined);
+  };
+  const row = (key: 'startAngle' | 'sweep', label: string) => (
+    <div className="flex flex-col gap-0.5">
+      <Field label={label}>
+        <NumberInput className={`${input} w-16`} value={arc[key]} min={ARC_LIMITS[key].min} max={ARC_LIMITS[key].max} step={1}
+          ariaLabel={`${label} (grados)`} onChange={(value) => set({ [key]: value } as Partial<typeof arc>)} />
+      </Field>
+      <input type="range" className="w-full accent-accent" aria-label={label} min={ARC_LIMITS[key].min} max={ARC_LIMITS[key].max} step={1}
+        value={arc[key]} onPointerDown={restart} onKeyDown={restart} onChange={(e) => set({ [key]: Number(e.target.value) } as Partial<typeof arc>, true)} />
+    </div>
+  );
+  return (
+    <div className={BLOCK}>
+      <div className={BLOCK_HEAD}><span>Arco circular</span></div>
+      {row('startAngle', 'Ángulo inicial (°)')}
+      {row('sweep', 'Barrido (°)')}
+      <div className="grid grid-cols-5 gap-1" role="group" aria-label="Barridos rápidos">
+        {ARC_PRESETS.map(({ label, sweep }) => (
+          <button key={label} type="button" className={`${btn} justify-center px-0 text-[10px] ${Math.abs(arc.sweep) === -sweep ? 'border-accent text-accent-light' : ''}`}
+            title={`Barrido de ${label} en el sentido actual`} onClick={() => set({ sweep: arc.sweep > 0 ? -sweep : sweep })}>
+            {label}
+          </button>
+        ))}
+        <button type="button" className={`${btn} justify-center px-0 text-[10px]`} title="Invertir sentido (horario ↔ antihorario)"
+          aria-label="Invertir sentido del arco" onClick={() => set({ sweep: -arc.sweep })}>⇄</button>
+      </div>
+      <p className="text-[10px] text-slate-500">Positivo = antihorario · negativo = horario. Arrastra los extremos en el lienzo.</p>
+    </div>
   );
 }
 
@@ -486,6 +531,7 @@ function Inspector() {
       </Field>
 
       {isPathTool(obj.vector?.tool) && <PathNodeFields object={obj} />}
+      {obj.vector?.tool === 'arc' && <ArcFields object={obj} />}
       {isLinearVector(obj.vector) && <LineTipFields object={obj} />}
       {obj.vector?.tool === 'text' && (
         <Field label="Contenido del texto">

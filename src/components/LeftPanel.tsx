@@ -1,7 +1,7 @@
 import { VECTOR_LABEL } from '../engine/vector';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Slash, MousePointer, MousePointer2, PenTool, Pentagon, Settings2, Shapes, Spline, Type, X,
+  Slash, MousePointer, MousePointer2, PenTool, Pentagon, RotateCw, Settings2, Shapes, Type, X,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -513,7 +513,7 @@ const DRAW_TOOLS = [
   { id: 'polygon', label: VECTOR_LABEL.polygon, shortcut: 'Y', icon: Pentagon },
   { id: 'line', label: VECTOR_LABEL.line, shortcut: '\\', icon: Slash },
   { id: 'pen', label: VECTOR_LABEL.pen, shortcut: 'P', icon: PenTool },
-  { id: 'curve', label: VECTOR_LABEL.curve, shortcut: 'N', icon: Spline },
+  { id: 'arc', label: VECTOR_LABEL.arc, shortcut: 'C', icon: RotateCw },
   { id: 'text', label: VECTOR_LABEL.text, shortcut: 'T', icon: Type },
 ] as const satisfies readonly { id: VectorTool | 'select' | 'direct'; label: string; shortcut: string; icon: typeof Square }[];
 
@@ -612,7 +612,7 @@ export function LeftPanel({ visible }: { visible: boolean }) {
         <div id="left-drawing-tools" className="studio-drawing" role="group" aria-label="Dibujo vectorial" hidden={!drawing}>
           {DRAW_TOOLS.map(({ id, label, shortcut, icon: Icon }) => (
             <button key={id} type="button" className="studio-rail-button" aria-label={label}
-              title={id === 'line' || id === 'pen' || id === 'curve' ? `${label} (${shortcut})` : `${label} · ${shortcut}`} aria-keyshortcuts={shortcut} disabled={disabled}
+              title={id === 'line' || id === 'pen' || id === 'arc' ? `${label} (${shortcut})` : `${label} · ${shortcut}`} aria-keyshortcuts={shortcut} disabled={disabled}
               aria-pressed={id === 'select' || id === 'direct' ? !active && pointer === id : active === id}
               onClick={() => selectTool(id)}>
               <Icon size={20} aria-hidden="true" />

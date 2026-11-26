@@ -249,7 +249,7 @@ export function clipLabel(clip: Pick<Clip, 'type' | 'targetId' | 'parameters'>):
   return CLIP_LABEL[clip.type];
 }
 
-export type VectorTool = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'polygon' | 'pen' | 'curve';
+export type VectorTool = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'text' | 'polygon' | 'pen' | 'curve' | 'arc';
 /** Herramientas que producen un trazado Bézier (`VectorGeometry.nodes`). */
 export const isPathTool = (tool: VectorTool | null | undefined) => tool === 'pen' || tool === 'curve';
 export type ArrowTip = 'triangle' | 'open' | 'both' | 'none';
@@ -317,7 +317,19 @@ export interface VectorGeometry {
   nodes?: PathNode[];
   /** Solo `pen`/`curve`: trazado cerrado (admite relleno y degradado de relleno). */
   closed?: boolean;
+  /** Solo `arc`: arco circular inscrito en la caja. Ángulos en grados (0° = derecha, positivo = antihorario). */
+  arc?: ArcGeometry;
 }
+
+export interface ArcGeometry {
+  /** Ángulo inicial (0–360). */
+  startAngle: number;
+  /** Barrido con signo (−360 a +360): positivo antihorario, negativo horario. */
+  sweep: number;
+}
+/** Arco por defecto: 270° de rotación horaria desde 135° (abierto a la izquierda). */
+export const DEFAULT_ARC: ArcGeometry = { startAngle: 135, sweep: -270 };
+export const ARC_LIMITS = { startAngle: { min: 0, max: 360 }, sweep: { min: -360, max: 360 } } as const;
 
 export type PlaneArrowTips = 'both' | 'positive' | 'none';
 
