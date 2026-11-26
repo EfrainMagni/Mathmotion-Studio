@@ -93,7 +93,8 @@ export function lineTips(vector: VectorGeometry) {
   const legacy = vector.tool === 'arrow' ? vector.tip ?? 'triangle' : 'none';
   return {
     start: normalizeTip(vector.startTip ?? (legacy === 'both' ? 'triangle' : 'none')),
-    end: normalizeTip(vector.endTip ?? (legacy === 'both' ? 'triangle' : legacy)),
+    // El arco lleva por defecto un triángulo recto sólido de base plana al final.
+    end: normalizeTip(vector.endTip ?? (vector.tool === 'arc' ? 'right' : legacy === 'both' ? 'triangle' : legacy)),
     scale: vector.tipScale ?? 1,
   };
 }
@@ -172,28 +173,42 @@ function splitCubic([p0, p1, p2, p3]: Cubic, t: number): [Cubic, Cubic] {
 
 const cubicAt = (c: Cubic, t: number) => splitCubic(c, t)[0][3];
 
-/** Recorta `inset` px desde el extremo final (`fromEnd`) o inicial de un segmento (búsqueda binaria sobre t). */
-function trimCubic(c: Cubic, inset: number, fromEnd: boolean): Cubic {
+/**
+ * Recorta el segmento justo en la base de la punta: el plano perpendicular a la dirección de la punta (`theta`)
+ * situado a `inset` px por detrás del extremo. Así el cuerpo termina en la base plana del triángulo (o en la
+ * muesca de la flecha afilada) aunque la curva se doble, sin asomar por los lados ni torcerse.
+ */
+function trimToBase(c: Cubic, inset: number, fromEnd: boolean, theta: number): Cubic {
   if (inset <= 0) return c;
   const anchor = fromEnd ? c[3] : c[0];
-  const dist = (t: number) => Math.hypot(cubicAt(c, t).x - anchor.x, cubicAt(c, t).y - anchor.y);
+  const ux = Math.cos(theta);
+  const uy = Math.sin(theta);
+  // Distancia, medida a lo largo de la punta, desde el extremo hacia atrás hasta el punto de la curva.
+  const behind = (s: number) => {
+    const p = cubicAt(c, fromEnd ? 1 - s : s);
+    return (anchor.x - p.x) * ux + (anchor.y - p.y) * uy;
+  };
+  if (behind(1) <= inset) return fromEnd ? [c[0], c[0], c[0], c[0]] : [c[3], c[3], c[3], c[3]];
   let lo = 0, hi = 1;
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 40; i++) {
     const mid = (lo + hi) / 2;
-    const d = dist(fromEnd ? 1 - mid : mid);
-    if (d < inset) lo = mid; else hi = mid;
+    if (behind(mid) < inset) lo = mid; else hi = mid;
   }
-  const t = (lo + hi) / 2;
-  if (t >= 1) return fromEnd ? [c[0], c[0], c[0], c[0]] : [c[3], c[3], c[3], c[3]];
-  return fromEnd ? splitCubic(c, 1 - t)[0] : splitCubic(c, t)[1];
+  const s = (lo + hi) / 2;
+  return fromEnd ? splitCubic(c, 1 - s)[0] : splitCubic(c, s)[1];
 }
 
-/** Dirección de llegada al extremo final (`end`) o de salida (invertida) en el inicio, a partir del primer control distinto. */
+/**
+ * Dirección exacta de la punta: derivada de la cúbica en el extremo, B'(1) = 3·(P3 − P2) al final y −B'(0) =
+ * −3·(P1 − P0) al inicio (apunta hacia fuera). Si ese manejador es nulo se usa el siguiente punto de control distinto.
+ */
 function endDirection(c: Cubic, end: boolean): number {
   const [p0, p1, p2, p3] = c;
   const tip = end ? p3 : p0;
-  const from = (end ? [p2, p1, p0] : [p1, p2, p3]).find((p) => !same(p, tip)) ?? tip;
-  return Math.atan2(tip.y - from.y, tip.x - from.x);
+  const from = (end ? [p2, p1, p0] : [p1, p2, p3]).find((p) => Math.hypot(tip.x - p.x, tip.y - p.y) > 1e-6) ?? tip;
+  const dx = 3 * (tip.x - from.x);
+  const dy = 3 * (tip.y - from.y);
+  return Math.atan2(dy, dx);
 }
 
 function segmentsToD(segments: Cubic[], closed: boolean): string {
@@ -225,8 +240,8 @@ export function pathLayout(vector: VectorGeometry, sw: number) {
   const start = tips.start === 'none' ? null : tipPoints(tips.start, first[0].x, first[0].y, startTheta, sw, tips.scale);
   const end = tips.end === 'none' ? null : tipPoints(tips.end, last[3].x, last[3].y, endTheta, sw, tips.scale);
   const body = segments.slice();
-  body[body.length - 1] = trimCubic(body[body.length - 1], tipInset(tips.end, sw, tips.scale), true);
-  body[0] = trimCubic(body[0], tipInset(tips.start, sw, tips.scale), false);
+  body[body.length - 1] = trimToBase(body[body.length - 1], tipInset(tips.end, sw, tips.scale), true, endTheta);
+  body[0] = trimToBase(body[0], tipInset(tips.start, sw, tips.scale), false, startTheta);
   return { d: segmentsToD(body, false), start, end };
 }
 
@@ -304,11 +319,17 @@ export function nodesBounds(nodes: PathNode[]) {
 
 // ------------------------------------------------------------------ arco circular / flecha curva
 
-/** Punto del arco (ángulo en grados, convención matemática con el eje y hacia abajo de SVG). */
+/**
+ * Punto del arco. Ángulos en grados en coordenadas de pantalla (+X derecha, +Y abajo): 0° = derecha, 90° = abajo,
+ * 135° = abajo a la izquierda. El barrido negativo gira en sentido horario en pantalla (el ángulo de pantalla crece).
+ */
 export function arcPoint(cx: number, cy: number, r: number, degrees: number): Vertex {
   const t = (degrees * Math.PI) / 180;
-  return { x: cx + r * Math.cos(t), y: cy - r * Math.sin(t) };
+  return { x: cx + r * Math.cos(t), y: cy + r * Math.sin(t) };
 }
+
+/** Ángulo de pantalla del punto final: `startAngle − sweep` (−270 → 270° horario: 135° → 405° ≡ 45°). */
+export const arcEndAngle = (startAngle: number, sweep: number) => startAngle - sweep;
 
 /** Centro y radio del círculo inscrito en una caja `w×h`. */
 export const arcCircle = (w: number, h: number) => ({ cx: w / 2, cy: h / 2, r: Math.max(0.5, Math.min(w, h) / 2) });
@@ -324,14 +345,15 @@ export function arcNodes(vector: VectorGeometry, w: number, h: number): PathNode
   const steps = Math.max(1, Math.ceil(Math.abs(total) / 90 - 1e-9));
   const delta = total / steps;
   const k = (4 / 3) * Math.tan((Math.abs(delta) * Math.PI) / 720) * r;
-  const dir = Math.sign(delta);
+  // El ángulo de pantalla avanza en −delta por tramo: con barrido negativo crece (giro horario en pantalla).
+  const dir = -Math.sign(delta);
   const tangent = (deg: number) => {
-    // Derivada respecto del ángulo (convención y-abajo), escalada por el sentido del barrido.
+    // Dirección de avance: d/dφ (cos φ, sin φ) = (−sin φ, cos φ), con el signo del avance angular.
     const t = (deg * Math.PI) / 180;
-    return { x: -Math.sin(t) * dir, y: -Math.cos(t) * dir };
+    return { x: -Math.sin(t) * dir, y: Math.cos(t) * dir };
   };
   return Array.from({ length: steps + 1 }, (_, i) => {
-    const deg = startAngle + delta * i;
+    const deg = startAngle - delta * i;
     const p = arcPoint(cx, cy, r, deg);
     const u = tangent(deg);
     return {

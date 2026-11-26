@@ -1,6 +1,6 @@
 import { STAGE_SIZES, isPathTool, type Box, type Clip, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
-import { arcAsPath, arcCircle, arcPoint, gradientId, gradientMarkup, isLinearVector, lineTips, pathLayout, tipLayout } from './vector';
+import { arcAsPath, arcCircle, arcEndAngle, arcPoint, gradientId, gradientMarkup, isLinearVector, lineTips, pathLayout, tipLayout } from './vector';
 import { planeSubElementOf } from '../types';
 import { SELECTABLE_SHAPES } from './svgImport';
 import {
@@ -490,7 +490,7 @@ export class SceneRuntime {
       const matrix = svg?.querySelector<SVGGraphicsElement>('path')?.getScreenCTM();
       const { cx, cy, r } = arcCircle(object.bw, object.bh);
       const { startAngle, sweep } = object.vector.arc;
-      const points = [arcPoint(cx, cy, r, startAngle), arcPoint(cx, cy, r, startAngle + sweep)];
+      const points = [arcPoint(cx, cy, r, startAngle), arcPoint(cx, cy, r, arcEndAngle(startAngle, sweep))];
       return matrix ? { id: object.id, native: object, points, matrix, linear: false, arc: true } : null;
     }
     // Trazados Bézier (pluma / curva suavizada): solo con Selección Directa; los puntos son los nodos.
