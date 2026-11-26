@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SCENE_BG_LIMITS, type Obj2D, type Project } from '../types';
+import { FONT_IDS, SCENE_BG_LIMITS, type Obj2D, type Project } from '../types';
 import { prepareSvg } from './svgImport';
 import { normalizePlane, planeSvg } from './cartesianPlane';
 
@@ -50,7 +50,8 @@ const object2D = z.object({
     startTip: lineTip.optional(), endTip: lineTip.optional(),
     tipScale: number.min(0.5).max(3).optional(), endpoints: z.tuple([vertex, vertex]).optional(),
     textStyle: z.object({
-      fontFamily: z.enum(['Inter', 'Space Grotesk', 'Lora', 'Playfair Display', 'Great Vibes', 'Dancing Script']),
+      // Cualquiera de las 11 familias del catálogo (Sans-Serif, Serif y Caligráficas).
+      fontFamily: z.enum(FONT_IDS),
       fontWeight: z.union([z.literal(400), z.literal(600), z.literal(700)]), italic: z.boolean(),
       align: z.enum(['left', 'center', 'right']), letterSpacing: z.number().min(-50).max(200),
     }).optional(),

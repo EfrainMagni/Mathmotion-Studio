@@ -283,8 +283,20 @@ export interface Vertex { x: number; y: number }
 export type PathNodeType = 'corner' | 'smooth';
 export interface PathNode { x: number; y: number; type: PathNodeType; in?: Vertex; out?: Vertex }
 
-export type FontId = 'Inter' | 'Space Grotesk' | 'Lora' | 'Playfair Display' | 'Great Vibes' | 'Dancing Script';
-export type FontCategory = 'Divulgación' | 'Letra corrida';
+/** Las 11 familias admitidas (editor, `.mathmotion` y exportación de vídeo). */
+export const FONT_IDS = [
+  'Inter', 'Space Grotesk', 'Montserrat', 'Poppins', 'Raleway',
+  'Lora', 'Playfair Display', 'Merriweather', 'Libre Baskerville',
+  'Great Vibes', 'Dancing Script',
+] as const;
+export type FontId = (typeof FONT_IDS)[number];
+export type FontCategory = 'Sans-Serif' | 'Serif' | 'Caligráfica';
+/** Orden y rótulo de las categorías en el selector tipográfico. */
+export const FONT_CATEGORIES: { id: FontCategory; label: string }[] = [
+  { id: 'Sans-Serif', label: 'Sans-Serif (Modernas)' },
+  { id: 'Serif', label: 'Serif (Editoriales)' },
+  { id: 'Caligráfica', label: 'Caligráficas (Letra corrida)' },
+];
 export type FontWeight = 400 | 600 | 700;
 export type TextAlign = 'left' | 'center' | 'right';
 
@@ -299,12 +311,20 @@ export interface FontInfo {
 
 /** Catálogo curado; debe coincidir con el `<link>` de Google Fonts de `index.html`. */
 export const FONT_CATALOG: FontInfo[] = [
-  { id: 'Inter', category: 'Divulgación', description: 'Sans geométrica moderna', fallback: 'system-ui, sans-serif', weights: [400, 600, 700], italic: true },
-  { id: 'Space Grotesk', category: 'Divulgación', description: 'Sans técnica contemporánea', fallback: 'system-ui, sans-serif', weights: [400, 600, 700], italic: false },
-  { id: 'Lora', category: 'Divulgación', description: 'Serif editorial clásica', fallback: 'Georgia, serif', weights: [400, 600, 700], italic: true },
-  { id: 'Playfair Display', category: 'Divulgación', description: 'Serif editorial de alto contraste', fallback: 'Georgia, serif', weights: [400, 600, 700], italic: true },
-  { id: 'Great Vibes', category: 'Letra corrida', description: 'Caligráfica fluida y formal', fallback: 'cursive', weights: [400], italic: false },
-  { id: 'Dancing Script', category: 'Letra corrida', description: 'Manuscrita moderna y legible', fallback: 'cursive', weights: [400, 600, 700], italic: false },
+  // Sans-Serif (Modernas)
+  { id: 'Inter', category: 'Sans-Serif', description: 'Sans geométrica moderna', fallback: 'system-ui, sans-serif', weights: [400, 600, 700], italic: true },
+  { id: 'Space Grotesk', category: 'Sans-Serif', description: 'Sans técnica contemporánea', fallback: 'system-ui, sans-serif', weights: [400, 600, 700], italic: false },
+  { id: 'Montserrat', category: 'Sans-Serif', description: 'Geométrica para títulos impactantes', fallback: 'system-ui, sans-serif', weights: [400, 600, 700], italic: true },
+  { id: 'Poppins', category: 'Sans-Serif', description: 'Moderna y didáctica, limpia', fallback: 'system-ui, sans-serif', weights: [400, 600, 700], italic: true },
+  { id: 'Raleway', category: 'Sans-Serif', description: 'Elegante y minimalista', fallback: 'system-ui, sans-serif', weights: [400, 600, 700], italic: true },
+  // Serif (Editoriales)
+  { id: 'Lora', category: 'Serif', description: 'Serif editorial clásica', fallback: 'Georgia, serif', weights: [400, 600, 700], italic: true },
+  { id: 'Playfair Display', category: 'Serif', description: 'Serif editorial de alto contraste', fallback: 'Georgia, serif', weights: [400, 600, 700], italic: true },
+  { id: 'Merriweather', category: 'Serif', description: 'Editorial de lectura clara', fallback: 'Georgia, serif', weights: [400, 600, 700], italic: true },
+  { id: 'Libre Baskerville', category: 'Serif', description: 'Clásica, estilo libro de matemáticas', fallback: 'Georgia, serif', weights: [400, 600, 700], italic: true },
+  // Caligráficas (Letra corrida)
+  { id: 'Great Vibes', category: 'Caligráfica', description: 'Caligráfica fluida y formal', fallback: 'cursive', weights: [400], italic: false },
+  { id: 'Dancing Script', category: 'Caligráfica', description: 'Manuscrita moderna y legible', fallback: 'cursive', weights: [400, 600, 700], italic: false },
 ];
 export const fontInfo = (id: string): FontInfo => FONT_CATALOG.find((f) => f.id === id) ?? FONT_CATALOG[0];
 export const fontStack = (id: FontId) => `'${id}', ${fontInfo(id).fallback}`;

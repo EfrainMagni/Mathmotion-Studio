@@ -364,7 +364,11 @@ async function run(runtime: Runtime, playback: Playback, mime: string | null, qu
   const { used: usedFontList } = usedFonts(project);
   await loadFonts(usedFontList);
   await document.fonts.ready;
+  // Incluye cualquiera de las 11 familias del catálogo (p. ej. Montserrat, Poppins, Raleway, Merriweather,
+  // Libre Baskerville): sin su `@font-face` incrustado el fotograma rasterizado caería en la fuente de respaldo.
   const fontCss = await embeddedFontCss(project).catch(() => '');
+  const missingFonts = [...new Set(usedFontList.map((u) => u.family))].filter((family) => !fontCss.includes(`'${family}'`));
+  if (missingFonts.length) console.warn('[recorder] Sin @font-face incrustado (se usará la fuente de respaldo):', missingFonts.join(', '));
   const withFonts = (svg: string) =>
     fontCss ? svg.replace(/^(<svg[^>]*>)/, `$1<defs><style>${fontCss}</style></defs>`) : svg;
 
