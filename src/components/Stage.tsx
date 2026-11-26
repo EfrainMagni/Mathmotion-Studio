@@ -1,7 +1,7 @@
 import { regularPolygon, vectorSvg } from '../engine/vector';
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
 import { BACKGROUND_COLOR, STAGE_SIZES, type Box, type Obj2D, type VectorGeometry, type Vertex } from '../types';
-import { actions, store, useStore } from '../store';
+import { actions, selectedObjectIds, store, useStore } from '../store';
 import { audio, engine } from '../engine';
 import { SceneRuntime } from '../engine/runtime';
 import { Playback } from '../engine/playback';
@@ -11,12 +11,36 @@ type Drag =
   | { kind: 'root'; id: string; sx: number; sy: number; ox: number; oy: number }
   | { kind: 'child'; id: string; sx: number; sy: number; ox: number; oy: number; inv: DOMMatrix }
   | { kind: 'resize'; id: string; sx: 1 | -1; sy: 1 | -1; anchor: Vertex }
+  | { kind: 'group'; ids: string[]; sx: number; sy: number; origins: Record<string, Vertex> }
+  | { kind: 'marquee'; start: Vertex; base: string[] }
   | { kind: 'vertex'; id: string; native: Obj2D | null; index: number; points: Vertex[]; start: Vertex; inverse: DOMMatrix; matrix: DOMMatrix; linear: boolean };
 
 type Sketch = { start: Vertex; end: Vertex; vector: VectorGeometry; constrain: boolean; polygonSides: number };
 
 const NO_BOXES: (Box | null)[] = [];
 const DOUBLE_CLICK_MS = 400;
+/** Color de la marquesina de selección (azul Manim). */
+const MARQUEE_COLOR = '#58C4DD';
+
+/** Ids de los objetos cuya caja toca o queda dentro del rectángulo `a`–`b` (coordenadas lógicas). */
+function objectsInMarquee(rt: SceneRuntime, ids: string[], a: Vertex, b: Vertex): string[] {
+  const x1 = Math.min(a.x, b.x);
+  const x2 = Math.max(a.x, b.x);
+  const y1 = Math.min(a.y, b.y);
+  const y2 = Math.max(a.y, b.y);
+  return ids.filter((id) => {
+    const box = rt.getBox(id);
+    return !!box && box.x <= x2 && box.x + box.w >= x1 && box.y <= y2 && box.y + box.h >= y1;
+  });
+}
+
+/** Objetos raíz que la escena dibuja (los ocultos por `display: none` no tienen caja). */
+function visibleObjectIds(rt: SceneRuntime): string[] {
+  return store.getState().project.objects.map((object) => object.id).filter((id) => {
+    const box = rt.getBox(id);
+    return !!box && (box.w > 0 || box.h > 0);
+  });
+}
 
 function sameBoxes(a: (Box | null)[], b: (Box | null)[]) {
   return a.length === b.length && a.every((box, i) => {
@@ -64,13 +88,14 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const recPhase = useStore((s) => s.ui.recording.phase);
   const vectorTool = useStore((s) => s.ui.vectorTool);
   const direct = useStore((s) => s.ui.pointerTool === 'direct');
-  const anchorsEnabled = useStore((s) => !!s.ui.selection && !s.ui.vectorTool && !s.ui.termEdit &&
+  const anchorsEnabled = useStore((s) => !!s.ui.selection && !s.ui.multiSelection.length && !s.ui.vectorTool && !s.ui.termEdit &&
     !s.ui.playing && s.ui.recording.phase === 'idle' && s.ui.pointerTool !== 'hand');
   const anchorProject = useStore((s) => anchorsEnabled ? s.project : null);
   const treeVersion = useStore((s) => anchorsEnabled ? s.ui.treeVersion : 0);
   const time = useStore((s) => anchorsEnabled ? s.ui.time : 0);
   const showGuides = useStore((s) => s.ui.showGuides);
   const selection = useStore((s) => s.ui.selection);
+  const multiSelection = useStore((s) => s.ui.multiSelection);
   const termEdit = useStore((s) => s.ui.termEdit);
   const glyphSel = useStore((s) => s.ui.glyphSel);
   const selectedPlane = useStore((s) => {
@@ -91,6 +116,8 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const [k, setK] = useState(0.4);
   const [box, setBox] = useState<Box | null>(null);
   const [glyphBoxes, setGlyphBoxes] = useState<(Box | null)[]>(NO_BOXES);
+  const [multiBoxes, setMultiBoxes] = useState<(Box | null)[]>(NO_BOXES);
+  const [marquee, setMarquee] = useState<{ a: Vertex; b: Vertex } | null>(null);
   const lastClick = useRef<{ id: string; t: number } | null>(null);
 
   const { w: W, h: H } = STAGE_SIZES[format];
@@ -122,6 +149,8 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       const s = store.getState();
       const glyphs = s.ui.termEdit && !s.ui.playing ? rt.getGlyphBoxes(s.ui.termEdit) : NO_BOXES;
       setGlyphBoxes((prev) => (sameBoxes(prev, glyphs) ? prev : glyphs));
+      const many = !s.ui.playing && s.ui.multiSelection.length ? s.ui.multiSelection.map((id) => rt.getBox(id)) : NO_BOXES;
+      setMultiBoxes((prev) => (sameBoxes(prev, many) ? prev : many));
       if (s.ui.playing || !s.ui.selection) {
         setBox((b) => (b === null ? b : null));
         return;
@@ -155,6 +184,25 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       engine.runtime = null;
       engine.playback = null;
     };
+  }, []);
+
+  // Flechas con selección múltiple: mueven todo el grupo (1 px, o 10 px con Mayús) como una sola acción.
+  // Se escucha en fase de captura y se marca `preventDefault`, de modo que el atajo de objeto único no actúa.
+  useEffect(() => {
+    const arrows: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    const onKey = (event: KeyboardEvent) => {
+      const direction = arrows[event.key];
+      if (!direction || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey ||
+        document.querySelector('dialog[open]') ||
+        (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]'))) return;
+      const { ui } = store.getState();
+      if (ui.multiSelection.length < 2 || ui.selectedClip || ui.playing || ui.termEdit || ui.recording.phase !== 'idle') return;
+      event.preventDefault();
+      const step = event.shiftKey ? 10 : 1;
+      actions.translateObjects(ui.multiSelection, direction[0] * step, direction[1] * step);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, []);
 
   // Ajuste del lienzo al espacio disponible conservando la proporción.
@@ -217,7 +265,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       return;
     }
 
-    if (!ui.termEdit && e.target instanceof HTMLElement && e.target.dataset.resizeCorner && ui.selection) {
+    if (!ui.termEdit && !ui.multiSelection.length && e.target instanceof HTMLElement && e.target.dataset.resizeCorner && ui.selection) {
       const object = project.objects.find((o) => o.id === ui.selection && o.plane);
       const b = rt.getBox(ui.selection);
       if (!object || !b) return;
@@ -258,10 +306,43 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       actions.exitTermEdit();
     }
 
+    const selectTool = ui.pointerTool === 'select';
     const id = rt.resolveTarget(e.target, e.shiftKey);
     if (!id) {
+      // Herramienta Selección: arrastrar desde un hueco dibuja la marquesina (Mayús conserva la selección actual).
+      if (selectTool) {
+        const base = e.shiftKey ? selectedObjectIds(store.getState().ui) : [];
+        if (!e.shiftKey) actions.select(null);
+        const start = position(e);
+        dragRef.current = { kind: 'marquee', start, base };
+        setMarquee({ a: start, b: start });
+        return;
+      }
       actions.select(null);
       dragRef.current = null;
+      return;
+    }
+    const root = id.split('.')[0];
+    const startGroupDrag = (ids: string[]) => {
+      const objects = store.getState().project.objects;
+      const origins: Record<string, Vertex> = {};
+      for (const object of objects) if (ids.includes(object.id)) origins[object.id] = { x: object.x, y: object.y };
+      dragRef.current = { kind: 'group', ids, sx: e.clientX, sy: e.clientY, origins };
+    };
+    // Mayús+clic con Selección: suma o quita el objeto del grupo; si queda dentro, se puede arrastrar el conjunto.
+    if (selectTool && e.shiftKey) {
+      actions.toggleSelection(root);
+      const ids = selectedObjectIds(store.getState().ui);
+      dragRef.current = null;
+      if (ids.includes(root)) startGroupDrag(ids);
+      lastClick.current = null;
+      return;
+    }
+    // Clic sobre un miembro de la selección múltiple: se arrastra todo el grupo.
+    const group = selectedObjectIds(ui);
+    if (selectTool && group.length > 1 && group.includes(root)) {
+      startGroupDrag(group);
+      lastClick.current = null;
       return;
     }
     actions.select(id);
@@ -304,6 +385,13 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     }
     const d = dragRef.current;
     if (!d) return;
+    if (d.kind === 'marquee') {
+      const b = position(e);
+      setMarquee({ a: d.start, b });
+      const rt = engine.runtime;
+      if (rt) actions.selectMany([...d.base, ...objectsInMarquee(rt, visibleObjectIds(rt), d.start, b).filter((id) => !d.base.includes(id))]);
+      return;
+    }
     if (d.kind === 'vertex') {
       moveVertex(d, e, active.group);
       return;
@@ -314,6 +402,11 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     }
     const dx = e.clientX - d.sx;
     const dy = e.clientY - d.sy;
+    if (d.kind === 'group') {
+      const r = stageRef.current!.getBoundingClientRect();
+      actions.translateObjects(d.ids, dx / (r.width / W), dy / (r.height / H), active.group, d.origins);
+      return;
+    }
     if (d.kind === 'root') {
       // El desplazamiento se divide entre la escala real del escenario en pantalla.
       const r = stageRef.current!.getBoundingClientRect();
@@ -389,10 +482,20 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
         actions.addVector(vector, bw, bh, { x: x + bw / 2, y: y + bh / 2 });
       }
     }
+    const drag = dragRef.current;
+    if (event.type === 'pointerup' && drag?.kind === 'marquee' && active.generation === store.projectGeneration() && engine.runtime) {
+      const end = position(event);
+      const rect = stageRef.current!.getBoundingClientRect();
+      const pixels = Math.hypot((end.x - drag.start.x) * rect.width / W, (end.y - drag.start.y) * rect.height / H);
+      // Un clic sin arrastre en un hueco solo deselecciona (o conserva la selección con Mayús).
+      const hits = pixels < 3 ? [] : objectsInMarquee(engine.runtime, visibleObjectIds(engine.runtime), drag.start, end);
+      actions.selectMany([...drag.base, ...hits.filter((id) => !drag.base.includes(id))]);
+    }
     pointer.current = null;
     dragRef.current = null;
     draft.current = null;
     setSketch(null);
+    setMarquee(null);
   };
 
   const preview = sketch && sketchBounds(sketch);
@@ -454,7 +557,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
                   />
                 </>
               )}
-              {selected && box && (
+              {!multiSelection.length && selected && box && (
                 <div
                   className="absolute"
                   style={{
@@ -467,7 +570,20 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
                   }}
                 />
               )}
-              {selectedPlane && box && selectedPlane.rotation === 0 && !selectedPlane.id.includes('.') && (
+              {multiSelection.length > 0 && multiBoxes.map((b, i) => b && (
+                <div key={`m${multiSelection[i]}`} data-multi-selected={multiSelection[i]} className="absolute"
+                  style={{ left: b.x, top: b.y, width: b.w, height: b.h,
+                    outline: `${Math.max(2, 2 / k)}px dashed #5c9ef4`, outlineOffset: `${3 / k}px` }} />
+              ))}
+              {marquee && (
+                <div data-marquee className="absolute"
+                  style={{
+                    left: Math.min(marquee.a.x, marquee.b.x), top: Math.min(marquee.a.y, marquee.b.y),
+                    width: Math.abs(marquee.b.x - marquee.a.x), height: Math.abs(marquee.b.y - marquee.a.y),
+                    border: `${Math.max(1, 1 / k)}px dashed ${MARQUEE_COLOR}`, background: 'rgba(88,196,221,0.12)',
+                  }} />
+              )}
+              {!multiSelection.length && selectedPlane && box && selectedPlane.rotation === 0 && !selectedPlane.id.includes('.') && (
                 (['nw', 'ne', 'sw', 'se'] as const).map((corner) => {
                   const size = 9 / (k * viewportScale);
                   const cx = box.x + (corner.endsWith('e') ? box.w : 0);
