@@ -363,6 +363,59 @@ export const actions = {
     actions.select(nextId);
   },
 
+  /**
+   * Duplica varios objetos (con estilos, degradados, fórmulas, planos y clips) desplazados `offset` px, en una
+   * sola entrada de historial, y deja seleccionadas las copias.
+   */
+  duplicateObjects(ids: string[], offset = 24) {
+    const sources = state.project.objects.filter((object) => ids.includes(object.id));
+    if (!sources.length) return;
+    const pairs = sources.map((object) => ({ object, nextId: actions.reserveObjectId() }));
+    store.setProject((project) => {
+      const styles = { ...project.styles };
+      const objects = [...project.objects];
+      const clips = [...project.clips];
+      let clip = project.counters.clip;
+      for (const { object, nextId } of pairs) {
+        const id = object.id;
+        objects.push({ ...object, id: nextId, name: `${object.name} (copia)`, x: object.x + offset, y: object.y + offset,
+          markup: prepareSvg(object.sourceSvg, nextId).markup });
+        for (const [target, style] of Object.entries(project.styles)) {
+          if (target === id || target.startsWith(id + '.')) styles[nextId + target.slice(id.length)] = style;
+        }
+        for (const entry of project.clips) {
+          if (entry.targetId === id || entry.targetId.startsWith(id + '.')) {
+            clips.push({ ...entry, id: `c${++clip}`, targetId: nextId + entry.targetId.slice(id.length) });
+          }
+        }
+      }
+      const obj = Math.max(project.counters.obj, ...pairs.map(({ nextId }) => Number(nextId.slice(1))));
+      return { ...project, styles, objects, clips, counters: { obj, clip } };
+    });
+    actions.selectMany(pairs.map(({ nextId }) => nextId));
+  },
+
+  /** Elimina varios objetos (y sus estilos y clips) en una sola acción reversible. */
+  removeObjects(ids: string[]) {
+    const set = new Set(ids.filter((id) => state.project.objects.some((object) => object.id === id)));
+    if (!set.size) return;
+    const owned = (target: string) => set.has(target.split('.')[0]);
+    store.setProject((p) => ({
+      ...p,
+      objects: p.objects.filter((o) => !set.has(o.id)),
+      styles: Object.fromEntries(Object.entries(p.styles).filter(([key]) => !owned(key))),
+      clips: p.clips.filter((c) => !owned(c.targetId) && !(typeof c.parameters.to === 'string' && set.has(c.parameters.to))),
+    }));
+    const ui = store.getState().ui;
+    const clipStill = store.getState().project.clips.some((c) => c.id === ui.selectedClip);
+    store.setUi({
+      selection: ui.selection && owned(ui.selection) ? null : ui.selection,
+      multiSelection: keepMulti(ui.multiSelection.filter((entry) => !set.has(entry))),
+      selectedClip: clipStill ? ui.selectedClip : null,
+      ...(ui.termEdit && set.has(ui.termEdit) ? { termEdit: null, glyphSel: [] } : {}),
+    });
+  },
+
   updateObject(id: string, patch: Partial<SceneObject>, group?: symbol) {
     store.setProject((p) => {
       const object = p.objects.find((entry) => entry.id === id);

@@ -5,7 +5,7 @@ import {
   PanelLeft, PanelRight, Plus, X,
 } from 'lucide-react';
 import { engine } from './engine';
-import { actions, store, useStore } from './store';
+import { actions, selectedObjectIds, store, useStore } from './store';
 import { TopBar } from './components/TopBar';
 import { LeftPanel } from './components/LeftPanel';
 import { RightPanel } from './components/RightPanel';
@@ -158,9 +158,14 @@ export function App() {
           engine.playback?.pause();
           if (key === 'y' || event.shiftKey) store.redo();
           else store.undo();
-        } else if (key === 'd' && object) {
+        } else if (key === 'd') {
+          // Ctrl/Cmd+D: duplica la selección (varios objetos en una sola acción de historial).
+          const ids = selectedObjectIds(ui);
+          if (!ids.length) return;
           event.preventDefault();
-          if (!event.repeat && !ui.playing) actions.duplicateObject(object.id);
+          if (event.repeat || ui.playing) return;
+          if (ids.length > 1) actions.duplicateObjects(ids);
+          else actions.duplicateObject(ids[0]);
         }
         return;
       }
@@ -185,7 +190,9 @@ export function App() {
       }
       if (event.key === 'Delete' || (event.key === 'Backspace' && selectedClip)) {
         if (ui.playing) return;
+        const ids = selectedObjectIds(ui);
         if (selectedClip) actions.removeClip(selectedClip);
+        else if (ids.length > 1 && !ui.termEdit) actions.removeObjects(ids);
         else if (object && !ui.termEdit) actions.removeObject(object.id);
         else return;
         event.preventDefault();
