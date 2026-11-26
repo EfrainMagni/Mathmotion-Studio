@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
-import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
-import { actions, store, useStore } from '../store';
+import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
+import { actions, defaultClipParams, store, useStore } from '../store';
+import { ColorChangeFields, patchParams } from './Timeline';
 import {
   ARC_LIMITS, DEFAULT_ARC, DEFAULT_TEXT_STYLE, FONT_CATALOG, isPathTool, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
   glyphTransformParams,
-  type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SceneBackground, type SceneBackgroundType, type SoundId, type TextAlign, type TextStyle,
+  type ClipParams, type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SceneBackground, type SceneBackgroundType, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
 import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
@@ -806,6 +807,8 @@ function PlaneInspector() {
                 onClick={() => addPlaneClip(object, `plot:${plot.id}`, 'draw', 1.5)}>Animar (Create)</button>
               <button className={`${btn} flex-1`} title="Crea un clip Indicate de esta gráfica en el cabezal"
                 onClick={() => addPlaneClip(object, `plot:${plot.id}`, 'indicate', 1)}>Indicate</button>
+              <button className={`${btn} flex-1`} title="Cambiar Color permanente de esta gráfica (edítalo en la línea de tiempo)"
+                onClick={() => addPlaneClip(object, `plot:${plot.id}`, 'colorChange', 1)}>Color</button>
             </div>
           </div>
         );
@@ -850,6 +853,8 @@ function PlaneInspector() {
                 onClick={() => addPlaneClip(object, `point:${point.id}`, 'appear', 0.6, { mode: 'pop' })}>Brotar (Pop)</button>
               <button className={`${btn} flex-1`} title="Crea un clip Indicate de este punto en el cabezal"
                 onClick={() => addPlaneClip(object, `point:${point.id}`, 'indicate', 1)}>Indicate</button>
+              <button className={`${btn} flex-1`} title="Cambiar Color permanente de este punto (edítalo en la línea de tiempo)"
+                onClick={() => addPlaneClip(object, `point:${point.id}`, 'colorChange', 1)}>Color</button>
             </div>
           </div>
         );
@@ -892,6 +897,7 @@ function Animations() {
   };
 
   const reason = enabled ? undefined : 'Selecciona un objeto primero';
+  const [colorParams, setColorParams] = useState<ClipParams>(() => defaultClipParams('colorChange'));
 
   return (
     <Section title="Animaciones">
@@ -920,6 +926,15 @@ function Animations() {
         <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('glow')}>
           <Sparkles size={14} /> Brillar
         </button>
+
+        <div className="space-y-1.5 rounded border border-bezel p-2">
+          <button className={`${btn} w-full justify-start`} disabled={!enabled}
+            title={reason ?? 'Cambia el color de forma permanente (se mantiene tras el clip)'}
+            onClick={() => selection && actions.addClip({ targetId: selection, type: 'colorChange', start, duration, parameters: colorParams, sound: sound || null })}>
+            <Palette size={14} /> Cambiar Color
+          </button>
+          <ColorChangeFields compact value={colorParams} onChange={(patch) => setColorParams((current) => patchParams(current, patch))} />
+        </div>
 
         <div className="space-y-1.5 rounded border border-bezel p-2">
           <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('appear', { direction: dir, distance: dist })}>
@@ -1198,6 +1213,10 @@ function EquationAnimations() {
       <div className="space-y-1.5 rounded border border-bezel p-2">
         <button className={`${btn} w-full justify-start`} onClick={() => add('indicate', { ...scopeParams(), scale: factor, color })}>
           <Sparkles size={14} /> Indicate
+        </button>
+        <button className={`${btn} w-full justify-start`} title="Cambio de color permanente de los glifos elegidos (usa el color de énfasis)"
+          onClick={() => add('colorChange', { ...scopeParams(), fillEnabled: true, targetFillColor: color, strokeEnabled: false })}>
+          <Palette size={14} /> Cambiar Color
         </button>
         <button className={`${btn} w-full justify-start`} onClick={() => add('circumscribe', { ...scopeParams(), color })}>
           <Radio size={14} /> Circumscribe

@@ -124,6 +124,12 @@ interface NState {
   draw: number | null;
   /** `lag_ratio` de Write; `null` conserva el escalonado por defecto. */
   lag: number | null;
+  /** Mezclas de color en orden de clip ([color destino, cantidad 0–1]): Indicate (pulso) y Cambiar Color (permanente). */
+  fillMix: [string, number][];
+  /** El tercer valor marca los cambios permanentes (pueden hacer aparecer un contorno que era `none`). */
+  strokeMix: [string, number, boolean][];
+  /** Opacidad de relleno destino de Cambiar Color ([valor, cantidad]). */
+  fillOpacityTo: [number, number][];
 }
 
 /** Efecto de un glifo (dx, dy en px del objeto; el resto relativo al estado base). */
@@ -832,6 +838,48 @@ export class SceneRuntime {
     }
   }
 
+  /**
+   * Mezclas de color de Indicate y Cambiar Color sobre la pintura efectiva (estilos del inspector incluidos).
+   * Rellenos y trazos `none` no se tiñen, salvo el trazo de Cambiar Color, que aparece con su opacidad. Las puntas
+   * de flecha (polígonos sin trazo) siguen al color del trazo.
+   */
+  private applyColorMix(states: Map<string, NState>, P: (el: Element) => Props) {
+    const paintable = (c: string | undefined) => !!c && c !== 'none' && c !== 'transparent' && !c.startsWith('url(');
+    const chain = (base: string, mixes: [string, number, boolean?][]) => mixes.reduce((c, [to, a]) => (a > 0 ? mixColor(c, to, a) : c), base);
+    for (const [id, st] of states) {
+      if (!st.fillMix.length && !st.strokeMix.length && !st.fillOpacityTo.length) continue;
+      const n = this.nodes.get(id);
+      if (!n) continue;
+      for (const el of this.geomsOf(n)) {
+        const pr = P(el);
+        const info = this.geomInfo(el);
+        const fill = pr.fill ?? info.fill;
+        if (st.fillMix.length && paintable(fill)) pr.fill = chain(fill, st.fillMix);
+        if (st.fillOpacityTo.length) {
+          const base = pr['fill-opacity'] !== undefined ? parseFloat(pr['fill-opacity']) : info.fillOpacity;
+          pr['fill-opacity'] = String(st.fillOpacityTo.reduce((v, [to, a]) => v + (to - v) * a, Number.isFinite(base) ? base : 1));
+        }
+        if (!st.strokeMix.length) continue;
+        const stroke = pr.stroke ?? info.stroke;
+        if (paintable(stroke)) pr.stroke = chain(stroke, st.strokeMix);
+        else if (!stroke || stroke === 'none') {
+          // Sin contorno previo: el nuevo color aparece con opacidad creciente (solo cambios permanentes).
+          const permanent = st.strokeMix.filter(([, a, keep]) => keep && a > 0);
+          if (!permanent.length) continue;
+          const alpha = 1 - permanent.reduce((k, [, a]) => k * (1 - a), 1);
+          pr.stroke = permanent[permanent.length - 1][0];
+          pr['stroke-opacity'] = String(alpha);
+        }
+      }
+      const root = n.isRoot ? this.objs.get(id)?.svg : n.el;
+      for (const tip of Array.from(root?.querySelectorAll('[data-mm-tip]') ?? [])) {
+        const pr = P(tip);
+        const base = pr.fill ?? this.geomInfo(tip).fill;
+        if (paintable(base)) pr.fill = chain(base, st.strokeMix);
+      }
+    }
+  }
+
   /** Trazado abierto: recalcula el recorte del cuerpo (`d`) y las puntas con el grosor y color efectivos. */
   private syncPathTips(id: string, vector: NonNullable<Obj2D['vector']>, next: Map<Element, Props>, P: (el: Element) => Props) {
     const svg = this.objs.get(id)?.svg;
@@ -1031,6 +1079,7 @@ export class SceneRuntime {
     }
 
     this.syncTips(next, P);
+    this.applyColorMix(states, P);
 
     // 2) transformaciones, opacidad y resplandor por nodo hijo
     for (const id of childIds) {
@@ -1382,7 +1431,7 @@ export class SceneRuntime {
       const store = ghost ? ghostStates : states;
       let s = store.get(id);
       if (!s) {
-        s = { opacity: 1, dx: 0, dy: 0, scale: 1, rot: 0, glow: 0, glowColor: '#fde047', draw: null, lag: null };
+        s = { opacity: 1, dx: 0, dy: 0, scale: 1, rot: 0, glow: 0, glowColor: '#fde047', draw: null, lag: null, fillMix: [], strokeMix: [], fillOpacityTo: [] };
         store.set(id, s);
       }
       return s;
@@ -1558,7 +1607,30 @@ export class SceneRuntime {
               s.glow = b;
               s.glowColor = color;
             }
+            // Pulso de color en relleno y trazo (y puntas de flecha); vuelve al color original al terminar.
+            s.fillMix.push([color, b]);
+            s.strokeMix.push([color, b, false]);
           }
+          break;
+        }
+        case 'colorChange': {
+          // Cambio de color permanente: interpola con curva suave en [start, end] y se mantiene después.
+          if (raw < 0) break;
+          const e = smooth(p);
+          const fill = par.fillEnabled === false ? null : typeof par.targetFillColor === 'string' ? par.targetFillColor : null;
+          const stroke = par.strokeEnabled === false ? null : typeof par.targetStrokeColor === 'string' ? par.targetStrokeColor : null;
+          const fillOpacity = par.fillEnabled !== false && typeof par.targetFillOpacity === 'number' ? clamp01(par.targetFillOpacity) : null;
+          const fo = this.formulaOf(c.targetId);
+          if (fo) {
+            // Ecuaciones: los glifos (todos o los elegidos) son rellenos.
+            const color = fill ?? stroke;
+            if (color) for (const i of clipGlyphs(fo, par) ?? glyphsOf(fo)) glyphState(fo.id, i).mix.push([color, e]);
+            break;
+          }
+          const s = get(c.targetId);
+          if (fill) s.fillMix.push([fill, e]);
+          if (stroke) s.strokeMix.push([stroke, e, true]);
+          if (fillOpacity !== null) s.fillOpacityTo.push([fillOpacity, e]);
           break;
         }
         case 'circumscribe':
