@@ -9,7 +9,7 @@ import {
 } from '../types';
 import { engine } from '../engine';
 import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
-import { preloadFont } from '../engine/fonts';
+import { FONT_GROUPS, preloadFont } from '../engine/fonts';
 import { compileExpression, newPlot, newPoint } from '../engine/cartesianPlane';
 import { CLOSED_STROKE_WIDTH_MAX, CLOSED_STROKE_WIDTH_MIN, GRADIENT_PRESETS, LINE_TIPS, gradientCss, isLinearVector, lineTips, makeGradient, newStopId } from '../engine/vector';
 import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
@@ -149,22 +149,20 @@ function TextTypography({ obj }: { obj: Obj2D }) {
           <ChevronDown size={12} className="shrink-0 text-slate-400" />
         </button>
         {open && (
-          <ul role="listbox" className="absolute left-0 right-0 z-30 mt-0.5 max-h-72 overflow-auto rounded border border-bezel bg-ink-900 py-0.5 shadow-lg">
-            {(['Divulgación', 'Letra corrida'] as const).map((category) => (
-              <li key={category} role="presentation">
-                <div className="px-2 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                  {category === 'Divulgación' ? 'Divulgación científica' : 'Letra corrida'}
+          <ul role="listbox" aria-label="Tipografías" className="absolute left-0 right-0 z-30 mt-0.5 max-h-80 overflow-auto rounded border border-bezel bg-ink-900 py-0.5 shadow-lg">
+            {FONT_GROUPS.map((group) => (
+              <li key={group.category} role="presentation">
+                <div className="sticky top-0 bg-ink-900 px-2 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  {group.label}
                 </div>
-                <ul role="presentation">
-                  {FONT_CATALOG.filter((f) => f.category === category).map((f) => (
+                <ul role="group" aria-label={group.label}>
+                  {group.fonts.map((f) => (
                     <li key={f.id} role="option" aria-selected={f.id === style.fontFamily}>
-                      <button type="button" className={`flex w-full items-center justify-between gap-2 px-2 py-1 text-left hover:bg-white/10 ${f.id === style.fontFamily ? 'bg-accent-soft' : ''}`}
+                      <button type="button" title={f.description}
+                        className={`flex w-full items-baseline justify-between gap-2 px-2 py-0.5 text-left hover:bg-white/10 ${f.id === style.fontFamily ? 'bg-accent-soft' : ''}`}
                         onClick={() => { apply({ fontFamily: f.id as FontId }); setOpen(false); }}>
-                        <span className="min-w-0">
-                          <span className="block truncate text-[11px] text-slate-300">{f.id}</span>
-                          <span className="block truncate text-lg leading-tight text-slate-50" style={{ fontFamily: fontStack(f.id) }}>{sample}</span>
-                        </span>
-                        <span className="shrink-0 rounded bg-ink-700 px-1 text-[10px] text-slate-400">{f.category}</span>
+                        <span className="min-w-0 truncate text-[15px] leading-snug text-slate-50" style={{ fontFamily: fontStack(f.id) }}>{f.id}</span>
+                        <span className="max-w-[45%] shrink-0 truncate text-[11px] text-slate-400" style={{ fontFamily: fontStack(f.id) }}>{sample}</span>
                       </button>
                     </li>
                   ))}
