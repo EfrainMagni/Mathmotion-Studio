@@ -5,7 +5,7 @@ import { parseProject, serializeProject } from '../engine/projectFiles';
 import { activateProject } from '../engine/projectStorage';
 import { Crosshair, Download, Loader2, Square, Video } from 'lucide-react';
 import { actions, defaultProject, store, useStore } from '../store';
-import type { StageBackground, StageFormat } from '../types';
+import type { RecordQuality, StageBackground, StageFormat } from '../types';
 import { QUALITY, beginRecording, hasWebCodecs, pickMime, stopRecording } from '../engine/recorder';
 
 const FORMATS: { id: StageFormat; label: string }[] = [
@@ -150,10 +150,10 @@ export function TopBar() {
           className="rounded-md border border-bezel bg-ink-700 px-2 py-1 text-xs"
           value={quality}
           disabled={busy}
-          onChange={(e) => store.setUi({ recordQuality: e.target.value as 'light' | 'standard' })}
+          onChange={(e) => store.setUi({ recordQuality: e.target.value as RecordQuality })}
           aria-label="Calidad de grabación"
         >
-          {(Object.keys(QUALITY) as (keyof typeof QUALITY)[]).map((q) => (
+          {(Object.keys(QUALITY) as RecordQuality[]).map((q) => (
             <option key={q} value={q}>
               {QUALITY[q].label}
             </option>
@@ -164,7 +164,7 @@ export function TopBar() {
             className="inline-flex items-center gap-1.5 rounded-md bg-rose-500 px-2 py-0.5 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-40"
             onClick={beginRecording}
             disabled={!supported || working}
-            title={supported ? 'Graba el lienzo limpio (sin interfaz) con voz y efectos en MP4 (H.264); duración mínima 3 s' : 'Este navegador no admite la grabación del lienzo'}
+            title={supported ? 'Graba el lienzo limpio (sin interfaz) con voz y efectos en MP4 (H.264), fotograma a fotograma sin saltos; duración mínima 3 s' : 'Este navegador no admite la grabación del lienzo'}
           >
             <Video size={14} /> Grabar video
           </button>

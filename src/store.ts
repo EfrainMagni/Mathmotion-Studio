@@ -56,7 +56,7 @@ export interface UIState {
   polygonRequest: Vertex | 'options' | null;
   vectorText: string;
   showGuides: boolean;
-  recordQuality: 'light' | 'standard';
+  recordQuality: 'light' | 'standard' | 'hd' | 'max';
   recording: RecordingState;
   notice: { kind: 'error' | 'info'; text: string } | null;
   /** Se incrementa cuando cambia el árbol de nodos SVG montado. */
@@ -101,7 +101,7 @@ function defaultUI(): UIState {
     polygonRequest: null,
     vectorText: 'Texto',
     showGuides: true,
-    recordQuality: 'light',
+    recordQuality: 'hd',
     recording: { phase: 'idle', message: null, captureSize: null, lastFile: null },
     notice: null,
     treeVersion: 0,

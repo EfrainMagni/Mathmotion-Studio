@@ -555,3 +555,6 @@ export interface Box {
   w: number;
   h: number;
 }
+
+/** Calidad de exportación de vídeo (fps y tasa de bits en `QUALITY` de `engine/recorder.ts`). */
+export type RecordQuality = 'light' | 'standard' | 'hd' | 'max';
