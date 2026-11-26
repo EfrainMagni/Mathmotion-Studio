@@ -143,8 +143,19 @@ export function App() {
 
   useEffect(() => {
     function onEditorKey(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.isComposing || event.altKey || document.querySelector('dialog[open]') ||
-        (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]'))) return;
+      if (event.defaultPrevented || event.isComposing || event.altKey || document.querySelector('dialog[open]')) return;
+      // Ctrl/Cmd+D se atiende antes de la guarda de foco: tras tocar un deslizador, color, número o interruptor del
+      // inspector el foco queda en ese control y antes el atajo se descartaba sin hacer nada. Solo se respeta la
+      // escritura libre (áreas de texto, contenteditable y campos de texto).
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        const typing = event.target instanceof Element &&
+          !!event.target.closest('textarea, [contenteditable]:not([contenteditable="false"]), input[type="text"], input[type="search"], input:not([type])');
+        const { ui } = store.getState();
+        if (!typing && !event.repeat && !ui.playing && ui.recording.phase === 'idle') actions.duplicateSelection();
+        return;
+      }
+      if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]')) return;
       const { ui, project } = store.getState();
       if (ui.recording.phase !== 'idle') return;
       const { selection, selectedClip } = ui;
@@ -158,14 +169,6 @@ export function App() {
           engine.playback?.pause();
           if (key === 'y' || event.shiftKey) store.redo();
           else store.undo();
-        } else if (key === 'd') {
-          // Ctrl/Cmd+D: duplica la selección (varios objetos en una sola acción de historial).
-          const ids = selectedObjectIds(ui);
-          if (!ids.length) return;
-          event.preventDefault();
-          if (event.repeat || ui.playing) return;
-          if (ids.length > 1) actions.duplicateObjects(ids);
-          else actions.duplicateObject(ids[0]);
         }
         return;
       }

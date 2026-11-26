@@ -342,34 +342,24 @@ export const actions = {
     });
   },
 
+  /** Duplica un objeto (+24 px) y selecciona la copia; ver `duplicateObjects`. */
   duplicateObject(id: string) {
-    const object = state.project.objects.find((entry) => entry.id === id);
-    if (!object) return;
-    const nextId = actions.reserveObjectId();
-    const base = { id: nextId, name: `${object.name} (copia)` };
-    const copy: Obj2D = { ...object, ...base, x: object.x + 20, y: object.y + 20, markup: prepareSvg(object.sourceSvg, nextId).markup };
-    store.setProject((project) => {
-      const styles = { ...project.styles };
-      for (const [target, style] of Object.entries(project.styles)) {
-        if (target === id || target.startsWith(id + '.')) styles[nextId + target.slice(id.length)] = style;
-      }
-      let clip = project.counters.clip;
-      const copies = project.clips
-        .filter((entry) => entry.targetId === id || entry.targetId.startsWith(id + '.'))
-        .map((entry) => ({ ...entry, id: `c${++clip}`, targetId: nextId + entry.targetId.slice(id.length) }));
-      return { ...project, styles, objects: [...project.objects, copy],
-        clips: [...project.clips, ...copies], counters: { obj: Number(nextId.slice(1)), clip } };
-    });
-    actions.select(nextId);
+    actions.duplicateObjects([id]);
+  },
+
+  /** Duplica la selección actual (uno o varios objetos). Devuelve los ids de las copias. */
+  duplicateSelection(): string[] {
+    return actions.duplicateObjects(selectedObjectIds(state.ui));
   },
 
   /**
    * Duplica varios objetos (con estilos, degradados, fórmulas, planos y clips) desplazados `offset` px, en una
-   * sola entrada de historial, y deja seleccionadas las copias.
+   * sola entrada de historial (o en la del gesto `group`), y deja seleccionadas las copias. Devuelve sus ids.
    */
-  duplicateObjects(ids: string[], offset = 24) {
-    const sources = state.project.objects.filter((object) => ids.includes(object.id));
-    if (!sources.length) return;
+  duplicateObjects(ids: string[], offset = 24, group?: symbol): string[] {
+    // En el orden de `ids`: la copia i corresponde a ids[i] (lo usa Alt+arrastrar para mapear posiciones).
+    const sources = [...new Set(ids)].map((id) => state.project.objects.find((object) => object.id === id)).filter((o): o is Obj2D => !!o);
+    if (!sources.length) return [];
     const pairs = sources.map((object) => ({ object, nextId: actions.reserveObjectId() }));
     store.setProject((project) => {
       const styles = { ...project.styles };
@@ -391,8 +381,10 @@ export const actions = {
       }
       const obj = Math.max(project.counters.obj, ...pairs.map(({ nextId }) => Number(nextId.slice(1))));
       return { ...project, styles, objects, clips, counters: { obj, clip } };
-    });
-    actions.selectMany(pairs.map(({ nextId }) => nextId));
+    }, group);
+    const copies = pairs.map(({ nextId }) => nextId);
+    actions.selectMany(copies);
+    return copies;
   },
 
   /** Elimina varios objetos (y sus estilos y clips) en una sola acción reversible. */

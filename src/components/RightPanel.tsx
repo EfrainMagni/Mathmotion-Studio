@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
-import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
+import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
 import {
   DEFAULT_TEXT_STYLE, FONT_CATALOG, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
@@ -420,11 +420,17 @@ function Inspector() {
 
   return (
     <Section title="Inspector">
-      <div className="rounded bg-ink-900 p-1.5 text-xs">
-        <div className="truncate font-semibold text-slate-100" title={info.name}>{info.name}</div>
-        <div className="font-mono text-[10px] text-slate-500">
-          {selection} · {info.tag}
+      <div className="flex items-start gap-1.5 rounded bg-ink-900 p-1.5 text-xs">
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-semibold text-slate-100" title={info.name}>{info.name}</div>
+          <div className="font-mono text-[10px] text-slate-500">
+            {selection} · {info.tag}
+          </div>
         </div>
+        <button type="button" className={`${btn} shrink-0 gap-1 px-1.5 text-[11px]`} onClick={() => actions.duplicateSelection()}
+          title={multiCount > 1 ? `Duplicar ${multiCount} objetos (Ctrl+D)` : 'Duplicar (Ctrl+D)'} aria-label="Duplicar (Ctrl+D)">
+          <Copy size={12} /> Duplicar
+        </button>
       </div>
       {multiCount > 1 && (
         <p className="rounded border border-accent/40 bg-accent-soft px-1.5 py-1 text-[11px] text-accent-light" aria-live="polite">
@@ -491,7 +497,7 @@ function Inspector() {
         <button className={btn} onClick={() => center('y')}>Centrar vertical</button>
         <button className={btn} onClick={() => actions.orderObject(obj.id, true)}>Traer al frente</button>
         <button className={btn} onClick={() => actions.orderObject(obj.id, false)}>Enviar atrás</button>
-        <button className={btn} onClick={() => actions.duplicateObject(obj.id)} title="Ctrl+D">Duplicar objeto</button>
+        <button className={btn} onClick={() => actions.duplicateSelection()} title="Ctrl+D">Duplicar objeto</button>
       </div>
 
       {!info.isRoot && (

@@ -11,7 +11,7 @@ type Drag =
   | { kind: 'root'; id: string; sx: number; sy: number; ox: number; oy: number }
   | { kind: 'child'; id: string; sx: number; sy: number; ox: number; oy: number; inv: DOMMatrix }
   | { kind: 'resize'; id: string; sx: 1 | -1; sy: 1 | -1; anchor: Vertex }
-  | { kind: 'group'; ids: string[]; sx: number; sy: number; origins: Record<string, Vertex> }
+  | { kind: 'group'; ids: string[]; sx: number; sy: number; origins: Record<string, Vertex>; copyOnMove?: boolean }
   | { kind: 'marquee'; start: Vertex; base: string[] }
   | { kind: 'vertex'; id: string; native: Obj2D | null; index: number; points: Vertex[]; start: Vertex; inverse: DOMMatrix; matrix: DOMMatrix; linear: boolean };
 
@@ -323,12 +323,22 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       return;
     }
     const root = id.split('.')[0];
-    const startGroupDrag = (ids: string[]) => {
+    const startGroupDrag = (ids: string[], copyOnMove = false) => {
       const objects = store.getState().project.objects;
       const origins: Record<string, Vertex> = {};
       for (const object of objects) if (ids.includes(object.id)) origins[object.id] = { x: object.x, y: object.y };
-      dragRef.current = { kind: 'group', ids, sx: e.clientX, sy: e.clientY, origins };
+      dragRef.current = { kind: 'group', ids, sx: e.clientX, sy: e.clientY, origins, copyOnMove };
     };
+    // Alt + arrastrar (estilo Illustrator): al empezar a mover se duplican el objeto o el grupo en su sitio y se
+    // arrastran las copias; duplicado y desplazamiento comparten la misma entrada de historial.
+    if (selectTool && e.altKey && !e.shiftKey) {
+      const current = selectedObjectIds(ui);
+      const ids = current.length > 1 && current.includes(root) ? current : [root];
+      if (ids.length === 1 && current[0] !== root) actions.select(root);
+      startGroupDrag(ids, true);
+      lastClick.current = null;
+      return;
+    }
     // Mayús+clic con Selección: suma o quita el objeto del grupo; si queda dentro, se puede arrastrar el conjunto.
     if (selectTool && e.shiftKey) {
       actions.toggleSelection(root);
@@ -403,6 +413,16 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     const dx = e.clientX - d.sx;
     const dy = e.clientY - d.sy;
     if (d.kind === 'group') {
+      if (d.copyOnMove) {
+        if (Math.hypot(dx, dy) < 3) return;
+        // Las copias nacen exactamente en la posición original (desplazamiento 0) y son las que se arrastran.
+        const copies = actions.duplicateObjects(d.ids, 0, active.group);
+        if (!copies.length) return;
+        const origins: Record<string, Vertex> = {};
+        copies.forEach((id, i) => { origins[id] = d.origins[d.ids[i]]; });
+        dragRef.current = { ...d, ids: copies, origins, copyOnMove: false };
+        return onPointerMove(e);
+      }
       const r = stageRef.current!.getBoundingClientRect();
       actions.translateObjects(d.ids, dx / (r.width / W), dy / (r.height / H), active.group, d.origins);
       return;
