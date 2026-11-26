@@ -237,6 +237,8 @@ export function defaultClipParams(type: ClipType): ClipParams {
       return { color: '#ffff00' };
     case 'focus':
       return { color: '#888888', opacity: 0.2 };
+    case 'colorChange':
+      return { fillEnabled: true, targetFillColor: '#ffff00', strokeEnabled: true, targetStrokeColor: '#ffff00' };
     default:
       return {};
   }

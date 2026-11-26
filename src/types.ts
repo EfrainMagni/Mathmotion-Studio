@@ -156,7 +156,7 @@ export const SOUND_IDS = Object.keys(SOUND_LABEL) as SoundId[];
 
 export type ClipType =
   | 'draw' | 'radar' | 'glow' | 'appear' | 'rotate'
-  | 'indicate' | 'circumscribe' | 'focus' | 'transform' | 'transformMatch';
+  | 'indicate' | 'circumscribe' | 'focus' | 'transform' | 'transformMatch' | 'colorChange';
 export const CLIP_LABEL: Record<ClipType, string> = {
   draw: 'Escribir / Dibujar',
   radar: 'Radar',
@@ -168,6 +168,7 @@ export const CLIP_LABEL: Record<ClipType, string> = {
   focus: 'FocusOn',
   transform: 'Transform',
   transformMatch: 'TransformMatchingTex',
+  colorChange: 'Cambiar Color',
 };
 
 export type ClipParams = Record<string, number | string | boolean>;

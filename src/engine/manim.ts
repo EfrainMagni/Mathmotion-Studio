@@ -251,6 +251,19 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
   return commands;
 }
 
+/** `Cambiar Color` → `mob.animate(run_time=…).set_fill(...).set_stroke(...)` (cambio permanente). */
+function colorChangeCode(clip: Clip, variable: string): string | null {
+  const params = clip.parameters;
+  const fill = params.fillEnabled === false ? null : cssColor(typeof params.targetFillColor === 'string' ? params.targetFillColor : undefined);
+  const stroke = params.strokeEnabled === false ? null : cssColor(typeof params.targetStrokeColor === 'string' ? params.targetStrokeColor : undefined);
+  const opacity = params.fillEnabled !== false && typeof params.targetFillOpacity === 'number' ? Math.min(1, Math.max(0, params.targetFillOpacity)) : null;
+  const calls: string[] = [];
+  if (fill || opacity !== null) calls.push(`.set_fill(${[fill ? quoted(fill) : null, opacity !== null ? `opacity=${n(opacity)}` : null].filter(Boolean).join(', ')})`);
+  if (stroke) calls.push(`.set_stroke(color=${quoted(stroke)})`);
+  if (!calls.length) return null;
+  return `${variable}.animate(run_time=${n(clip.duration)}, rate_func=smooth)${calls.join('')}`;
+}
+
 /**
  * Animación Manim de un clip dirigido a una gráfica (`o1_f1`) o a un punto (`o1_pt1`, VGroup con su círculo,
  * líneas guía y etiqueta) de un plano. `null` si el elemento no existe o no se exportó.
@@ -264,6 +277,7 @@ function planeSubAnimation(clip: Clip, plane: NonNullable<Obj2D['plane']>, varia
     if (clip.type === 'draw') return `Create(${variable}, ${duration})`;
     if (clip.type === 'appear') return `FadeIn(${variable}, ${duration})`;
     if (clip.type === 'indicate') return `Indicate(${variable}, scale_factor=${n(typeof clip.parameters.scale === 'number' ? clip.parameters.scale : 1.3)}, color=${quoted(cssColor(String(clip.parameters.color)) ?? '#ffff00')}, ${duration})`;
+    if (clip.type === 'colorChange') return colorChangeCode(clip, variable);
     return null;
   }
   const point = geometry.points?.find((entry) => entry.id === id);
@@ -273,6 +287,7 @@ function planeSubAnimation(clip: Clip, plane: NonNullable<Obj2D['plane']>, varia
   if (clip.type === 'draw' || (clip.type === 'appear' && clip.parameters.mode === 'pop')) return grow;
   if (clip.type === 'appear') return `FadeIn(${variable}, ${duration})`;
   if (clip.type === 'indicate') return `Indicate(${variable}, scale_factor=${n(typeof clip.parameters.scale === 'number' ? clip.parameters.scale : 1.3)}, color=${quoted(cssColor(String(clip.parameters.color)) ?? '#ffff00')}, ${duration})`;
+  if (clip.type === 'colorChange') return colorChangeCode(clip, variable);
   return null;
 }
 
@@ -309,7 +324,7 @@ function animation(clip: Clip, object: SceneObject, width: number, height: numbe
   }
 }
 
-const EQUATION_CLIPS = new Set<Clip['type']>(['indicate', 'circumscribe', 'focus', 'transform', 'transformMatch']);
+const EQUATION_CLIPS = new Set<Clip['type']>(['indicate', 'colorChange', 'circumscribe', 'focus', 'transform', 'transformMatch']);
 
 interface EquationEvent {
   code: string;
@@ -339,6 +354,10 @@ function equationAnimation(
   switch (clip.type) {
     case 'indicate':
       return { key, overlay: false, reveal: [], code: `Indicate(${selection}, scale_factor=${n(typeof params.scale === 'number' ? params.scale : 1.3)}, color=${quoted(color)}, ${duration})` };
+    case 'colorChange': {
+      const code = colorChangeCode(clip, selection);
+      return code ? { key, overlay: false, reveal: [], code } : null;
+    }
     case 'circumscribe':
       return { key, overlay: true, reveal: [], code: `Circumscribe(${selection}, color=${quoted(color)}, ${duration})` };
     case 'focus':

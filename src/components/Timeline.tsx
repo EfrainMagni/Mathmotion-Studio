@@ -1,10 +1,69 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { FPS, SOUND_IDS, SOUND_LABEL, clipLabel, glyphTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type Project, type SoundId } from '../types';
+import { FPS, SOUND_IDS, SOUND_LABEL, clipLabel, glyphTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type Project, type SoundId } from '../types';
 import { formatGlyphList } from '../engine/glyphs';
 import { engine } from '../engine';
 import { NumberInput, btn, input } from './ui';
+
+/**
+ * Parámetros de «Cambiar Color»: relleno (con opacidad opcional) y trazo, activables por separado.
+ * Lo usan el editor de clips de la línea de tiempo y el panel Animaciones del inspector.
+ */
+export type ParamPatch = Record<string, ClipParams[string] | undefined>;
+
+export function ColorChangeFields({ value, onChange, compact }: {
+  value: ClipParams; onChange: (patch: ParamPatch) => void; compact?: boolean;
+}) {
+  const hex = (v: unknown, fallback: string) => (typeof v === 'string' && /^#[\da-f]{6}$/i.test(v) ? v : fallback);
+  const fillOn = value.fillEnabled !== false && typeof value.targetFillColor === 'string';
+  const strokeOn = value.strokeEnabled !== false && typeof value.targetStrokeColor === 'string';
+  const opacityOn = typeof value.targetFillOpacity === 'number';
+  const swatch = 'h-6 w-8 shrink-0 cursor-pointer rounded border border-bezel bg-transparent disabled:opacity-30';
+  const row = compact ? 'flex items-center justify-between gap-1.5 text-[11px] text-slate-300' : 'flex items-center gap-1';
+  return (
+    <>
+      <label className={row} title="Nuevo color de relleno (targetFillColor)">
+        <span className="flex items-center gap-1">
+          <input type="checkbox" checked={fillOn}
+            onChange={(e) => onChange({ fillEnabled: e.target.checked, targetFillColor: hex(value.targetFillColor, '#ffff00') })} />
+          Relleno
+        </span>
+        <input type="color" className={swatch} aria-label="Nuevo color de relleno" disabled={!fillOn}
+          value={hex(value.targetFillColor, '#ffff00')} onChange={(e) => onChange({ targetFillColor: e.target.value, fillEnabled: true })} />
+      </label>
+      <label className={row} title="Opacidad de relleno al terminar (targetFillOpacity)">
+        <span className="flex items-center gap-1">
+          <input type="checkbox" checked={opacityOn} disabled={!fillOn}
+            onChange={(e) => onChange({ targetFillOpacity: e.target.checked ? 1 : undefined })} />
+          Opacidad
+        </span>
+        <NumberInput className={`${input} w-14`} value={opacityOn ? Math.round(Number(value.targetFillOpacity) * 100) : 100} min={0} max={100} step={5}
+          disabled={!fillOn || !opacityOn} ariaLabel="Opacidad de relleno objetivo (%)"
+          onChange={(v) => onChange({ targetFillOpacity: Math.min(1, Math.max(0, v / 100)) })} />
+      </label>
+      <label className={row} title="Nuevo color de trazo / contorno, también para líneas, flechas y puntas (targetStrokeColor)">
+        <span className="flex items-center gap-1">
+          <input type="checkbox" checked={strokeOn}
+            onChange={(e) => onChange({ strokeEnabled: e.target.checked, targetStrokeColor: hex(value.targetStrokeColor, '#ffff00') })} />
+          Trazo
+        </span>
+        <input type="color" className={swatch} aria-label="Nuevo color de trazo" disabled={!strokeOn}
+          value={hex(value.targetStrokeColor, '#ffff00')} onChange={(e) => onChange({ targetStrokeColor: e.target.value, strokeEnabled: true })} />
+      </label>
+    </>
+  );
+}
+
+/** Aplica un parche de parámetros; `undefined` elimina la clave. */
+export function patchParams(params: ClipParams, patch: ParamPatch): ClipParams {
+  const next: ClipParams = { ...params };
+  for (const [key, v] of Object.entries(patch)) {
+    if (v === undefined) delete next[key];
+    else next[key] = v;
+  }
+  return next;
+}
 
 const LABEL_W = 116;
 const LANE_H = 30;
@@ -138,6 +197,10 @@ function ClipEditor() {
             }} />
           Mantener ecuación origen
         </label>
+      )}
+      {clip.type === 'colorChange' && (
+        <ColorChangeFields value={clip.parameters}
+          onChange={(patch) => actions.updateClip(clip.id, { parameters: patchParams(clip.parameters, patch) })} />
       )}
       {(clip.type === 'indicate' || clip.type === 'circumscribe' || clip.type === 'focus') && (
         <input type="color" className="h-6 w-8 cursor-pointer rounded border border-bezel bg-transparent" aria-label="Color del énfasis"

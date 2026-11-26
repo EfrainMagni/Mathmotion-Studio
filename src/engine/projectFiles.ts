@@ -88,6 +88,9 @@ const style = z.object({
 const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()])).superRefine((input, ctx) => {
   if (
     (input.color !== undefined && !paint.safeParse(input.color).success) ||
+    (input.targetFillColor !== undefined && !paint.safeParse(input.targetFillColor).success) ||
+    (input.targetStrokeColor !== undefined && !paint.safeParse(input.targetStrokeColor).success) ||
+    (input.targetFillOpacity !== undefined && (typeof input.targetFillOpacity !== 'number' || input.targetFillOpacity < 0 || input.targetFillOpacity > 1)) ||
     (input.axis !== undefined && input.axis !== 'x' && input.axis !== 'y' && input.axis !== 'z') ||
     (input.to !== undefined && !objectId.safeParse(input.to).success) ||
     (input.term !== undefined && !/^t[1-9]\d*$/.test(String(input.term))) ||
@@ -117,7 +120,7 @@ const project = z.object({
   clips: z.array(z.object({
     id: clipId, targetId, type: z.enum([
       'draw', 'radar', 'glow', 'appear', 'rotate', 'orbit', // 'orbit' es legado 3D: se descarta al abrir
-      'indicate', 'circumscribe', 'focus', 'transform', 'transformMatch',
+      'indicate', 'circumscribe', 'focus', 'transform', 'transformMatch', 'colorChange',
     ]),
     start: nonnegative, duration: positive, sound: z.enum(['chalk', 'pop', 'radar', 'sparkle']).nullable(),
     parameters,
