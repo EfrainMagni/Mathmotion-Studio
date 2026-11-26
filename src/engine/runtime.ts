@@ -130,6 +130,8 @@ interface NState {
   strokeMix: [string, number, boolean][];
   /** Opacidad de relleno destino de Cambiar Color ([valor, cantidad]). */
   fillOpacityTo: [number, number][];
+  /** Grosor de trazo destino de Cambiar Color, en px del escenario ([valor, cantidad]). */
+  strokeWidthTo: [number, number][];
 }
 
 /** Efecto de un glifo (dx, dy en px del objeto; el resto relativo al estado base). */
@@ -140,6 +142,9 @@ interface GState {
   sc: number;
   rot: number;
   mix: [string, number][];
+  /** Trazo de Cambiar Color sobre el glifo: color y grosor (px del escenario) con su cantidad. */
+  strokeMix: [string, number, boolean][];
+  strokeWidthTo: [number, number][];
   glow: number;
   glowColor: string;
 }
@@ -843,11 +848,39 @@ export class SceneRuntime {
    * Rellenos y trazos `none` no se tiñen, salvo el trazo de Cambiar Color, que aparece con su opacidad. Las puntas
    * de flecha (polígonos sin trazo) siguen al color del trazo.
    */
+  /**
+   * Trazo de Indicate / Cambiar Color sobre un elemento: color encadenado y, si se pide, grosor interpolado
+   * (px del escenario → unidades locales). Si el elemento no tenía contorno, aparece con opacidad y grosor
+   * crecientes; con grosor objetivo se usa `paint-order: stroke fill` y unión redondeada, de modo que el borde
+   * crece hacia fuera sin comerse el relleno (letras de MathTex incluidas).
+   */
+  private applyStroke(el: Element, pr: Props, mixes: [string, number, boolean][], widths: [number, number][]) {
+    const info = this.geomInfo(el);
+    const stroke = pr.stroke ?? info.stroke;
+    const paintable = !!stroke && stroke !== 'none' && stroke !== 'transparent' && !stroke.startsWith('url(');
+    if (paintable) {
+      pr.stroke = mixes.reduce((c, [to, a]) => (a > 0 ? mixColor(c, to, a) : c), stroke);
+    } else {
+      // Sin contorno previo: solo los cambios permanentes (Cambiar Color) lo hacen aparecer.
+      const permanent = mixes.filter(([, a, keep]) => keep && a > 0);
+      if (!permanent.length) return;
+      pr.stroke = permanent[permanent.length - 1][0];
+      if (!widths.length) pr['stroke-opacity'] = String(1 - permanent.reduce((k, [, a]) => k * (1 - a), 1));
+    }
+    if (!widths.length) return;
+    const lps = this.localPerStage(el);
+    const current = pr['stroke-width'] !== undefined ? parseFloat(pr['stroke-width']) : paintable ? info.sw : 0;
+    const width = widths.reduce((v, [to, a]) => v + (to * lps - v) * a, Number.isFinite(current) ? current : 0);
+    pr['stroke-width'] = String(Math.max(0, width));
+    pr['paint-order'] = 'stroke fill';
+    pr['stroke-linejoin'] = 'round';
+  }
+
   private applyColorMix(states: Map<string, NState>, P: (el: Element) => Props) {
     const paintable = (c: string | undefined) => !!c && c !== 'none' && c !== 'transparent' && !c.startsWith('url(');
     const chain = (base: string, mixes: [string, number, boolean?][]) => mixes.reduce((c, [to, a]) => (a > 0 ? mixColor(c, to, a) : c), base);
     for (const [id, st] of states) {
-      if (!st.fillMix.length && !st.strokeMix.length && !st.fillOpacityTo.length) continue;
+      if (!st.fillMix.length && !st.strokeMix.length && !st.fillOpacityTo.length && !st.strokeWidthTo.length) continue;
       const n = this.nodes.get(id);
       if (!n) continue;
       for (const el of this.geomsOf(n)) {
@@ -859,17 +892,7 @@ export class SceneRuntime {
           const base = pr['fill-opacity'] !== undefined ? parseFloat(pr['fill-opacity']) : info.fillOpacity;
           pr['fill-opacity'] = String(st.fillOpacityTo.reduce((v, [to, a]) => v + (to - v) * a, Number.isFinite(base) ? base : 1));
         }
-        if (!st.strokeMix.length) continue;
-        const stroke = pr.stroke ?? info.stroke;
-        if (paintable(stroke)) pr.stroke = chain(stroke, st.strokeMix);
-        else if (!stroke || stroke === 'none') {
-          // Sin contorno previo: el nuevo color aparece con opacidad creciente (solo cambios permanentes).
-          const permanent = st.strokeMix.filter(([, a, keep]) => keep && a > 0);
-          if (!permanent.length) continue;
-          const alpha = 1 - permanent.reduce((k, [, a]) => k * (1 - a), 1);
-          pr.stroke = permanent[permanent.length - 1][0];
-          pr['stroke-opacity'] = String(alpha);
-        }
+        if (st.strokeMix.length) this.applyStroke(el, pr, st.strokeMix, st.strokeWidthTo);
       }
       const root = n.isRoot ? this.objs.get(id)?.svg : n.el;
       for (const tip of Array.from(root?.querySelectorAll('[data-mm-tip]') ?? [])) {
@@ -1138,6 +1161,10 @@ export class SceneRuntime {
           const paint = gel.matches(PAINT_SEL) ? [gel] : Array.from(gel.querySelectorAll(PAINT_SEL));
           for (const el of paint) P(el).fill = color;
         }
+        if (fx?.strokeMix.length) {
+          const paint = gel.matches(PAINT_SEL) ? [gel] : Array.from(gel.querySelectorAll(PAINT_SEL));
+          for (const el of paint) this.applyStroke(el, P(el), fx.strokeMix, fx.strokeWidthTo);
+        }
         const sc = (style?.scale ?? 1) * (fx?.sc ?? 1);
         const gg = geo?.[g.index];
         if (!gg || !(sc !== 1 || fx?.dx || fx?.dy || fx?.rot || (fx && fx.glow > 0))) continue;
@@ -1397,7 +1424,7 @@ export class SceneRuntime {
       let list = store.get(objId);
       if (!list) store.set(objId, (list = new Map()));
       let g = list.get(index);
-      if (!g) list.set(index, (g = { opacity: 1, dx: 0, dy: 0, sc: 1, rot: 0, mix: [], glow: 0, glowColor: '#fde047' }));
+      if (!g) list.set(index, (g = { opacity: 1, dx: 0, dy: 0, sc: 1, rot: 0, mix: [], strokeMix: [], strokeWidthTo: [], glow: 0, glowColor: '#fde047' }));
       return g;
     };
     const glyphsOf = (o: Obj2D) => this.objs.get(o.id)!.glyphs.map((g) => g.index);
@@ -1431,7 +1458,7 @@ export class SceneRuntime {
       const store = ghost ? ghostStates : states;
       let s = store.get(id);
       if (!s) {
-        s = { opacity: 1, dx: 0, dy: 0, scale: 1, rot: 0, glow: 0, glowColor: '#fde047', draw: null, lag: null, fillMix: [], strokeMix: [], fillOpacityTo: [] };
+        s = { opacity: 1, dx: 0, dy: 0, scale: 1, rot: 0, glow: 0, glowColor: '#fde047', draw: null, lag: null, fillMix: [], strokeMix: [], fillOpacityTo: [], strokeWidthTo: [] };
         store.set(id, s);
       }
       return s;
@@ -1625,17 +1652,27 @@ export class SceneRuntime {
           const fill = par.fillEnabled === false ? null : typeof par.targetFillColor === 'string' ? par.targetFillColor : null;
           const stroke = par.strokeEnabled === false ? null : typeof par.targetStrokeColor === 'string' ? par.targetStrokeColor : null;
           const fillOpacity = par.fillEnabled !== false && typeof par.targetFillOpacity === 'number' ? clamp01(par.targetFillOpacity) : null;
+          const width = typeof par.targetStrokeWidth === 'number' ? Math.min(20, Math.max(0, par.targetStrokeWidth)) : null;
           const fo = this.formulaOf(c.targetId);
           if (fo) {
-            // Ecuaciones: los glifos (todos o los elegidos) son rellenos.
-            const color = fill ?? stroke;
+            // Ecuaciones: el relleno tiñe los glifos; el trazo les añade un contorno exterior (2 px por defecto).
             const count = this.objs.get(fo.id)?.glyphs.length ?? 0;
-            if (color) for (const i of (clipGlyphs(fo, par) ?? glyphsOf(fo)).filter((i) => i >= 0 && i < count)) glyphState(fo.id, i).mix.push([color, e]);
+            for (const i of (clipGlyphs(fo, par) ?? glyphsOf(fo)).filter((i) => i >= 0 && i < count)) {
+              const g = glyphState(fo.id, i);
+              if (fill) g.mix.push([fill, e]);
+              if (stroke) {
+                g.strokeMix.push([stroke, e, true]);
+                g.strokeWidthTo.push([width ?? 2, e]);
+              }
+            }
             break;
           }
           const s = get(c.targetId);
           if (fill) s.fillMix.push([fill, e]);
-          if (stroke) s.strokeMix.push([stroke, e, true]);
+          if (stroke) {
+            s.strokeMix.push([stroke, e, true]);
+            if (width !== null) s.strokeWidthTo.push([width, e]);
+          }
           if (fillOpacity !== null) s.fillOpacityTo.push([fillOpacity, e]);
           break;
         }

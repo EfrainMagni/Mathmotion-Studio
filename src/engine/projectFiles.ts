@@ -91,6 +91,7 @@ const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()
     (input.targetFillColor !== undefined && !paint.safeParse(input.targetFillColor).success) ||
     (input.targetStrokeColor !== undefined && !paint.safeParse(input.targetStrokeColor).success) ||
     (input.revertOnEnd !== undefined && typeof input.revertOnEnd !== 'boolean') ||
+    (input.targetStrokeWidth !== undefined && (typeof input.targetStrokeWidth !== 'number' || input.targetStrokeWidth < 0 || input.targetStrokeWidth > 20)) ||
     (input.targetFillOpacity !== undefined && (typeof input.targetFillOpacity !== 'number' || input.targetFillOpacity < 0 || input.targetFillOpacity > 1)) ||
     (input.axis !== undefined && input.axis !== 'x' && input.axis !== 'y' && input.axis !== 'z') ||
     (input.to !== undefined && !objectId.safeParse(input.to).success) ||
