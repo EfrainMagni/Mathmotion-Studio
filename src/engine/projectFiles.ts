@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Obj2D, Project } from '../types';
+import { SCENE_BG_LIMITS, type Obj2D, type Project } from '../types';
 import { prepareSvg } from './svgImport';
 import { normalizePlane, planeSvg } from './cartesianPlane';
 
@@ -94,6 +94,15 @@ const voiceFile = voice.extend({ mime: z.string(), base64: z.base64() });
 const project = z.object({
   format: z.enum(['9:16', '16:9']),
   background: z.enum(['board', 'grid', 'light']),
+  // Plantilla de fondo (opcional: los archivos antiguos no la tienen y usan `background`).
+  sceneBackground: z.object({
+    type: z.enum(['solid', 'grid-dots', 'isometric-dots']),
+    bgColor: hex,
+    lineColor: hex,
+    opacity: number.min(SCENE_BG_LIMITS.opacity.min).max(SCENE_BG_LIMITS.opacity.max),
+    cellSize: number.min(SCENE_BG_LIMITS.cellSize.min).max(SCENE_BG_LIMITS.cellSize.max),
+    dotRadius: number.min(SCENE_BG_LIMITS.dotRadius.min).max(SCENE_BG_LIMITS.dotRadius.max),
+  }).optional(),
   objects: z.array(z.union([object2D, legacyObject3D])),
   styles: z.record(targetId, style),
   clips: z.array(z.object({

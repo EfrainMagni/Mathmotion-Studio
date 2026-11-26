@@ -2,9 +2,9 @@ import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'r
 import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
 import {
-  DEFAULT_TEXT_STYLE, FONT_CATALOG, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
+  DEFAULT_TEXT_STYLE, FONT_CATALOG, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
   glyphTransformParams,
-  type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SoundId, type TextAlign, type TextStyle,
+  type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SceneBackground, type SceneBackgroundType, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
 import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
@@ -1230,10 +1230,85 @@ function EquationAnimations() {
   );
 }
 
+// ------------------------------------------------------------------ escena / fondo
+
+const BG_TEMPLATES: { id: SceneBackgroundType; label: string }[] = [
+  { id: 'solid', label: 'Sólido' },
+  { id: 'grid-dots', label: 'Cuadrícula' },
+  { id: 'isometric-dots', label: 'Isométrico' },
+];
+
+/** Miniatura de cada plantilla (geometría real con una celda de 12 px). */
+function BackgroundThumb({ type, bgColor, lineColor }: { type: SceneBackgroundType; bgColor: string; lineColor: string }) {
+  const w = 56;
+  const h = 32;
+  const sample: SceneBackground = { type, bgColor, lineColor, opacity: 0.8, cellSize: 12, dotRadius: 1.3 };
+  const { lines, dots } = sceneBackgroundGeometry(sample, w / 2, h / 2, 0, 0, w, h);
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="block rounded-sm" aria-hidden="true">
+      <rect width={w} height={h} fill={bgColor} />
+      <g opacity={sample.opacity}>
+        <g stroke={lineColor} strokeWidth={0.6}>
+          {lines.map(([x1, y1, x2, y2], i) => <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} />)}
+        </g>
+        <g fill={lineColor}>{dots.map(([cx, cy], i) => <circle key={i} cx={cx} cy={cy} r={sample.dotRadius} />)}</g>
+      </g>
+    </svg>
+  );
+}
+
+/** Plantillas de fondo de escena: selector visual y parámetros de la retícula. */
+function SceneBackgroundPanel() {
+  const background = useStore((s) => s.project.background);
+  const sceneBackground = useStore((s) => s.project.sceneBackground);
+  const bg = resolveSceneBackground({ background, sceneBackground });
+  const active = sceneBackground ? bg.type : null;
+  const grid = bg.type !== 'solid';
+  // Un arrastre (deslizador o selector de color) = una sola entrada de historial.
+  const dragGroup = useRef<symbol>(Symbol('scene-bg'));
+  const startGroup = () => { dragGroup.current = Symbol('scene-bg'); };
+  const set = (patch: Parameters<typeof actions.setSceneBackground>[0]) => actions.setSceneBackground(patch, dragGroup.current);
+  const range = (key: 'cellSize' | 'dotRadius' | 'opacity', step: number, label: string, format: (v: number) => string) => (
+    <Field label={label}>
+      <input type="range" className="w-full min-w-0 accent-accent" aria-label={label} disabled={!grid}
+        min={SCENE_BG_LIMITS[key].min} max={SCENE_BG_LIMITS[key].max} step={step} value={bg[key]}
+        onPointerDown={startGroup} onKeyDown={startGroup} onChange={(e) => set({ [key]: parseFloat(e.target.value) } as { [K in typeof key]?: number })} />
+      <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-slate-400">{format(bg[key])}</span>
+    </Field>
+  );
+  return (
+    <Section title="Escena / Fondo">
+      <div className="grid grid-cols-3 gap-1" role="radiogroup" aria-label="Plantilla de fondo">
+        {BG_TEMPLATES.map((t) => (
+          <button key={t.id} type="button" role="radio" aria-checked={active === t.id} title={t.label}
+            className={`flex flex-col items-center gap-0.5 rounded border p-1 text-[10px] ${active === t.id ? 'border-accent text-slate-100' : 'border-bezel text-slate-400 hover:border-slate-500'}`}
+            onClick={() => actions.setSceneBackgroundType(t.id)}>
+            <BackgroundThumb type={t.id} bgColor={t.id === 'solid' ? bg.bgColor : (grid ? bg.bgColor : GRID_BG_COLOR)} lineColor={bg.lineColor} />
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <Field label="Color de fondo">
+        <input type="color" className={colorInput} aria-label="Color de fondo" value={toHex(bg.bgColor) ?? '#000000'}
+          onFocus={startGroup} onPointerDown={startGroup} onChange={(e) => set({ bgColor: e.target.value })} />
+      </Field>
+      <Field label="Color de retícula">
+        <input type="color" className={colorInput} aria-label="Color de retícula" value={toHex(bg.lineColor) ?? '#7c878e'} disabled={!grid}
+          onFocus={startGroup} onPointerDown={startGroup} onChange={(e) => set({ lineColor: e.target.value })} />
+      </Field>
+      {range('cellSize', 1, 'Celda (px)', (v) => String(Math.round(v)))}
+      {range('dotRadius', 0.1, 'Nodo', (v) => v.toFixed(1))}
+      {range('opacity', 0.01, 'Opacidad', (v) => `${Math.round(v * 100)}%`)}
+    </Section>
+  );
+}
+
 export function RightPanel() {
+  const hasSelection = useStore((s) => !!s.ui.selection || s.ui.multiSelection.length > 0);
   return (
     <aside className="scroll-thin w-[248px] shrink-0 overflow-y-auto border-l border-bezel bg-ink-800">
       <Inspector />
+      {!hasSelection && <SceneBackgroundPanel />}
       <PlaneInspector />
       <GlyphPanel />
       <Animations />

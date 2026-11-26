@@ -1,5 +1,7 @@
 import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
-import { BACKGROUND_COLOR, STAGE_SIZES, sceneDuration } from '../types';
+import {
+  SCENE_GRID_LINE_WIDTH, STAGE_SIZES, resolveSceneBackground, sceneBackgroundGeometry, sceneDuration, type Project,
+} from '../types';
 import { actions, store } from '../store';
 import { audio, engine } from './index';
 import { embeddedFontCss, loadFonts, usedFonts } from './fonts';
@@ -235,11 +237,11 @@ function fail(msg: string) {
 }
 
 
-function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number, background: keyof typeof BACKGROUND_COLOR) {
-  ctx.fillStyle = BACKGROUND_COLOR[background];
-  ctx.fillRect(0, 0, W, H);
-  if (background !== 'grid') return;
-  // Misma cuadrícula que `.mm-grid`: líneas de 2 px cada 200 px y de 1 px cada 40 px.
+type BackgroundSource = Pick<Project, 'background' | 'sceneBackground'>;
+
+/** Fondo clásico (`background: 'grid'` sin plantilla): misma cuadrícula que `.mm-grid`. */
+function drawLegacyGrid(ctx: CanvasRenderingContext2D, W: number, H: number) {
+  // Líneas de 2 px cada 200 px y de 1 px cada 40 px.
   const lines = (step: number, width: number, alpha: number) => {
     ctx.fillStyle = `rgba(160,160,160,${alpha})`;
     for (let x = 0; x < W; x += step) ctx.fillRect(x, 0, width, H);
@@ -247,6 +249,64 @@ function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number, bac
   };
   lines(40, 1, 0.11);
   lines(200, 2, 0.27);
+}
+
+/**
+ * Pinta la plantilla de fondo a resolución completa, con la misma geometría que el `<pattern>` del lienzo
+ * (nodo en el centro del escenario). Líneas y nodos se dibujan opacos en una capa aparte y se componen con
+ * `opacity`, igual que el grupo SVG, para que los cruces no se oscurezcan dos veces.
+ */
+function paintBackground(ctx: CanvasRenderingContext2D, W: number, H: number, source: BackgroundSource) {
+  const bg = resolveSceneBackground(source);
+  ctx.fillStyle = bg.bgColor;
+  ctx.fillRect(0, 0, W, H);
+  if (!source.sceneBackground) {
+    if (source.background === 'grid') drawLegacyGrid(ctx, W, H);
+    return;
+  }
+  if (bg.type === 'solid') return;
+  const layer = document.createElement('canvas');
+  layer.width = W;
+  layer.height = H;
+  const lctx = layer.getContext('2d')!;
+  const { lines, dots } = sceneBackgroundGeometry(bg, W / 2, H / 2, 0, 0, W, H);
+  lctx.strokeStyle = bg.lineColor;
+  lctx.lineWidth = SCENE_GRID_LINE_WIDTH;
+  lctx.lineCap = 'butt';
+  lctx.beginPath();
+  for (const [x1, y1, x2, y2] of lines) {
+    lctx.moveTo(x1, y1);
+    lctx.lineTo(x2, y2);
+  }
+  lctx.stroke();
+  if (bg.dotRadius > 0) {
+    lctx.fillStyle = bg.lineColor;
+    lctx.beginPath();
+    for (const [x, y] of dots) {
+      lctx.moveTo(x + bg.dotRadius, y);
+      lctx.arc(x, y, bg.dotRadius, 0, Math.PI * 2);
+    }
+    lctx.fill();
+  }
+  ctx.save();
+  ctx.globalAlpha = bg.opacity;
+  ctx.drawImage(layer, 0, 0);
+  ctx.restore();
+}
+
+/** Caché del fondo pintado: se redibuja solo si cambian la plantilla o el tamaño (se usa en cada fotograma). */
+let backgroundCache: { key: string; canvas: HTMLCanvasElement } | null = null;
+
+function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number, source: BackgroundSource) {
+  const key = JSON.stringify([W, H, source.background, source.sceneBackground ?? null]);
+  if (!backgroundCache || backgroundCache.key !== key) {
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    paintBackground(canvas.getContext('2d')!, W, H, source);
+    backgroundCache = { key, canvas };
+  }
+  ctx.drawImage(backgroundCache.canvas, 0, 0);
 }
 
 /**
@@ -317,10 +377,10 @@ async function run(
   const octx = out.getContext('2d')!;
   const paintOut = () => {
     // Fondo sólido en cada fotograma: la pista de vídeo nunca queda vacía ni transparente.
-    drawBackground(octx, W, H, store.getState().project.background);
+    drawBackground(octx, W, H, store.getState().project);
     octx.drawImage(frame, 0, 0);
   };
-  drawBackground(fctx, W, H, project.background);
+  drawBackground(fctx, W, H, project);
 
   /** Dibuja el estado actual del runtime. Debe llamarse justo después de `renderAt`. */
   const grab = () => {
@@ -328,7 +388,7 @@ async function run(
     busy = true;
     let snap: ReturnType<typeof runtime.snapshotScene>;
     try {
-      drawBackground(bctx, W, H, store.getState().project.background);
+      drawBackground(bctx, W, H, store.getState().project);
       snap = runtime.snapshotScene(W, H);
     } catch {
       busy = false;
