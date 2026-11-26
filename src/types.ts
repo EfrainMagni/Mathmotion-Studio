@@ -342,6 +342,10 @@ export interface NodeStyle {
   lineStyle?: 'solid' | 'dashed' | 'dotted';
   dashGap?: number;
   lineCap?: 'butt' | 'round';
+  /** Unión de esquinas del trazo (estilo Illustrator): afilada (`miter`) o redondeada (`round`). */
+  lineJoin?: 'miter' | 'round';
+  /** Opacidad solo del relleno (0–1), independiente del trazo y de la opacidad global. */
+  fillOpacity?: number;
   opacity?: number;
   vertices?: Vertex[];
   /** Solo nodos hijos; la escala de un objeto raíz vive en el propio objeto. */

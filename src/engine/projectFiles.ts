@@ -70,7 +70,9 @@ const fillGradient = z.object({
 const style = z.object({
   fill: paint.optional(), fillGradient: fillGradient.optional(), stroke: paint.optional(), strokeWidth: nonnegative.optional(),
   lineStyle: z.enum(['solid', 'dashed', 'dotted']).optional(),
-  dashGap: positive.optional(), lineCap: z.enum(['butt', 'round']).optional(), opacity: number.min(0).max(1).optional(),
+  dashGap: positive.optional(), lineCap: z.enum(['butt', 'round']).optional(),
+  lineJoin: z.enum(['miter', 'round']).optional(), fillOpacity: number.min(0).max(1).optional(),
+  opacity: number.min(0).max(1).optional(),
   vertices: z.array(vertex).min(2).max(2048).optional(),
   scale: positive.optional(), tx: number.optional(), ty: number.optional(),
 });

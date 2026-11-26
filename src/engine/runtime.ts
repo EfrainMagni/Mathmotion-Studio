@@ -208,7 +208,7 @@ export class SceneRuntime {
     // Propiedades que en la copia aislada (imagen SVG) ya no heredan las hojas de estilo de la página.
     const INLINE = [
       'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-dasharray', 'stroke-dashoffset',
-      'stroke-linecap', 'stroke-linejoin', 'opacity', 'font-family', 'font-size', 'font-weight', 'font-style',
+      'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'opacity', 'font-family', 'font-size', 'font-weight', 'font-style',
       'text-anchor', 'visibility', 'display',
     ];
     for (const wrapper of Array.from(this.els.layer.children) as HTMLElement[]) {
@@ -890,7 +890,7 @@ export class SceneRuntime {
       p.objects.map((o) => `${o.id}:${o.markup.length}`).join('|') +
       '#' +
       Object.entries(p.styles)
-        .map(([id, s]) => `${id}:${s.fill ?? ''},${s.stroke ?? ''},${s.strokeWidth ?? ''},${s.fillGradient?.mode ?? ''}`)
+        .map(([id, s]) => `${id}:${s.fill ?? ''},${s.stroke ?? ''},${s.strokeWidth ?? ''},${s.fillGradient?.mode ?? ''},${s.fillOpacity ?? ''}`)
         .join('|') +
       '#' +
       p.clips
@@ -936,7 +936,7 @@ export class SceneRuntime {
     this.syncGradients(p);
     const styled = Object.entries(p.styles)
       .filter(([, s]) => s.fill !== undefined || s.fillGradient !== undefined || s.stroke !== undefined || s.strokeWidth !== undefined ||
-        s.lineStyle !== undefined || s.dashGap !== undefined || s.lineCap !== undefined)
+        s.lineStyle !== undefined || s.dashGap !== undefined || s.lineCap !== undefined || s.lineJoin !== undefined || s.fillOpacity !== undefined)
       .map(([id]) => this.nodes.get(id))
       .filter((n): n is NodeRec => !!n);
     const depth = (n: NodeRec) => {
@@ -960,6 +960,12 @@ export class SceneRuntime {
         else if (s.fill !== undefined) pr.fill = s.fill;
         if (s.stroke !== undefined && !(gradient && this.gradientOnStroke(n))) pr.stroke = s.stroke;
         if (s.strokeWidth !== undefined) pr['stroke-width'] = String(s.strokeWidth);
+        if (s.fillOpacity !== undefined && !(gradient && this.gradientOnStroke(n))) pr['fill-opacity'] = String(s.fillOpacity);
+        if (s.lineJoin) {
+          // Unión de esquinas independiente del relleno: afilada con límite clásico (10) o redondeada.
+          pr['stroke-linejoin'] = s.lineJoin;
+          if (s.lineJoin === 'miter') pr['stroke-miterlimit'] = '10';
+        }
         if (s.lineStyle || s.dashGap !== undefined || s.lineCap) {
           const pattern = patterns.get(el) ?? {};
           if (s.lineStyle) pattern.lineStyle = s.lineStyle;

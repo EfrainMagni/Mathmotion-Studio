@@ -1,16 +1,16 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
 import {
   DEFAULT_TEXT_STYLE, FONT_CATALOG, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
   glyphTransformParams,
-  type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SoundId, type TextAlign, type TextStyle,
+  type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
 import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
 import { preloadFont } from '../engine/fonts';
 import { compileExpression, newPlot, newPoint } from '../engine/cartesianPlane';
-import { GRADIENT_PRESETS, LINE_TIPS, gradientCss, lineTips, makeGradient, newStopId } from '../engine/vector';
+import { CLOSED_STROKE_WIDTH_MAX, CLOSED_STROKE_WIDTH_MIN, GRADIENT_PRESETS, LINE_TIPS, gradientCss, lineTips, makeGradient, newStopId } from '../engine/vector';
 import { Field, NumberInput, Section, btn, btnPrimary, input } from './ui';
 
 function toHex(css: string | undefined): string | null {
@@ -21,51 +21,6 @@ function toHex(css: string | undefined): string | null {
   const m3 = css.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i);
   if (m3) return `#${m3[1]}${m3[1]}${m3[2]}${m3[2]}${m3[3]}${m3[3]}`;
   return null;
-}
-
-function PaintRow({
-  label,
-  value,
-  fallbackHex,
-  onColor,
-  onNone,
-  onReset,
-  hasOverride,
-  noneLabel,
-}: {
-  label: string;
-  value: string | undefined;
-  fallbackHex: string;
-  onColor: (hex: string) => void;
-  onNone: (none: boolean) => void;
-  onReset: () => void;
-  hasOverride: boolean;
-  noneLabel: string;
-}) {
-  const isNone = value === 'none';
-  const isPaintServer = !!value && value.startsWith('url(');
-  const hex = toHex(value) ?? fallbackHex;
-  return (
-    <Field label={label}>
-      <input
-        type="color"
-        value={hex}
-        disabled={isNone}
-        title={isPaintServer ? 'Degradado o patrón: elegir un color lo sustituye' : undefined}
-        onChange={(e) => onColor(e.target.value)}
-        className="h-6 w-9 cursor-pointer rounded border border-bezel bg-transparent disabled:opacity-30"
-        aria-label={label}
-      />
-      <label className="flex items-center gap-1 text-[11px] text-slate-400">
-        <input type="checkbox" checked={isNone} onChange={(e) => onNone(e.target.checked)} /> {noneLabel}
-      </label>
-      {hasOverride && (
-        <button className="text-[11px] text-accent-light underline" onClick={onReset} title="Volver al valor original">
-          original
-        </button>
-      )}
-    </Field>
-  );
 }
 
 const MODE_TABS = [['solid', 'Sólido'], ['linear', 'Lineal'], ['radial', 'Radial']] as const;
@@ -270,10 +225,169 @@ function LineTipFields({ object }: { object: Obj2D }) {
   );
 }
 
+const BLOCK = 'flex flex-col gap-1.5 rounded border border-bezel p-1.5';
+const BLOCK_HEAD = 'flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-400';
+const DEFAULT_FILL = '#58C4DD';
+const DEFAULT_STROKE = '#FFFFFF';
+const clampWidth = (v: number) => Math.min(CLOSED_STROKE_WIDTH_MAX, Math.max(CLOSED_STROKE_WIDTH_MIN, v));
+
+function Switch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <button type="button" role="switch" aria-checked={checked} aria-label={label} title={label} onClick={() => onChange(!checked)}
+      className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${checked ? 'bg-accent' : 'bg-ink-600'}`}>
+      <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${checked ? 'left-3.5' : 'left-0.5'}`} />
+    </button>
+  );
+}
+
+/**
+ * Bloques independientes «Relleno» y «Trazo / Contorno» (estilo Illustrator). Cada uno se activa por separado:
+ * p. ej. relleno azul semitransparente con borde blanco o amarillo, como en Manim (`set_fill` + `set_stroke`).
+ */
+function PaintBlocks({ selection, style, fill, stroke, strokeWidth, linear }: {
+  selection: string; style: NodeStyle; fill: string | undefined; stroke: string | undefined; strokeWidth: number; linear: boolean;
+}) {
+  // Últimos colores usados, para que reactivar relleno/trazo recupere el color anterior.
+  const lastFill = useRef<string | null>(null);
+  const lastStroke = useRef<string | null>(null);
+  const dragGroup = useRef<symbol | undefined>(undefined);
+  const gradient = style.fillGradient && style.fillGradient.mode !== 'solid' ? style.fillGradient : undefined;
+  const fillOn = !!gradient || (!!fill && fill !== 'none');
+  const strokeOn = !!stroke && stroke !== 'none' && strokeWidth > 0;
+  const fillHex = toHex(fill);
+  const strokeHex = toHex(stroke);
+  if (fillOn && fillHex) lastFill.current = fillHex;
+  if (strokeOn && strokeHex) lastStroke.current = strokeHex;
+  const set = (patch: Partial<NodeStyle>, group?: symbol) => actions.setStyle(selection, patch, group);
+  const fillOpacity = style.fillOpacity ?? 1;
+  const width = strokeOn ? strokeWidth : style.strokeWidth ?? 4;
+
+  const toggleFill = (on: boolean) => on
+    ? set({ fill: lastFill.current ?? DEFAULT_FILL })
+    : set({ fill: 'none', fillGradient: undefined });
+  const toggleStroke = (on: boolean) => on
+    ? set({ stroke: lastStroke.current ?? DEFAULT_STROKE, strokeWidth: clampWidth(strokeWidth > 0 ? strokeWidth : 4) })
+    : set({ stroke: 'none' });
+  const slider = (onValue: (v: number, group: symbol) => void) => ({
+    onPointerDown: () => { dragGroup.current = Symbol('slider'); },
+    onPointerUp: () => { dragGroup.current = undefined; },
+    onChange: (e: ChangeEvent<HTMLInputElement>) => onValue(parseFloat(e.target.value), dragGroup.current ?? Symbol('slider')),
+  });
+
+  return (
+    <>
+      {!linear && (
+        <div className={BLOCK} aria-label="Relleno">
+          <div className={BLOCK_HEAD}>
+            <span>Relleno</span>
+            <Switch label="Activar relleno" checked={fillOn} onChange={toggleFill} />
+          </div>
+          {fillOn && (
+            <>
+              <GradientControls selection={selection} gradient={style.fillGradient} solidHex={fillHex} />
+              {!gradient && (
+                <Field label="Color">
+                  <input type="color" aria-label="Color de relleno" value={fillHex ?? DEFAULT_FILL.toLowerCase()}
+                    className="h-6 w-9 cursor-pointer rounded border border-bezel bg-transparent"
+                    onChange={(e) => set({ fill: e.target.value })} />
+                  {style.fill !== undefined && (
+                    <button className="text-[11px] text-accent-light underline" title="Volver al valor original"
+                      onClick={() => set({ fill: undefined })}>original</button>
+                  )}
+                </Field>
+              )}
+              <Field label="Opacidad (%)">
+                <input type="range" className="min-w-0 flex-1 accent-sky-400" min={0} max={100} step={1} aria-label="Opacidad de relleno (control deslizante)"
+                  value={Math.round(fillOpacity * 100)} {...slider((v, g) => set({ fillOpacity: v / 100 }, g))} />
+                <NumberInput className={`${input} w-16`} value={Math.round(fillOpacity * 100)} min={0} max={100} step={5} ariaLabel="Opacidad de relleno"
+                  onChange={(v) => set({ fillOpacity: Math.min(100, Math.max(0, v)) / 100 })} />
+              </Field>
+            </>
+          )}
+        </div>
+      )}
+      {linear && <GradientControls selection={selection} gradient={style.fillGradient} solidHex={strokeHex} />}
+
+      <div className={BLOCK} aria-label="Trazo / Contorno">
+        <div className={BLOCK_HEAD}>
+          <span>Trazo / Contorno</span>
+          <Switch label="Activar trazo" checked={strokeOn} onChange={toggleStroke} />
+        </div>
+        {strokeOn && (
+          <>
+            {!(linear && gradient) && (
+              <Field label="Color">
+                <input type="color" aria-label="Color de trazo" value={strokeHex ?? '#ffffff'}
+                  className="h-6 w-9 cursor-pointer rounded border border-bezel bg-transparent"
+                  onChange={(e) => set({ stroke: e.target.value })} />
+                {['#FFFFFF', '#FFFF00', '#58C4DD', '#FC6255'].map((c) => (
+                  <button key={c} type="button" title={c} aria-label={`Trazo ${c}`} onClick={() => set({ stroke: c })}
+                    className="h-4 w-4 shrink-0 rounded-sm border border-bezel" style={{ background: c }} />
+                ))}
+              </Field>
+            )}
+            <Field label="Grosor (px)">
+              <input type="range" className="min-w-0 flex-1 accent-sky-400" aria-label="Grosor de trazo (control deslizante)"
+                min={CLOSED_STROKE_WIDTH_MIN} max={CLOSED_STROKE_WIDTH_MAX} step={0.5} value={clampWidth(width)}
+                {...slider((v, g) => set({ strokeWidth: clampWidth(v) }, g))} />
+              <NumberInput className={`${input} w-16`} value={width} min={CLOSED_STROKE_WIDTH_MIN} max={CLOSED_STROKE_WIDTH_MAX} step={0.5}
+                ariaLabel="Grosor de trazo" onChange={(v) => set({ strokeWidth: clampWidth(v) })} />
+            </Field>
+            <Field label="Estilo">
+              <select className={input} aria-label="Estilo de línea" value={style.lineStyle ?? 'solid'} onChange={(event) => {
+                const value = event.target.value;
+                set({ lineStyle: value === 'dashed' || value === 'dotted' ? value : 'solid' });
+              }}>
+                <option value="solid">Continua</option>
+                <option value="dashed">Discontinua</option>
+                <option value="dotted">Punteada</option>
+              </select>
+            </Field>
+            {(style.lineStyle === 'dashed' || style.lineStyle === 'dotted') && (
+              <Field label="Separación (px)">
+                <NumberInput className={`${input} w-20`} min={0.1} step={0.5}
+                  value={style.dashGap ?? (width || 1) * (style.lineStyle === 'dashed' ? 2 : 2.5)}
+                  onChange={(dashGap) => set({ dashGap })} />
+              </Field>
+            )}
+            {linear ? (
+              <Field label="Remate de extremo">
+                <select className={input} aria-label="Remate de extremo" value={style.lineCap ?? ''} onChange={(event) => {
+                  const value = event.target.value;
+                  set({ lineCap: value === 'butt' || value === 'round' ? value : undefined });
+                }}>
+                  <option value="">Original</option>
+                  <option value="butt">Plano / Butt</option>
+                  <option value="round">Redondeado / Round</option>
+                </select>
+              </Field>
+            ) : (
+              <Field label="Esquinas">
+                <select className={input} aria-label="Unión de esquinas" value={style.lineJoin ?? 'miter'}
+                  onChange={(event) => set({ lineJoin: event.target.value === 'round' ? 'round' : 'miter' })}>
+                  <option value="miter">Afilada / Miter</option>
+                  <option value="round">Redondeada / Round</option>
+                </select>
+              </Field>
+            )}
+            {style.stroke !== undefined && (
+              <button className="self-start text-[11px] text-accent-light underline" title="Volver al trazo original"
+                onClick={() => set({ stroke: undefined, strokeWidth: undefined, lineStyle: undefined, dashGap: undefined, lineJoin: undefined })}>
+                trazo original
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
 function Inspector() {
   const selection = useStore((s) => s.ui.selection);
   const project = useStore((s) => s.project);
   useStore((s) => s.ui.treeVersion);
+  const multiCount = useStore((s) => s.ui.multiSelection.length);
 
   if (!selection) {
     return (
@@ -312,70 +426,15 @@ function Inspector() {
           {selection} · {info.tag}
         </div>
       </div>
+      {multiCount > 1 && (
+        <p className="rounded border border-accent/40 bg-accent-soft px-1.5 py-1 text-[11px] text-accent-light" aria-live="polite">
+          {multiCount} objetos seleccionados · arrástralos o usa las flechas para moverlos juntos. El inspector muestra el último.
+        </p>
+      )}
 
       {obj.plane ? null : paint ? (
-        <>
-          <GradientControls selection={selection} gradient={style.fillGradient} solidHex={toHex(fill)} />
-          {(!style.fillGradient || style.fillGradient.mode === 'solid') && (
-            <PaintRow
-              label="Relleno"
-              value={fill}
-              fallbackHex="#ffffff"
-              hasOverride={style.fill !== undefined}
-              noneLabel="ninguno"
-              onColor={(hex) => actions.setStyle(selection, { fill: hex })}
-              onNone={(n) => actions.setStyle(selection, { fill: n ? 'none' : undefined })}
-              onReset={() => actions.setStyle(selection, { fill: undefined })}
-            />
-          )}
-          <PaintRow
-            label="Trazo"
-            value={stroke}
-            fallbackHex="#ffffff"
-            hasOverride={style.stroke !== undefined}
-            noneLabel="ninguno"
-            onColor={(hex) => actions.setStyle(selection, { stroke: hex, ...(strokeWidth <= 0 ? { strokeWidth: 3 } : {}) })}
-            onNone={(n) => actions.setStyle(selection, { stroke: n ? 'none' : undefined })}
-            onReset={() => actions.setStyle(selection, { stroke: undefined, strokeWidth: undefined })}
-          />
-          <Field label="Grosor">
-            <NumberInput
-              className={`${input} w-20`}
-              value={strokeWidth}
-              min={0}
-              step={0.5}
-              onChange={(v) => actions.setStyle(selection, { strokeWidth: v })}
-            />
-          </Field>
-          <Field label="Estilo de línea">
-            <select className={input} aria-label="Estilo de línea" value={style.lineStyle ?? ''} onChange={(event) => {
-              const value = event.target.value;
-              actions.setStyle(selection, { lineStyle: value === 'solid' || value === 'dashed' || value === 'dotted' ? value : undefined });
-            }}>
-              <option value="">Original</option>
-              <option value="solid">Continua</option>
-              <option value="dashed">Discontinua (Guiones)</option>
-              <option value="dotted">Punteada</option>
-            </select>
-          </Field>
-          {(style.lineStyle === 'dashed' || style.lineStyle === 'dotted') && (
-            <Field label="Separación (px)">
-              <NumberInput className={`${input} w-20`} min={0.1} step={0.5}
-                value={style.dashGap ?? (strokeWidth || 1) * (style.lineStyle === 'dashed' ? 2 : 2.5)}
-                onChange={(dashGap) => actions.setStyle(selection, { dashGap })} />
-            </Field>
-          )}
-          <Field label="Remate de extremo">
-            <select className={input} aria-label="Remate de extremo" value={style.lineCap ?? ''} onChange={(event) => {
-              const value = event.target.value;
-              actions.setStyle(selection, { lineCap: value === 'butt' || value === 'round' ? value : undefined });
-            }}>
-              <option value="">Original</option>
-              <option value="butt">Plano / Butt</option>
-              <option value="round">Redondeado / Round</option>
-            </select>
-          </Field>
-        </>
+        <PaintBlocks selection={selection} style={style} fill={fill} stroke={stroke} strokeWidth={strokeWidth}
+          linear={info.isRoot && (obj.vector?.tool === 'line' || obj.vector?.tool === 'arrow')} />
       ) : (
         <p className="text-[11px] text-slate-500">Este elemento no tiene geometría con relleno ni trazo.</p>
       )}
@@ -438,7 +497,7 @@ function Inspector() {
       {!info.isRoot && (
         <button
           className={btn}
-          onClick={() => actions.setStyle(selection, { fill: undefined, stroke: undefined, strokeWidth: undefined, lineStyle: undefined, dashGap: undefined, lineCap: undefined, opacity: undefined, scale: undefined, tx: undefined, ty: undefined })}
+          onClick={() => actions.setStyle(selection, { fill: undefined, fillGradient: undefined, fillOpacity: undefined, stroke: undefined, strokeWidth: undefined, lineStyle: undefined, dashGap: undefined, lineCap: undefined, lineJoin: undefined, opacity: undefined, scale: undefined, tx: undefined, ty: undefined })}
         >
           Restablecer estilo y posición
         </button>

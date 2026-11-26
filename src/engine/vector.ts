@@ -138,6 +138,13 @@ export function tipLayout(start: Vertex, end: Vertex, tips: ReturnType<typeof li
   };
 }
 
+/** Contorno por defecto de rectángulos, elipses y polígonos (desactivado hasta que el inspector le dé color). */
+export const CLOSED_STROKE_WIDTH_MIN = 0.5;
+export const CLOSED_STROKE_WIDTH_MAX = 30;
+function closedStroke() {
+  return `stroke="none" stroke-width="${VECTOR_STROKE_WIDTH}" stroke-linejoin="miter" stroke-miterlimit="10"`;
+}
+
 export function vectorSvg(vector: VectorGeometry, width: number, height: number) {
   const { tool, reverseX, reverseY, text, textStyle } = vector;
   const [start, end] = vector.endpoints ?? [
@@ -145,6 +152,9 @@ export function vectorSvg(vector: VectorGeometry, width: number, height: number)
     { x: width <= 1 ? 0.5 : reverseX ? 0 : width, y: height <= 1 ? 0.5 : reverseY ? 0 : height },
   ];
   const fill = `fill="${VECTOR_FILL}"`;
+  // Figuras cerradas: relleno y contorno son pinturas independientes. El contorno nace desactivado
+  // (`stroke="none"`) pero con grosor y unión definidos, para que al activarlo en el inspector sea nítido.
+  const shape = `${fill} ${closedStroke()}`;
   const stroke = `stroke="${VECTOR_STROKE}" stroke-width="${VECTOR_STROKE_WIDTH}" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"`;
   const tips = lineTips(vector);
   const linear = tool === 'line' || tool === 'arrow';
@@ -153,9 +163,9 @@ export function vectorSvg(vector: VectorGeometry, width: number, height: number)
   const line = `<line x1="${start.x}" y1="${start.y}" x2="${end.x}" y2="${end.y}" ${stroke}${layout?.clip ? ' clip-path="url(#tip-clip)"' : ''}/>`
     + (['start', 'end'] as const).map((k) => layout?.[k] ? `<polygon data-mm-tip="${k}" points="${layout[k]}" fill="${VECTOR_STROKE}" stroke="none"/>` : '').join('');
   const markup = {
-    polygon: `<polygon points="${vector.vertices?.map(({ x, y }) => `${x},${y}`).join(' ') ?? ''}" ${fill}/>`,
-    rectangle: `<rect width="${width}" height="${height}" ${fill}/>`,
-    ellipse: `<ellipse cx="${width / 2}" cy="${height / 2}" rx="${width / 2}" ry="${height / 2}" ${fill}/>`,
+    polygon: `<polygon points="${vector.vertices?.map(({ x, y }) => `${x},${y}`).join(' ') ?? ''}" ${shape}/>`,
+    rectangle: `<rect width="${width}" height="${height}" ${shape}/>`,
+    ellipse: `<ellipse cx="${width / 2}" cy="${height / 2}" rx="${width / 2}" ry="${height / 2}" ${shape}/>`,
     line,
     arrow: line,
     text: textStyle

@@ -34,6 +34,11 @@ export interface RecordingState {
 
 export interface UIState {
   selection: string | null;
+  /**
+   * Selección múltiple (marquesina o Mayús+clic): ids de objetos raíz. Vacía en selección simple; cuando tiene
+   * elementos, `selection` es el objeto principal (el último añadido) y el inspector lo muestra.
+   */
+  multiSelection: string[];
   selectedClip: string | null;
   time: number;
   playing: boolean;
@@ -76,6 +81,7 @@ export function defaultProject(): Project {
 function defaultUI(): UIState {
   return {
     selection: null,
+    multiSelection: [],
     selectedClip: null,
     time: 0,
     playing: false,
@@ -103,6 +109,19 @@ let projectGeneration = 0;
 let objectSerial = 0;
 let history = new History<Project>();
 
+/** Una selección múltiple de menos de dos objetos equivale a una selección simple. */
+const NO_MULTI: string[] = [];
+function keepMulti(ids: string[]): string[] {
+  return ids.length > 1 ? ids : NO_MULTI;
+}
+
+/** Ids de los objetos raíz seleccionados (uno o varios). */
+export function selectedObjectIds(ui: Pick<UIState, 'selection' | 'multiSelection'>): string[] {
+  if (ui.multiSelection.length) return ui.multiSelection;
+  const root = ui.selection?.split('.')[0];
+  return root ? [root] : [];
+}
+
 function restoreHistory(direction: 'undo' | 'redo') {
   const project = history[direction](state.project);
   if (!project) return;
@@ -113,6 +132,7 @@ function restoreHistory(direction: 'undo' | 'redo') {
     ui: {
       ...state.ui,
       selection: project.objects.some((object) => object.id === selection?.split('.')[0]) ? selection : null,
+      multiSelection: keepMulti(state.ui.multiSelection.filter((id) => project.objects.some((object) => object.id === id))),
       selectedClip: project.clips.some((clip) => clip.id === selectedClip) ? selectedClip : null,
       termEdit: editing ? termEdit : null,
       glyphSel: editing ? state.ui.glyphSel : [],
@@ -140,6 +160,11 @@ export const store = {
     listeners.forEach((l) => l());
   },
   setUi(patch: Partial<UIState>) {
+    // Cambiar la selección principal a algo ajeno al grupo deshace la selección múltiple.
+    const multi = state.ui.multiSelection;
+    if ('selection' in patch && !('multiSelection' in patch) && multi.length && !multi.includes(patch.selection?.split('.')[0] ?? '')) {
+      patch = { ...patch, multiSelection: NO_MULTI };
+    }
     let changed = false;
     for (const k of Object.keys(patch) as (keyof UIState)[]) {
       if (state.ui[k] !== patch[k]) {
@@ -160,7 +185,7 @@ export const store = {
       ...state,
       project: p,
       ui: {
-        ...state.ui, selection: null, selectedClip: null, time: 0,
+        ...state.ui, selection: null, multiSelection: NO_MULTI, selectedClip: null, time: 0,
         playing: false, vectorTool: null, pointerTool: 'select', polygonRequest: null, notice: null,
         termEdit: null, glyphSel: [],
       },
@@ -261,6 +286,7 @@ export const actions = {
     const clipStill = store.getState().project.clips.some((c) => c.id === ui.selectedClip);
     store.setUi({
       selection: affected(ui.selection) ? null : ui.selection,
+      multiSelection: keepMulti(ui.multiSelection.filter((entry) => entry !== id)),
       selectedClip: clipStill ? ui.selectedClip : null,
       ...(ui.termEdit === id ? { termEdit: null, glyphSel: [] } : {}),
     });
@@ -420,14 +446,60 @@ export const actions = {
     const { termEdit } = store.getState().ui;
     store.setUi({
       selection: id,
+      multiSelection: NO_MULTI,
       selectedClip: null,
       ...(termEdit && id?.split('.')[0] !== termEdit ? { termEdit: null, glyphSel: [] } : {}),
     });
   },
 
+  /** Selecciona varios objetos raíz a la vez (marquesina). El último es el principal del inspector. */
+  selectMany(ids: string[]) {
+    const unique = [...new Set(ids)].filter((id) => state.project.objects.some((object) => object.id === id));
+    if (unique.length <= 1) {
+      actions.select(unique[0] ?? null);
+      return;
+    }
+    const current = state.ui.multiSelection;
+    const same = current.length === unique.length && unique.every((id, i) => id === current[i]);
+    store.setUi({
+      selection: unique[unique.length - 1],
+      multiSelection: same ? current : unique,
+      selectedClip: null,
+      ...(state.ui.termEdit ? { termEdit: null, glyphSel: [] } : {}),
+    });
+  },
+
+  /** Mayús+clic: suma el objeto a la selección o lo quita si ya estaba. */
+  toggleSelection(objectId: string) {
+    const current = selectedObjectIds(state.ui);
+    actions.selectMany(current.includes(objectId) ? current.filter((id) => id !== objectId) : [...current, objectId]);
+  },
+
+  /**
+   * Traslada varios objetos a la vez conservando sus distancias relativas, en una sola entrada de historial.
+   * `origins` fija la posición de partida de cada uno (arrastre); sin ella, se suma al valor actual (flechas).
+   */
+  translateObjects(ids: string[], dx: number, dy: number, group?: symbol, origins?: Record<string, { x: number; y: number }>) {
+    if (!ids.length) return;
+    const set = new Set(ids);
+    store.setProject((p) => {
+      let changed = false;
+      const objects = p.objects.map((object) => {
+        if (!set.has(object.id)) return object;
+        const from = origins?.[object.id] ?? object;
+        const x = from.x + dx;
+        const y = from.y + dy;
+        if (x === object.x && y === object.y) return object;
+        changed = true;
+        return { ...object, x, y };
+      });
+      return changed ? { ...p, objects } : p;
+    }, group);
+  },
+
   /** Entra en el modo de edición de términos de una fórmula. */
   enterTermEdit(objectId: string) {
-    store.setUi({ selection: objectId, selectedClip: null, termEdit: objectId, glyphSel: [] });
+    store.setUi({ selection: objectId, multiSelection: NO_MULTI, selectedClip: null, termEdit: objectId, glyphSel: [] });
   },
 
   exitTermEdit() {
