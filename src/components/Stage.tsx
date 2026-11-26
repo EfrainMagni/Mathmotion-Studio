@@ -1,6 +1,8 @@
 import { regularPolygon, vectorSvg } from '../engine/vector';
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
-import { BACKGROUND_COLOR, STAGE_SIZES, type Box, type Obj2D, type VectorGeometry, type Vertex } from '../types';
+import {
+  SCENE_GRID_LINE_WIDTH, STAGE_SIZES, resolveSceneBackground, sceneBackgroundGeometry, sceneBackgroundTile,
+  type Box, type SceneBackground, type Obj2D, type VectorGeometry, type Vertex } from '../types';
 import { actions, selectedObjectIds, store, useStore } from '../store';
 import { audio, engine } from '../engine';
 import { SceneRuntime } from '../engine/runtime';
@@ -80,10 +82,42 @@ function sketchBounds({ start, end, vector, constrain, polygonSides }: Sketch) {
   return { x, y, bw, bh, vector: { ...vector, reverseX: dx < 0, reverseY: dy < 0 } };
 }
 
+/**
+ * Plantilla de fondo vectorial: un `<pattern>` (cuadrícula o retícula isométrica con nodos) sobre el color base.
+ * Un nodo coincide siempre con el centro del escenario; la tesela contiene sus bordes completos, de modo
+ * que las líneas y círculos recortados se completan con los de las teselas vecinas.
+ */
+export function SceneBackdrop({ bg, width, height }: { bg: SceneBackground; width: number; height: number }) {
+  if (bg.type === 'solid') return null;
+  const { tw, th } = sceneBackgroundTile(bg);
+  const { lines, dots } = sceneBackgroundGeometry(bg, 0, 0, 0, 0, tw, th);
+  const id = `mm-scene-bg-${bg.type}`;
+  return (
+    <svg className="pointer-events-none absolute inset-0" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+      <defs>
+        <pattern id={id} patternUnits="userSpaceOnUse" x={width / 2} y={height / 2} width={tw} height={th}>
+          <g opacity={bg.opacity}>
+            <g stroke={bg.lineColor} strokeWidth={SCENE_GRID_LINE_WIDTH} fill="none">
+              {lines.map(([x1, y1, x2, y2], i) => <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} />)}
+            </g>
+            {bg.dotRadius > 0 && (
+              <g fill={bg.lineColor}>
+                {dots.map(([cx, cy], i) => <circle key={i} cx={cx} cy={cy} r={bg.dotRadius} />)}
+              </g>
+            )}
+          </g>
+        </pattern>
+      </defs>
+      <rect width={width} height={height} fill={`url(#${id})`} />
+    </svg>
+  );
+}
+
 /** Escenario del editor: capas de fondo, SVG, efectos y marcas de interfaz. */
 export function Stage({ viewportScale }: { viewportScale: number }) {
   const format = useStore((s) => s.project.format);
   const background = useStore((s) => s.project.background);
+  const sceneBackground = useStore((s) => s.project.sceneBackground);
   const playing = useStore((s) => s.ui.playing);
   const recPhase = useStore((s) => s.ui.recording.phase);
   const vectorTool = useStore((s) => s.ui.vectorTool);
@@ -500,7 +534,9 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
 
   const preview = sketch && sketchBounds(sketch);
 
-  const bg = BACKGROUND_COLOR[background];
+  const sceneBg = resolveSceneBackground({ background, sceneBackground });
+  const bg = sceneBg.bgColor;
+  const legacyGrid = !sceneBackground && background === 'grid';
   const selected = selection;
   const anchorSize = 8 / (k * viewportScale);
 
@@ -534,7 +570,8 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
             outline: 'none',
           }}
         >
-          <div className={`absolute inset-0 ${background === 'grid' ? 'mm-grid' : ''}`} />
+          <div className={`absolute inset-0 ${legacyGrid ? 'mm-grid' : ''}`} />
+          {sceneBackground && <SceneBackdrop bg={sceneBg} width={W} height={H} />}
           <div ref={layerRef} className="absolute inset-0" />
           <svg ref={fxRef} viewBox={`0 0 ${W} ${H}`} width={W} height={H} className="absolute inset-0" style={{ pointerEvents: 'none' }} />
 

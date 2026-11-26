@@ -13,6 +13,131 @@ export const BACKGROUND_COLOR: Record<StageBackground, string> = {
   light: '#f8fafc',
 };
 
+/** Plantillas de fondo de escena (se pintan en el lienzo y en la exportación MP4). */
+export type SceneBackgroundType = 'solid' | 'grid-dots' | 'isometric-dots';
+
+export interface SceneBackground {
+  type: SceneBackgroundType;
+  /** Color base del fondo. */
+  bgColor: string;
+  /** Color de las líneas y nodos de la retícula. */
+  lineColor: string;
+  /** Opacidad de líneas y nodos (0.05–1). */
+  opacity: number;
+  /** Espaciado de la retícula en px lógicos (24–160). */
+  cellSize: number;
+  /** Radio de los nodos en las intersecciones (0–6). */
+  dotRadius: number;
+}
+
+export const SCENE_BG_LIMITS = {
+  opacity: { min: 0.05, max: 1 },
+  cellSize: { min: 24, max: 160 },
+  dotRadius: { min: 0, max: 6 },
+} as const;
+
+/** Color base sugerido al pasar a una plantilla con retícula. */
+export const GRID_BG_COLOR = '#0b121c';
+/** Grosor de las líneas de la retícula (px lógicos). */
+export const SCENE_GRID_LINE_WIDTH = 1.2;
+
+export const DEFAULT_SCENE_BACKGROUND: SceneBackground = {
+  type: 'solid', bgColor: GRID_BG_COLOR, lineColor: '#7c878e', opacity: 0.35, cellSize: 64, dotRadius: 2.2,
+};
+
+const clampTo = (v: number, { min, max }: { min: number; max: number }, fallback: number) =>
+  Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
+
+/** Normaliza (limita rangos) una configuración de fondo. */
+export function normalizeSceneBackground(bg: SceneBackground): SceneBackground {
+  const d = DEFAULT_SCENE_BACKGROUND;
+  return {
+    ...bg,
+    opacity: clampTo(bg.opacity, SCENE_BG_LIMITS.opacity, d.opacity),
+    cellSize: clampTo(bg.cellSize, SCENE_BG_LIMITS.cellSize, d.cellSize),
+    dotRadius: clampTo(bg.dotRadius, SCENE_BG_LIMITS.dotRadius, d.dotRadius),
+  };
+}
+
+/**
+ * Fondo efectivo del proyecto. Sin `sceneBackground` se usa el fondo clásico (`background`) como sólido;
+ * la cuadrícula clásica (`'grid'`) la dibuja cada renderizador con su propio estilo heredado.
+ */
+export function resolveSceneBackground(p: Pick<Project, 'background' | 'sceneBackground'>): SceneBackground {
+  return p.sceneBackground
+    ? normalizeSceneBackground(p.sceneBackground)
+    : { ...DEFAULT_SCENE_BACKGROUND, bgColor: BACKGROUND_COLOR[p.background] };
+}
+
+/** Tamaño de la tesela del patrón: cuadrada `W×W`; isométrica `2W × 2H` con `H = W·tan 30°`. */
+export function sceneBackgroundTile(bg: SceneBackground): { tw: number; th: number; w: number; h: number } {
+  const w = bg.cellSize;
+  const h = w * Math.tan(Math.PI / 6);
+  return bg.type === 'isometric-dots' ? { tw: 2 * w, th: 2 * h, w, h } : { tw: w, th: w, w, h };
+}
+
+/**
+ * Geometría de la retícula en un rectángulo `[x0,x1]×[y0,y1]`, con un nodo en `(ox, oy)`.
+ * Devuelve segmentos `[x1,y1,x2,y2]` y nodos `[x,y]`. La usan el patrón SVG (una tesela) y el MP4 (cuadro completo).
+ */
+export function sceneBackgroundGeometry(
+  bg: SceneBackground, ox: number, oy: number, x0: number, y0: number, x1: number, y1: number,
+): { lines: [number, number, number, number][]; dots: [number, number][] } {
+  const lines: [number, number, number, number][] = [];
+  const dots: [number, number][] = [];
+  if (bg.type === 'solid') return { lines, dots };
+  const { w, h } = sceneBackgroundTile(bg);
+  const eps = 1e-6;
+  const k0 = Math.floor((x0 - ox) / w) - 1;
+  const k1 = Math.ceil((x1 - ox) / w) + 1;
+  for (let k = k0; k <= k1; k++) {
+    const x = ox + k * w;
+    if (x >= x0 - eps && x <= x1 + eps) lines.push([x, y0, x, y1]);
+  }
+  if (bg.type === 'grid-dots') {
+    const j0 = Math.floor((y0 - oy) / w) - 1;
+    const j1 = Math.ceil((y1 - oy) / w) + 1;
+    for (let j = j0; j <= j1; j++) {
+      const y = oy + j * w;
+      if (y < y0 - eps || y > y1 + eps) continue;
+      lines.push([x0, y, x1, y]);
+      for (let k = k0; k <= k1; k++) {
+        const x = ox + k * w;
+        if (x >= x0 - eps && x <= x1 + eps) dots.push([x, y]);
+      }
+    }
+    return { lines, dots };
+  }
+  // Isométrica: diagonales y - oy = ±t·(x - ox) + 2H·j, con t = tan 30°; se cruzan en los nodos con las verticales.
+  const t = h / w;
+  const span = t * (x1 - x0);
+  for (const sign of [1, -1]) {
+    // c = valor de (y - oy) - sign·t·(x - ox) en el rango del rectángulo.
+    const ca = (y0 - oy) - sign * t * (x0 - ox);
+    const cb = (y1 - oy) - sign * t * (x1 - ox);
+    const cMin = Math.min(ca, cb) - span - 2 * h;
+    const cMax = Math.max(ca, cb) + span + 2 * h;
+    for (let j = Math.floor(cMin / (2 * h)); j <= Math.ceil(cMax / (2 * h)); j++) {
+      const c = 2 * h * j;
+      const ya = oy + sign * t * (x0 - ox) + c;
+      const yb = oy + sign * t * (x1 - ox) + c;
+      if (Math.max(ya, yb) < y0 - eps || Math.min(ya, yb) > y1 + eps) continue;
+      lines.push([x0, ya, x1, yb]);
+    }
+  }
+  for (let k = k0; k <= k1; k++) {
+    const x = ox + k * w;
+    if (x < x0 - eps || x > x1 + eps) continue;
+    // En la columna k los nodos están en oy + k·H + 2H·j.
+    const base = oy + k * h;
+    for (let j = Math.floor((y0 - base) / (2 * h)) - 1; j <= Math.ceil((y1 - base) / (2 * h)) + 1; j++) {
+      const y = base + 2 * h * j;
+      if (y >= y0 - eps && y <= y1 + eps) dots.push([x, y]);
+    }
+  }
+  return { lines, dots };
+}
+
 export const FPS = 30;
 
 /** Rango de escala libre del inspector (ecuaciones, formas y glifos). */
@@ -365,6 +490,8 @@ export interface VoiceMeta {
 export interface Project {
   format: StageFormat;
   background: StageBackground;
+  /** Plantilla de fondo personalizada; si falta se usa el fondo clásico `background`. */
+  sceneBackground?: SceneBackground;
   objects: SceneObject[];
   styles: Record<string, NodeStyle>;
   clips: Clip[];

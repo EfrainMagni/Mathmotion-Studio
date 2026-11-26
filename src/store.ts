@@ -16,6 +16,11 @@ import {
   type SoundId,
   type SceneObject,
   type StageBackground,
+  type SceneBackground,
+  type SceneBackgroundType,
+  GRID_BG_COLOR,
+  normalizeSceneBackground,
+  resolveSceneBackground,
   type StageFormat,
   type VoiceMeta,
   type VectorGeometry,
@@ -257,7 +262,29 @@ export const actions = {
   },
 
   setBackground(background: StageBackground) {
-    store.setProject((p) => (p.background === background ? p : { ...p, background }));
+    // El selector clásico sustituye a cualquier plantilla personalizada.
+    store.setProject((p) => (p.background === background && !p.sceneBackground ? p : { ...p, background, sceneBackground: undefined }));
+  },
+
+  /** Cambia la plantilla de fondo (sólido, cuadrícula con nodos o isométrica con nodos). */
+  setSceneBackgroundType(type: SceneBackgroundType) {
+    store.setProject((p) => {
+      const current = resolveSceneBackground(p);
+      if (p.sceneBackground && current.type === type) return p;
+      // Al pasar de sólido a retícula se propone el azul noche por defecto; en sólido se conserva el color actual.
+      const bgColor = type !== 'solid' && current.type === 'solid' ? GRID_BG_COLOR : current.bgColor;
+      return { ...p, sceneBackground: { ...current, type, bgColor } };
+    });
+  },
+
+  /** Ajusta parámetros de la plantilla de fondo (con `group` se agrupa un arrastre en una sola entrada de historial). */
+  setSceneBackground(patch: Partial<Omit<SceneBackground, 'type'>>, group?: symbol) {
+    store.setProject((p) => {
+      const current = resolveSceneBackground(p);
+      const next = normalizeSceneBackground({ ...current, ...patch });
+      const same = p.sceneBackground && (Object.keys(next) as (keyof SceneBackground)[]).every((k) => next[k] === current[k]);
+      return same ? p : { ...p, sceneBackground: next };
+    }, group);
   },
 
   addObject2D(o: Omit<Obj2D, 'x' | 'y' | 'scale' | 'rotation'> & { fit: number; position?: { x: number; y: number } }) {
