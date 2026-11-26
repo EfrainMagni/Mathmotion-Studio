@@ -1,6 +1,6 @@
 import { History } from './engine/history';
 import { prepareSvg } from './engine/svgImport';
-import { VECTOR_LABEL, vectorSvg } from './engine/vector';
+import { VECTOR_LABEL, nodesBounds, toggleNodeType, translateNodes, vectorSvg } from './engine/vector';
 import { normalizePlane, planeSvg } from './engine/cartesianPlane';
 import { useSyncExternalStore } from 'react';
 import {
@@ -11,6 +11,7 @@ import {
   type GlyphStyle,
   type NodeStyle,
   type Obj2D,
+  type PathNode,
   type PlaneGeometry,
   type Project,
   type SoundId,
@@ -64,6 +65,8 @@ export interface UIState {
   termEdit: string | null;
   /** Índices de los glifos seleccionados dentro de `termEdit`. */
   glyphSel: number[];
+  /** Nodo activo del trazado Bézier seleccionado (Selección Directa), o `null`. */
+  pathNode: number | null;
 }
 
 export interface State {
@@ -104,6 +107,7 @@ function defaultUI(): UIState {
     treeVersion: 0,
     termEdit: null,
     glyphSel: [],
+    pathNode: null,
   };
 }
 
@@ -192,7 +196,7 @@ export const store = {
       ui: {
         ...state.ui, selection: null, multiSelection: NO_MULTI, selectedClip: null, time: 0,
         playing: false, vectorTool: null, pointerTool: 'select', polygonRequest: null, notice: null,
-        termEdit: null, glyphSel: [],
+        termEdit: null, glyphSel: [], pathNode: null,
       },
     };
     listeners.forEach((l) => l());
@@ -333,6 +337,34 @@ export const actions = {
     const vector = { ...object.vector, ...patch };
     const sourceSvg = vectorSvg(vector, object.bw, object.bh);
     actions.updateObject(object.id, { vector, sourceSvg, markup: prepareSvg(sourceSvg, object.id).markup }, group);
+  },
+
+  /**
+   * Sustituye los nodos de un trazado Bézier. `base` es el objeto tal como estaba al empezar la edición y `nodes`
+   * están en su sistema local: la caja se recalcula para envolver nodos y manejadores, y el centro se desplaza
+   * (teniendo en cuenta escala y rotación) para que el trazado no se mueva en el escenario.
+   */
+  setPathNodes(base: Obj2D, nodes: PathNode[], group?: symbol, patch: Partial<VectorGeometry> = {}) {
+    if (!base.vector || !nodes.length) return;
+    const box = nodesBounds(nodes);
+    const bw = Math.max(1, box.w);
+    const bh = Math.max(1, box.h);
+    const cx = box.x + bw / 2 - base.bw / 2;
+    const cy = box.y + bh / 2 - base.bh / 2;
+    const th = (base.rotation * Math.PI) / 180;
+    const x = base.x + base.scale * (cx * Math.cos(th) - cy * Math.sin(th));
+    const y = base.y + base.scale * (cx * Math.sin(th) + cy * Math.cos(th));
+    const vector: VectorGeometry = { ...base.vector, ...patch, nodes: translateNodes(nodes, -box.x, -box.y) };
+    const sourceSvg = vectorSvg(vector, bw, bh);
+    actions.updateObject(base.id, { x, y, bw, bh, vector, sourceSvg, markup: prepareSvg(sourceSvg, base.id).markup }, group);
+  },
+
+  /** Alterna un nodo del trazado entre ángulo (`corner`) y curva suave (`smooth`). */
+  togglePathNode(objectId: string, index: number) {
+    const object = state.project.objects.find((o) => o.id === objectId);
+    const nodes = object?.vector?.nodes;
+    if (!object || !nodes?.[index]) return;
+    actions.setPathNodes(object, toggleNodeType(nodes, index, !!object.vector?.closed));
   },
 
   /** Inserta un plano cartesiano estilo Manim `NumberPlane` centrado en el lienzo y lo deja seleccionado. */

@@ -1,7 +1,7 @@
 import { VECTOR_LABEL } from '../engine/vector';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Slash, MousePointer, MousePointer2, PenTool, Pentagon, Settings2, Type, X,
+  Slash, MousePointer, MousePointer2, PenTool, Pentagon, Settings2, Shapes, Spline, Type, X,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -510,8 +510,10 @@ const DRAW_TOOLS = [
   { id: 'direct', label: 'Selección Directa (Vértices)', shortcut: 'A', icon: MousePointer },
   { id: 'rectangle', label: VECTOR_LABEL.rectangle, shortcut: 'R', icon: Square },
   { id: 'ellipse', label: VECTOR_LABEL.ellipse, shortcut: 'E', icon: Circle },
-  { id: 'polygon', label: VECTOR_LABEL.polygon, shortcut: 'P', icon: Pentagon },
+  { id: 'polygon', label: VECTOR_LABEL.polygon, shortcut: 'Y', icon: Pentagon },
   { id: 'line', label: VECTOR_LABEL.line, shortcut: '\\', icon: Slash },
+  { id: 'pen', label: VECTOR_LABEL.pen, shortcut: 'P', icon: PenTool },
+  { id: 'curve', label: VECTOR_LABEL.curve, shortcut: 'N', icon: Spline },
   { id: 'text', label: VECTOR_LABEL.text, shortcut: 'T', icon: Type },
 ] as const satisfies readonly { id: VectorTool | 'select' | 'direct'; label: string; shortcut: string; icon: typeof Square }[];
 
@@ -605,12 +607,12 @@ export function LeftPanel({ visible }: { visible: boolean }) {
         <button type="button" className="studio-rail-button" aria-label="Herramientas vectoriales"
           title="Herramientas vectoriales · Alt+1" aria-keyshortcuts="Alt+1"
           aria-expanded={drawing} aria-controls="left-drawing-tools" onClick={() => setDrawing(!drawing)}>
-          <PenTool size={20} aria-hidden="true" />
+          <Shapes size={20} aria-hidden="true" />
         </button>
         <div id="left-drawing-tools" className="studio-drawing" role="group" aria-label="Dibujo vectorial" hidden={!drawing}>
           {DRAW_TOOLS.map(({ id, label, shortcut, icon: Icon }) => (
             <button key={id} type="button" className="studio-rail-button" aria-label={label}
-              title={id === 'line' ? `${label} (${shortcut})` : `${label} · ${shortcut}`} aria-keyshortcuts={shortcut} disabled={disabled}
+              title={id === 'line' || id === 'pen' || id === 'curve' ? `${label} (${shortcut})` : `${label} · ${shortcut}`} aria-keyshortcuts={shortcut} disabled={disabled}
               aria-pressed={id === 'select' || id === 'direct' ? !active && pointer === id : active === id}
               onClick={() => selectTool(id)}>
               <Icon size={20} aria-hidden="true" />

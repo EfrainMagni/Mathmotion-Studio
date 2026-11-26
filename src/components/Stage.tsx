@@ -1,8 +1,8 @@
-import { regularPolygon, vectorSvg } from '../engine/vector';
+import { VECTOR_STROKE_WIDTH, nodesBounds, pathLayout, regularPolygon, simplifyPoints, smoothPath, translateNodes, vectorSvg } from '../engine/vector';
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
 import {
   SCENE_GRID_LINE_WIDTH, STAGE_SIZES, resolveSceneBackground, sceneBackgroundGeometry, sceneBackgroundTile,
-  type Box, type SceneBackground, type Obj2D, type VectorGeometry, type Vertex } from '../types';
+  type Box, type SceneBackground, type Obj2D, type PathNode, type VectorGeometry, type Vertex } from '../types';
 import { actions, selectedObjectIds, store, useStore } from '../store';
 import { audio, engine } from '../engine';
 import { SceneRuntime } from '../engine/runtime';
@@ -15,7 +15,14 @@ type Drag =
   | { kind: 'resize'; id: string; sx: 1 | -1; sy: 1 | -1; anchor: Vertex }
   | { kind: 'group'; ids: string[]; sx: number; sy: number; origins: Record<string, Vertex>; copyOnMove?: boolean }
   | { kind: 'marquee'; start: Vertex; base: string[] }
-  | { kind: 'vertex'; id: string; native: Obj2D | null; index: number; points: Vertex[]; start: Vertex; inverse: DOMMatrix; matrix: DOMMatrix; linear: boolean };
+  | { kind: 'vertex'; id: string; native: Obj2D | null; index: number; points: Vertex[]; start: Vertex; inverse: DOMMatrix; matrix: DOMMatrix; linear: boolean }
+  /** Nodo (`side: null`) o manejador Bézier de un trazado, editado con Selección Directa. `base` = objeto al empezar. */
+  | { kind: 'path'; base: Obj2D; index: number; side: 'in' | 'out' | null; start: Vertex; inverse: DOMMatrix };
+
+/** Manejador Bézier visible: posición del manejador y de su nodo, en coordenadas del escenario. */
+type HandleMark = { index: number; side: 'in' | 'out'; at: Vertex; node: Vertex };
+/** Distancia (px de pantalla) para cerrar el trazado de la pluma sobre su primer nodo. */
+const CLOSE_RADIUS = 8;
 
 type Sketch = { start: Vertex; end: Vertex; vector: VectorGeometry; constrain: boolean; polygonSides: number };
 
@@ -153,6 +160,16 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const [multiBoxes, setMultiBoxes] = useState<(Box | null)[]>(NO_BOXES);
   const [marquee, setMarquee] = useState<{ a: Vertex; b: Vertex } | null>(null);
   const lastClick = useRef<{ id: string; t: number } | null>(null);
+  const [handles, setHandles] = useState<HandleMark[]>([]);
+  const lastNodeClick = useRef<{ id: string; index: number; t: number } | null>(null);
+  // Pluma (P): nodos en coordenadas del escenario mientras se dibuja; `penDrag` = nodo cuyo manejador se arrastra.
+  const pen = useRef<PathNode[] | null>(null);
+  const penDrag = useRef<number | null>(null);
+  const lastPenClick = useRef<{ t: number; p: Vertex } | null>(null);
+  const [penView, setPenView] = useState<{ nodes: PathNode[]; cursor: Vertex | null } | null>(null);
+  // Curva suavizada (N): puntos capturados a mano alzada.
+  const freehand = useRef<Vertex[] | null>(null);
+  const [freehandView, setFreehandView] = useState<Vertex[] | null>(null);
 
   const { w: W, h: H } = STAGE_SIZES[format];
   const hideUi = playing || recPhase === 'recording' || recPhase === 'preparing' || recPhase === 'finishing';
@@ -258,17 +275,90 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     const target = anchorsEnabled && selection ? engine.runtime?.getVertexTarget(selection, !direct) : null;
     if (!target) {
       setAnchors((previous) => previous.length ? [] : previous);
+      setHandles((previous) => previous.length ? [] : previous);
       return;
     }
     const rect = stageRef.current!.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    setAnchors(target.points.map(({ x, y }) => {
+    const toStage = ({ x, y }: Vertex) => {
       const client = transformVertex(target.matrix, x, y);
       return { x: (client.x - rect.left) * W / rect.width, y: (client.y - rect.top) * H / rect.height };
-    }));
+    };
+    setAnchors(target.points.map(toStage));
+    const nodes = target.path ? target.native?.vector?.nodes ?? [] : [];
+    setHandles(nodes.flatMap((node, index) => (['in', 'out'] as const).flatMap((side) => {
+      const handle = node[side];
+      if (!handle || (Math.abs(handle.x - node.x) < 1e-6 && Math.abs(handle.y - node.y) < 1e-6)) return [];
+      return [{ index, side, at: toStage(handle), node: toStage(node) }];
+    })));
   }, [direct, anchorsEnabled, selection, anchorProject, treeVersion, time, W, H, k, viewportScale]);
 
-  useEffect(() => setActiveAnchor(null), [selection, direct]);
+  useEffect(() => {
+    setActiveAnchor(null);
+    store.setUi({ pathNode: null });
+  }, [selection, direct]);
+
+  /** Crea el objeto de un trazado a partir de nodos en coordenadas del escenario. */
+  function createPath(tool: 'pen' | 'curve', nodes: PathNode[], closed: boolean) {
+    if (nodes.length < 2) return;
+    const box = nodesBounds(nodes);
+    const bw = Math.max(1, box.w);
+    const bh = Math.max(1, box.h);
+    const vector: VectorGeometry = { tool, nodes: translateNodes(nodes, -box.x, -box.y), closed: closed && nodes.length > 2 };
+    actions.addVector(vector, bw, bh, { x: box.x + bw / 2, y: box.y + bh / 2 });
+  }
+
+  /** Termina el trazado de la pluma: cerrado (clic en el primer nodo) o abierto (doble clic, Intro, Esc). */
+  function finishPen(closed: boolean) {
+    const nodes = pen.current;
+    pen.current = null;
+    penDrag.current = null;
+    lastPenClick.current = null;
+    setPenView(null);
+    if (nodes) createPath('pen', nodes, closed);
+  }
+
+  // Intro / Esc terminan el trazado abierto de la pluma (antes que cualquier otro atajo).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!pen.current || (event.key !== 'Enter' && event.key !== 'Escape')) return;
+      if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      finishPen(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
+
+  // Cambiar de herramienta (o empezar a reproducir) termina el trazado en curso.
+  useEffect(() => {
+    if (vectorTool !== 'pen' && pen.current) finishPen(false);
+    if (vectorTool !== 'curve' && freehand.current) {
+      freehand.current = null;
+      setFreehandView(null);
+    }
+  }, [vectorTool]);
+
+  /** Píxeles de pantalla entre dos puntos del escenario. */
+  function screenDistance(a: Vertex, b: Vertex) {
+    const rect = stageRef.current!.getBoundingClientRect();
+    return Math.hypot((a.x - b.x) * rect.width / W, (a.y - b.y) * rect.height / H);
+  }
+
+  function finishCurve() {
+    const points = freehand.current;
+    freehand.current = null;
+    setFreehandView(null);
+    if (!points || points.length < 2) return;
+    const rect = stageRef.current!.getBoundingClientRect();
+    // Tolerancia RDP de ~2.5 px de pantalla: elimina el temblor de la mano sin perder la forma.
+    let simple = simplifyPoints(points, 2.5 * W / Math.max(1, rect.width));
+    if (simple.length < 2 || screenDistance(simple[0], simple[simple.length - 1]) < 4 && simple.length < 3) return;
+    const closed = simple.length >= 4 && screenDistance(simple[0], simple[simple.length - 1]) < 12;
+    if (closed) simple = simple.slice(0, -1);
+    createPath('curve', smoothPath(simple, closed), closed);
+  }
 
   function position(event: PointerEvent): Vertex {
     const rect = stageRef.current!.getBoundingClientRect();
@@ -288,6 +378,33 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     element.focus({ preventScroll: true });
     element.setPointerCapture(e.pointerId);
     pointer.current = { id: e.pointerId, generation: store.projectGeneration(), group: Symbol() };
+
+    if (ui.vectorTool === 'pen') {
+      const p = position(e);
+      const current = pen.current;
+      const previous = lastPenClick.current;
+      lastPenClick.current = { t: e.timeStamp, p };
+      if (current && current.length >= 2 && screenDistance(p, current[0]) < CLOSE_RADIUS) {
+        finishPen(current.length >= 3);
+        return;
+      }
+      if (current && previous && e.timeStamp - previous.t < DOUBLE_CLICK_MS && screenDistance(p, previous.p) < 6) {
+        finishPen(false);
+        return;
+      }
+      const nodes: PathNode[] = [...(current ?? []), { x: p.x, y: p.y, type: 'corner' }];
+      pen.current = nodes;
+      penDrag.current = nodes.length - 1;
+      setPenView({ nodes, cursor: p });
+      return;
+    }
+
+    if (ui.vectorTool === 'curve') {
+      const p = position(e);
+      freehand.current = [p];
+      setFreehandView([p]);
+      return;
+    }
 
     if (ui.vectorTool) {
       const start = position(e);
@@ -311,6 +428,20 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       return;
     }
 
+    if (!ui.termEdit && e.target instanceof HTMLElement && e.target.dataset.handleIndex !== undefined && ui.selection) {
+      const target = rt.getVertexTarget(ui.selection, false);
+      const inverse = target?.matrix.inverse();
+      if (!target?.path || !target.native || !inverse || !Number.isFinite(inverse.a)) return;
+      const index = Number(e.target.dataset.handleIndex);
+      setActiveAnchor(index);
+      store.setUi({ pathNode: index });
+      dragRef.current = {
+        kind: 'path', base: target.native, index, side: e.target.dataset.handleSide === 'in' ? 'in' : 'out',
+        start: transformVertex(inverse, e.clientX, e.clientY), inverse,
+      };
+      return;
+    }
+
     if (!ui.termEdit && e.target instanceof HTMLElement && e.target.dataset.vertexIndex !== undefined && ui.selection) {
       const target = rt.getVertexTarget(ui.selection, ui.pointerTool !== 'direct');
       const index = Number(e.target.dataset.vertexIndex);
@@ -318,6 +449,19 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       const inverse = target.matrix.inverse();
       if (!Number.isFinite(inverse.a)) return;
       setActiveAnchor(index);
+      if (target.path && target.native) {
+        store.setUi({ pathNode: index });
+        // Doble clic en un nodo: alterna ángulo (corner) ↔ curva suave (smooth).
+        const previous = lastNodeClick.current;
+        if (previous && previous.id === target.id && previous.index === index && e.timeStamp - previous.t < DOUBLE_CLICK_MS) {
+          lastNodeClick.current = null;
+          actions.togglePathNode(target.id, index);
+          return;
+        }
+        lastNodeClick.current = { id: target.id, index, t: e.timeStamp };
+        dragRef.current = { kind: 'path', base: target.native, index, side: null, start: transformVertex(inverse, e.clientX, e.clientY), inverse };
+        return;
+      }
       dragRef.current = {
         kind: 'vertex', id: target.id, native: target.native, points: target.points, index,
         start: transformVertex(inverse, e.clientX, e.clientY), inverse, matrix: target.matrix, linear: target.linear,
@@ -421,7 +565,35 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
 
   const onPointerMove = (e: React.PointerEvent) => {
     const active = pointer.current;
+    // Pluma: guía de vista previa desde el último nodo hasta el cursor (también sin botón pulsado).
+    if (pen.current && !active) {
+      setPenView({ nodes: pen.current, cursor: position(e) });
+      return;
+    }
     if (!active || active.id !== e.pointerId || active.generation !== store.projectGeneration()) return;
+    if (pen.current && penDrag.current !== null) {
+      const p = position(e);
+      const index = penDrag.current;
+      const node = pen.current[index];
+      // Clic y arrastrar: nodo suave con manejadores simétricos que siguen al cursor.
+      const nodes = screenDistance(p, node) < 3
+        ? pen.current.map((n, i): PathNode => (i === index ? { x: n.x, y: n.y, type: 'corner' } : n))
+        : pen.current.map((n, i): PathNode => (i === index
+          ? { x: n.x, y: n.y, type: 'smooth', out: p, in: { x: 2 * n.x - p.x, y: 2 * n.y - p.y } }
+          : n));
+      pen.current = nodes;
+      setPenView({ nodes, cursor: p });
+      return;
+    }
+    if (freehand.current) {
+      const p = position(e);
+      const last = freehand.current[freehand.current.length - 1];
+      if (screenDistance(p, last) >= 1.5) {
+        freehand.current = [...freehand.current, p];
+        setFreehandView(freehand.current);
+      }
+      return;
+    }
     if (draft.current) {
       draft.current = { ...draft.current, end: position(e), constrain: e.shiftKey };
       setSketch(draft.current);
@@ -438,6 +610,10 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     }
     if (d.kind === 'vertex') {
       moveVertex(d, e, active.group);
+      return;
+    }
+    if (d.kind === 'path') {
+      movePathPoint(d, e, active.group);
       return;
     }
     if (d.kind === 'resize') {
@@ -517,9 +693,41 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     } else if (!drag.native) actions.setStyle(drag.id, { vertices: points }, group);
   }
 
+  /** Mueve un nodo (con sus manejadores) o un manejador; en nodos suaves el manejador opuesto se mantiene colineal. */
+  function movePathPoint(drag: Extract<Drag, { kind: 'path' }>, event: PointerEvent, group: symbol) {
+    const nodes = drag.base.vector?.nodes;
+    if (!nodes?.[drag.index]) return;
+    const point = transformVertex(drag.inverse, event.clientX, event.clientY);
+    const dx = point.x - drag.start.x;
+    const dy = point.y - drag.start.y;
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || (!dx && !dy)) return;
+    const next = nodes.map((node, i): PathNode => {
+      if (i !== drag.index) return node;
+      if (!drag.side) return translateNodes([node], dx, dy)[0];
+      const from = node[drag.side] ?? node;
+      const moved = { x: from.x + dx, y: from.y + dy };
+      if (node.type !== 'smooth') return { ...node, [drag.side]: moved };
+      const other = drag.side === 'in' ? 'out' : 'in';
+      const opposite = node[other] ?? node;
+      const length = Math.hypot(opposite.x - node.x, opposite.y - node.y) || Math.hypot(moved.x - node.x, moved.y - node.y);
+      const ux = node.x - moved.x;
+      const uy = node.y - moved.y;
+      const norm = Math.hypot(ux, uy);
+      const mirrored = norm < 1e-9 ? opposite : { x: node.x + ux / norm * length, y: node.y + uy / norm * length };
+      return { ...node, [drag.side]: moved, [other]: mirrored };
+    });
+    actions.setPathNodes(drag.base, next, group);
+  }
+
   const endDrag = (event: React.PointerEvent) => {
     const active = pointer.current;
     if (!active || active.id !== event.pointerId) return;
+    penDrag.current = null;
+    if (event.type === 'pointerup' && freehand.current && active.generation === store.projectGeneration()) finishCurve();
+    else if (freehand.current) {
+      freehand.current = null;
+      setFreehandView(null);
+    }
     if (event.type === 'pointerup' && dragRef.current?.kind === 'vertex' && active.generation === store.projectGeneration()) {
       moveVertex(dragRef.current, event, active.group);
     }
@@ -601,6 +809,39 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
               dangerouslySetInnerHTML={{ __html: vectorSvg(preview.vector, preview.bw, preview.bh) }} />
           )}
 
+          {!hideUi && (penView || freehandView) && (
+            <svg data-path-preview className="pointer-events-none absolute inset-0" width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
+              {penView && penView.nodes.length > 1 && (
+                <path d={pathLayout({ tool: 'pen', nodes: penView.nodes }, VECTOR_STROKE_WIDTH).d} fill="none"
+                  stroke="#38bdf8" strokeWidth={VECTOR_STROKE_WIDTH} opacity={0.85} />
+              )}
+              {penView?.cursor && penDrag.current === null && (() => {
+                const last = penView.nodes[penView.nodes.length - 1];
+                const c = last.out ?? last;
+                const end = penView.cursor;
+                return <path d={`M${last.x} ${last.y} C${c.x} ${c.y} ${end.x} ${end.y} ${end.x} ${end.y}`} fill="none"
+                  stroke="#58C4DD" strokeWidth={1.5 / k} strokeDasharray={`${6 / k} ${4 / k}`} />;
+              })()}
+              {penView?.nodes.map((node, i) => (
+                <g key={i}>
+                  {node.type === 'smooth' && node.in && node.out && (
+                    <>
+                      <line x1={node.in.x} y1={node.in.y} x2={node.out.x} y2={node.out.y} stroke="#58C4DD" strokeWidth={1 / k} />
+                      <circle cx={node.in.x} cy={node.in.y} r={3.5 / k} fill="#58C4DD" />
+                      <circle cx={node.out.x} cy={node.out.y} r={3.5 / k} fill="#58C4DD" />
+                    </>
+                  )}
+                  <rect x={node.x - (i === 0 ? 5 : 4) / k} y={node.y - (i === 0 ? 5 : 4) / k} width={(i === 0 ? 10 : 8) / k} height={(i === 0 ? 10 : 8) / k}
+                    fill={i === 0 ? '#58C4DD' : '#ffffff'} stroke="#58C4DD" strokeWidth={1.5 / k} />
+                </g>
+              ))}
+              {freehandView && freehandView.length > 1 && (
+                <polyline points={freehandView.map(({ x, y }) => `${x},${y}`).join(' ')} fill="none" stroke="#38bdf8"
+                  strokeWidth={VECTOR_STROKE_WIDTH} strokeLinecap="round" strokeLinejoin="round" opacity={0.85} />
+              )}
+            </svg>
+          )}
+
           {/* Elementos de interfaz del editor: no existen durante la reproducción ni la grabación */}
           {!hideUi && (
             <div className="mm-ui pointer-events-none absolute inset-0">
@@ -666,6 +907,19 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
                     }} />
                 );
               })}
+              {anchorsEnabled && handles.length > 0 && (
+                <svg className="absolute inset-0" width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true">
+                  {handles.map((h) => (
+                    <line key={`${h.index}${h.side}`} x1={h.node.x} y1={h.node.y} x2={h.at.x} y2={h.at.y} stroke="#5c9ef4" strokeWidth={1 / (k * viewportScale)} />
+                  ))}
+                </svg>
+              )}
+              {anchorsEnabled && handles.map((h) => (
+                <span key={`h${h.index}${h.side}`} data-handle-index={h.index} data-handle-side={h.side}
+                  title={`Manejador ${h.side === 'in' ? 'de entrada' : 'de salida'} · nodo ${h.index + 1}`}
+                  className="pointer-events-auto absolute cursor-move rounded-full border border-accent bg-accent"
+                  style={{ left: h.at.x - anchorSize * 0.4, top: h.at.y - anchorSize * 0.4, width: anchorSize * 0.8, height: anchorSize * 0.8 }} />
+              ))}
               {anchorsEnabled && anchors.map((vertex, index) => (
                 <span key={index} data-vertex-index={index} title={`Vértice ${index + 1}`}
                   className={`pointer-events-auto absolute cursor-move border border-accent ${activeAnchor === index ? 'bg-accent' : 'bg-white'}`}

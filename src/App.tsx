@@ -155,6 +155,20 @@ export function App() {
         if (!typing && !event.repeat && !ui.playing && ui.recording.phase === 'idle') actions.duplicateSelection();
         return;
       }
+      // Ctrl/Cmd+Z y Ctrl/Cmd+Y (o Mayús+Z): igual que Ctrl+D, funcionan con el foco en deslizadores, selectores de
+      // color, números o botones del inspector; solo se respetan los campos de escritura libre (deshacer nativo).
+      if ((event.ctrlKey || event.metaKey) && ['z', 'y'].includes(event.key.toLowerCase())) {
+        const typing = event.target instanceof Element &&
+          !!event.target.closest('textarea, [contenteditable]:not([contenteditable="false"]), input[type="text"], input[type="search"], input:not([type])');
+        if (typing || store.getState().ui.recording.phase !== 'idle') return;
+        event.preventDefault();
+        // Un control con el foco (deslizador, color…) podría reaplicar su valor viejo: se suelta antes de deshacer.
+        if (event.target instanceof HTMLElement && event.target !== document.body && event.target.closest('input, select')) event.target.blur();
+        engine.playback?.pause();
+        if (event.key.toLowerCase() === 'y' || event.shiftKey) store.redo();
+        else store.undo();
+        return;
+      }
       if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]')) return;
       const { ui, project } = store.getState();
       if (ui.recording.phase !== 'idle') return;
@@ -163,15 +177,7 @@ export function App() {
       const object = project.objects.find((item) => item.id === root);
       const key = event.key.toLowerCase();
 
-      if (event.ctrlKey || event.metaKey) {
-        if (key === 'z' || key === 'y') {
-          event.preventDefault();
-          engine.playback?.pause();
-          if (key === 'y' || event.shiftKey) store.redo();
-          else store.undo();
-        }
-        return;
-      }
+      if (event.ctrlKey || event.metaKey) return;
       if ((key === 'a' || key === 'v') && !ui.playing) {
         event.preventDefault();
         store.setUi({ pointerTool: key === 'a' ? 'direct' : 'select', vectorTool: null });
