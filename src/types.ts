@@ -173,6 +173,22 @@ export const CLIP_LABEL: Record<ClipType, string> = {
 
 export type ClipParams = Record<string, number | string | boolean>;
 
+/**
+ * Parámetros del clip `colorChange` (viajan dentro de `ClipParams`). `revertOnEnd` (por defecto `false`):
+ * 0–25 % entra al color nuevo, 25–75 % lo mantiene y 75–100 % regresa al color previo; si es `false`, permanente.
+ */
+export interface ColorChangeParams {
+  fillEnabled?: boolean;
+  targetFillColor?: string;
+  targetFillOpacity?: number;
+  strokeEnabled?: boolean;
+  targetStrokeColor?: string;
+  revertOnEnd?: boolean;
+  /** Alcance en ecuaciones: glifos (`"0,2-4"`) o término con nombre. */
+  glyphs?: string;
+  term?: string;
+}
+
 /** Un clip de animación. `start` es tiempo absoluto desde el inicio de la escena (s). */
 export interface Clip {
   id: string;

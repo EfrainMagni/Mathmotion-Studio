@@ -51,6 +51,13 @@ export function ColorChangeFields({ value, onChange, compact }: {
         <input type="color" className={swatch} aria-label="Nuevo color de trazo" disabled={!strokeOn}
           value={hex(value.targetStrokeColor, '#ffff00')} onChange={(e) => onChange({ targetStrokeColor: e.target.value, strokeEnabled: true })} />
       </label>
+      <label className={row} title="Activo: 25 % entra al color nuevo, 50 % lo mantiene y 25 % regresa al color previo. Inactivo: el cambio es permanente">
+        <span className="flex items-center gap-1">
+          <input type="checkbox" checked={value.revertOnEnd === true}
+            onChange={(e) => onChange({ revertOnEnd: e.target.checked ? true : undefined })} />
+          Regresar al color original
+        </span>
+      </label>
     </>
   );
 }
