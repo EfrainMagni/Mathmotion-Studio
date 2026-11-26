@@ -261,6 +261,13 @@ function colorChangeCode(clip: Clip, variable: string): string | null {
   if (fill || opacity !== null) calls.push(`.set_fill(${[fill ? quoted(fill) : null, opacity !== null ? `opacity=${n(opacity)}` : null].filter(Boolean).join(', ')})`);
   if (stroke) calls.push(`.set_stroke(color=${quoted(stroke)})`);
   if (!calls.length) return null;
+  if (params.revertOnEnd === true) {
+    // Ida y vuelta: 25 % hacia el color nuevo, espera del 50 % y regreso al estado previo. `variable.copy()` se
+    // evalúa al construir la animación (antes de teñir), así que la vuelta restaura los colores exactos de antes.
+    const quarter = n(clip.duration * 0.25);
+    return `Succession(${variable}.animate(run_time=${quarter}, rate_func=smooth)${calls.join('')}, `
+      + `Wait(${n(clip.duration * 0.5)}), Transform(${variable}, ${variable}.copy(), run_time=${quarter}, rate_func=smooth))`;
+  }
   return `${variable}.animate(run_time=${n(clip.duration)}, rate_func=smooth)${calls.join('')}`;
 }
 

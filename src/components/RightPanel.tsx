@@ -929,7 +929,7 @@ function Animations() {
 
         <div className="space-y-1.5 rounded border border-bezel p-2">
           <button className={`${btn} w-full justify-start`} disabled={!enabled}
-            title={reason ?? 'Cambia el color de forma permanente (se mantiene tras el clip)'}
+            title={reason ?? (colorParams.revertOnEnd === true ? 'Cambia el color y regresa al original al terminar' : 'Cambia el color de forma permanente (se mantiene tras el clip)')}
             onClick={() => selection && actions.addClip({ targetId: selection, type: 'colorChange', start, duration, parameters: colorParams, sound: sound || null })}>
             <Palette size={14} /> Cambiar Color
           </button>
@@ -1108,6 +1108,8 @@ function EquationAnimations() {
   const [lag, setLag] = useState(0.1);
   const [factor, setFactor] = useState(1.3);
   const [color, setColor] = useState('#ffff00');
+  const [glyphColor, setGlyphColor] = useState('#58C4DD');
+  const [glyphRevert, setGlyphRevert] = useState(false);
   const [dest, setDest] = useState('');
   const [destTerm, setDestTerm] = useState('');
   const [dx, setDx] = useState(0);
@@ -1214,10 +1216,21 @@ function EquationAnimations() {
         <button className={`${btn} w-full justify-start`} onClick={() => add('indicate', { ...scopeParams(), scale: factor, color })}>
           <Sparkles size={14} /> Indicate
         </button>
-        <button className={`${btn} w-full justify-start`} title="Cambio de color permanente de los glifos elegidos (usa el color de énfasis)"
-          onClick={() => add('colorChange', { ...scopeParams(), fillEnabled: true, targetFillColor: color, strokeEnabled: false })}>
-          <Palette size={14} /> Cambiar Color
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button className={`${btn} flex-1 justify-start`}
+            title={glyphRevert ? 'Tiñe los glifos elegidos y regresa a su color al terminar' : 'Cambio de color permanente de los glifos elegidos'}
+            onClick={() => add('colorChange', {
+              ...scopeParams(), fillEnabled: true, targetFillColor: glyphColor, strokeEnabled: false, ...(glyphRevert ? { revertOnEnd: true } : {}),
+            })}>
+            <Palette size={14} /> Cambiar Color
+          </button>
+          <input type="color" className="h-6 w-8 shrink-0 cursor-pointer rounded border border-bezel bg-transparent"
+            aria-label="Nuevo color de los glifos" title="Nuevo color de los glifos" value={glyphColor} onChange={(e) => setGlyphColor(e.target.value)} />
+        </div>
+        <label className="flex items-center gap-1 text-[11px] text-slate-300" title="25 % entra al color, 50 % lo mantiene y 25 % regresa al color previo">
+          <input type="checkbox" checked={glyphRevert} onChange={(e) => setGlyphRevert(e.target.checked)} />
+          Regresar al terminar
+        </label>
         <button className={`${btn} w-full justify-start`} onClick={() => add('circumscribe', { ...scopeParams(), color })}>
           <Radio size={14} /> Circumscribe
         </button>

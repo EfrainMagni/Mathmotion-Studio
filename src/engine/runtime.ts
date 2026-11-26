@@ -1614,9 +1614,14 @@ export class SceneRuntime {
           break;
         }
         case 'colorChange': {
-          // Cambio de color permanente: interpola con curva suave en [start, end] y se mantiene después.
+          // Permanente: interpola con curva suave en [start, end] y se mantiene después.
+          // Con `revertOnEnd`: 0–25 % entra al color nuevo, 25–75 % lo mantiene, 75–100 % vuelve al color previo
+          // (y desde `end` el estado anterior queda restaurado: la mezcla vale 0).
           if (raw < 0) break;
-          const e = smooth(p);
+          const e = par.revertOnEnd === true
+            ? (raw >= 1 ? 0 : p < 0.25 ? smooth(p / 0.25) : p <= 0.75 ? 1 : smooth((1 - p) / 0.25))
+            : smooth(p);
+          if (e <= 0) break;
           const fill = par.fillEnabled === false ? null : typeof par.targetFillColor === 'string' ? par.targetFillColor : null;
           const stroke = par.strokeEnabled === false ? null : typeof par.targetStrokeColor === 'string' ? par.targetStrokeColor : null;
           const fillOpacity = par.fillEnabled !== false && typeof par.targetFillOpacity === 'number' ? clamp01(par.targetFillOpacity) : null;
@@ -1624,7 +1629,8 @@ export class SceneRuntime {
           if (fo) {
             // Ecuaciones: los glifos (todos o los elegidos) son rellenos.
             const color = fill ?? stroke;
-            if (color) for (const i of clipGlyphs(fo, par) ?? glyphsOf(fo)) glyphState(fo.id, i).mix.push([color, e]);
+            const count = this.objs.get(fo.id)?.glyphs.length ?? 0;
+            if (color) for (const i of (clipGlyphs(fo, par) ?? glyphsOf(fo)).filter((i) => i >= 0 && i < count)) glyphState(fo.id, i).mix.push([color, e]);
             break;
           }
           const s = get(c.targetId);
