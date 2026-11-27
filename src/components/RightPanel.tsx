@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2, Shapes, X, Bookmark, Pencil } from 'lucide-react';
-import { actions, defaultClipParams, selectedObjectIds, store, useStore } from '../store';
+import { actions, defaultClipParams, selectedObjectIds, store, useStore, type AlignMode } from '../store';
 import { ColorChangeFields, patchParams } from './Timeline';
 import {
   ARC_LIMITS, DEFAULT_ARC, DEFAULT_TEXT_STYLE, FONT_CATALOG, isPathTool, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
   SAVED_GROUP_NAME_MAX, glyphTransformParams,
-  type ClipParams, type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SceneBackground, type SceneBackgroundType, type SoundId, type TextAlign, type TextStyle,
+  type Box, type ClipParams, type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SceneBackground, type SceneBackgroundType, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
 import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
@@ -462,6 +462,84 @@ function PaintBlocks({ selection, style, fill, stroke, strokeWidth, linear }: {
   );
 }
 
+/** Iconos de 16×16 dibujados a trazo (estilo lucide) para la barra de alineación. */
+const ALIGN_ICON_PATHS: Record<AlignMode | 'distX' | 'distY', string> = {
+  left: 'M2 1v14M5 4h9v3H5zM5 9h5v3H5z',
+  hcenter: 'M8 1v14M3 4h10v3H3zM5 9h6v3H5z',
+  right: 'M14 1v14M2 4h9v3H2zM6 9h5v3H6z',
+  top: 'M1 2h14M4 5v9h3V5zM9 5v5h3V5z',
+  vcenter: 'M1 8h14M4 3v10h3V3zM9 5v6h3V5z',
+  bottom: 'M1 14h14M4 2v9h3V2zM9 6v5h3V6z',
+  distX: 'M1 1v14M15 1v14M5 4v8h2V4zM9 4v8h2V4z',
+  distY: 'M1 1h14M1 15h14M4 5h8v2H4zM4 9h8v2H4z',
+};
+
+function AlignIcon({ name }: { name: keyof typeof ALIGN_ICON_PATHS }) {
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.3} strokeLinejoin="round" aria-hidden="true">
+      <path d={ALIGN_ICON_PATHS[name]} />
+    </svg>
+  );
+}
+
+/** Cajas actuales en el escenario de los objetos raíz indicados (los ocultos se omiten). */
+function currentBoxes(ids: string[]): Record<string, Box> {
+  const out: Record<string, Box> = {};
+  for (const id of ids) {
+    const box = engine.runtime?.getBox(id);
+    if (box) out[id] = box;
+  }
+  return out;
+}
+
+/**
+ * Barra compacta de alineación (estilo Illustrator). Con un objeto: centrar en el escenario. Con 2 o más:
+ * alinear bordes/centros entre sí y distribuir con espaciado idéntico (requiere 3 o más).
+ */
+function AlignBar() {
+  const selection = useStore((s) => s.ui.selection);
+  const multi = useStore((s) => s.ui.multiSelection);
+  const ids = selectedObjectIds({ selection, multiSelection: multi });
+  if (!ids.length) return null;
+  const align = (mode: AlignMode) => actions.alignObjects(currentBoxes(ids), mode);
+  const button = (name: keyof typeof ALIGN_ICON_PATHS, label: string, onClick: () => void, disabled = false) => (
+    <button key={name} type="button" className={`${btn} justify-center px-0 py-1 disabled:opacity-30`} title={label} aria-label={label}
+      disabled={disabled} onClick={onClick}>
+      <AlignIcon name={name} />
+    </button>
+  );
+  if (ids.length === 1) {
+    return (
+      <div className="space-y-1" role="group" aria-label="Alinear en el escenario">
+        <div className="text-[10px] uppercase tracking-wide text-slate-500">Alinear al escenario</div>
+        <div className="grid grid-cols-2 gap-1">
+          {button('hcenter', 'Centrar horizontalmente en el escenario', () => align('hcenter'))}
+          {button('vcenter', 'Centrar verticalmente en el escenario', () => align('vcenter'))}
+        </div>
+      </div>
+    );
+  }
+  const canDistribute = ids.length >= 3;
+  const distributeHint = canDistribute ? '' : ' (necesita 3 o más objetos)';
+  return (
+    <div className="space-y-1" role="group" aria-label="Alinear y distribuir objetos">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">Alinear objetos ({ids.length})</div>
+      <div className="grid grid-cols-6 gap-1">
+        {button('left', 'Alinear a la izquierda', () => align('left'))}
+        {button('hcenter', 'Alinear al centro horizontal', () => align('hcenter'))}
+        {button('right', 'Alinear a la derecha', () => align('right'))}
+        {button('top', 'Alinear arriba', () => align('top'))}
+        {button('vcenter', 'Alinear al centro vertical', () => align('vcenter'))}
+        {button('bottom', 'Alinear abajo', () => align('bottom'))}
+      </div>
+      <div className="grid grid-cols-2 gap-1">
+        {button('distY', `Distribuir verticalmente con espaciado idéntico${distributeHint}`, () => actions.distributeObjects(currentBoxes(ids), 'y'), !canDistribute)}
+        {button('distX', `Distribuir horizontalmente con espaciado idéntico${distributeHint}`, () => actions.distributeObjects(currentBoxes(ids), 'x'), !canDistribute)}
+      </div>
+    </div>
+  );
+}
+
 function Inspector() {
   const selection = useStore((s) => s.ui.selection);
   const project = useStore((s) => s.project);
@@ -490,11 +568,6 @@ function Inspector() {
   const stroke = style.stroke ?? paint?.stroke;
   const strokeWidth = style.strokeWidth ?? paint?.strokeWidth ?? 0;
   const scale = info.isRoot ? obj.scale : style.scale ?? 1;
-  const center = (axis: 'x' | 'y') => {
-    const { w, h } = STAGE_SIZES[project.format];
-    actions.updateObject(obj.id, axis === 'x' ? { x: w / 2 } : { y: h / 2 });
-  };
-
   const setScale = (v: number) => (info.isRoot ? actions.updateObject(obj.id, { scale: v }) : actions.setStyle(selection, { scale: v }));
 
   return (
@@ -516,6 +589,8 @@ function Inspector() {
           {multiCount} objetos seleccionados · arrástralos o usa las flechas para moverlos juntos. El inspector muestra el último.
         </p>
       )}
+
+      <AlignBar />
 
       {obj.plane ? null : paint ? (
         <PaintBlocks selection={selection} style={style} fill={fill} stroke={stroke} strokeWidth={strokeWidth}
@@ -573,9 +648,7 @@ function Inspector() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-1.5" role="group" aria-label="Alineación y orden">
-        <button className={btn} onClick={() => center('x')}>Centrar horizontal</button>
-        <button className={btn} onClick={() => center('y')}>Centrar vertical</button>
+      <div className="grid grid-cols-2 gap-1.5" role="group" aria-label="Orden">
         <button className={btn} onClick={() => actions.orderObject(obj.id, true)}>Traer al frente</button>
         <button className={btn} onClick={() => actions.orderObject(obj.id, false)}>Enviar atrás</button>
         <button className={btn} onClick={() => actions.duplicateSelection()} title="Ctrl+D">Duplicar objeto</button>

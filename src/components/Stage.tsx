@@ -68,6 +68,89 @@ function visibleObjectIds(rt: SceneRuntime): string[] {
   });
 }
 
+/** Color de las guías inteligentes de alineación (magenta). */
+const SMART_GUIDE_COLOR = '#FF4D8D';
+/** Umbral (px de pantalla) de las guías inteligentes y del ajuste magnético. */
+const SNAP_THRESHOLD = 6;
+
+/** Línea de referencia candidata: posición `v` en un eje y extensión `lo`–`hi` en el eje perpendicular. */
+type SnapTarget = { v: number; lo: number; hi: number };
+/** Caja de lo que se arrastra (al empezar) y referencias de los demás objetos visibles y del escenario. */
+type SnapContext = { box: Box; xs: SnapTarget[]; ys: SnapTarget[] };
+/** Guía visible: `axis: 'x'` = línea vertical en x = `at`; `'y'` = horizontal en y = `at`. */
+type SmartGuide = { axis: 'x' | 'y'; at: number; from: number; to: number };
+
+/** Prepara el ajuste magnético para arrastrar `ids`: caja envolvente de la selección y referencias candidatas. */
+function buildSnapContext(rt: SceneRuntime, ids: string[], W: number, H: number): SnapContext | null {
+  const boxes = ids.map((id) => rt.getBox(id)).filter((b): b is Box => !!b);
+  if (!boxes.length) return null;
+  const x1 = Math.min(...boxes.map((b) => b.x));
+  const y1 = Math.min(...boxes.map((b) => b.y));
+  const x2 = Math.max(...boxes.map((b) => b.x + b.w));
+  const y2 = Math.max(...boxes.map((b) => b.y + b.h));
+  // Centro del escenario (las guías cruzan todo el lienzo).
+  const xs: SnapTarget[] = [{ v: W / 2, lo: 0, hi: H }];
+  const ys: SnapTarget[] = [{ v: H / 2, lo: 0, hi: W }];
+  const moving = new Set(ids);
+  for (const id of visibleObjectIds(rt)) {
+    if (moving.has(id)) continue;
+    const b = rt.getBox(id);
+    if (!b) continue;
+    for (const v of [b.x, b.x + b.w / 2, b.x + b.w]) xs.push({ v, lo: b.y, hi: b.y + b.h });
+    for (const v of [b.y, b.y + b.h / 2, b.y + b.h]) ys.push({ v, lo: b.x, hi: b.x + b.w });
+  }
+  return { box: { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }, xs, ys };
+}
+
+/**
+ * Ajuste magnético de un desplazamiento (`dx`, `dy` en px del escenario): bordes y centro de la caja arrastrada se
+ * atraen a la referencia más cercana dentro de `threshold`. Con `snap = false` no se corrige el desplazamiento, pero
+ * se siguen mostrando las guías de lo que coincide exactamente.
+ */
+function applySnap(ctx: SnapContext, dx: number, dy: number, threshold: number, snap: boolean): { dx: number; dy: number; guides: SmartGuide[] } {
+  const solve = (start: number, size: number, targets: SnapTarget[]) => {
+    const features = [start, start + size / 2, start + size];
+    let best = Infinity;
+    let offset = 0;
+    for (const t of targets) {
+      for (const f of features) {
+        const d = t.v - f;
+        if (Math.abs(d) < Math.abs(best)) {
+          best = d;
+          offset = d;
+        }
+      }
+    }
+    return snap && Math.abs(best) <= threshold ? offset : 0;
+  };
+  const sx = solve(ctx.box.x + dx, ctx.box.w, ctx.xs);
+  const sy = solve(ctx.box.y + dy, ctx.box.h, ctx.ys);
+  const nx = dx + sx;
+  const ny = dy + sy;
+  const b = { x: ctx.box.x + nx, y: ctx.box.y + ny, w: ctx.box.w, h: ctx.box.h };
+  const eps = 0.5;
+  const collect = (axis: 'x' | 'y', start: number, size: number, lo: number, hi: number, targets: SnapTarget[]) => {
+    const features = [start, start + size / 2, start + size];
+    const byPos = new Map<number, SmartGuide>();
+    for (const t of targets) {
+      if (!features.some((f) => Math.abs(t.v - f) < eps)) continue;
+      const key = Math.round(t.v * 2) / 2;
+      const prev = byPos.get(key);
+      const from = Math.min(t.lo, lo, prev?.from ?? Infinity);
+      const to = Math.max(t.hi, hi, prev?.to ?? -Infinity);
+      byPos.set(key, { axis, at: t.v, from, to });
+    }
+    return [...byPos.values()];
+  };
+  const guides = [
+    ...collect('x', b.x, b.w, b.y, b.y + b.h, ctx.xs),
+    ...collect('y', b.y, b.h, b.x, b.x + b.w, ctx.ys),
+  ];
+  return { dx: nx, dy: ny, guides };
+}
+
+const NO_GUIDES: SmartGuide[] = [];
+
 function sameBoxes(a: (Box | null)[], b: (Box | null)[]) {
   return a.length === b.length && a.every((box, i) => {
     const other = b[i];
@@ -195,6 +278,9 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
   const penDrag = useRef<number | null>(null);
   const lastPenClick = useRef<{ t: number; p: Vertex } | null>(null);
   const [penView, setPenView] = useState<{ nodes: PathNode[]; cursor: Vertex | null } | null>(null);
+  // Guías inteligentes: contexto del arrastre en curso (herramienta Selección) y guías visibles.
+  const snapRef = useRef<SnapContext | null>(null);
+  const [guides, setGuides] = useState<SmartGuide[]>(NO_GUIDES);
 
   const { w: W, h: H } = STAGE_SIZES[format];
   const hideUi = playing || recPhase === 'recording' || recPhase === 'preparing' || recPhase === 'finishing';
@@ -386,6 +472,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     element.focus({ preventScroll: true });
     element.setPointerCapture(e.pointerId);
     pointer.current = { id: e.pointerId, generation: store.projectGeneration(), group: Symbol() };
+    snapRef.current = null;
 
     if (ui.vectorTool === 'pen') {
       const p = position(e);
@@ -520,6 +607,7 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       const origins: Record<string, Vertex> = {};
       for (const object of objects) if (ids.includes(object.id)) origins[object.id] = { x: object.x, y: object.y };
       dragRef.current = { kind: 'group', ids, sx: e.clientX, sy: e.clientY, origins, copyOnMove };
+      if (selectTool) snapRef.current = buildSnapContext(rt, ids, W, H);
     };
     // Alt + arrastrar (estilo Illustrator): al empezar a mover se duplican el objeto o el grupo en su sitio y se
     // arrastran las copias; duplicado y desplazamiento comparten la misma entrada de historial.
@@ -565,7 +653,10 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     if (!info) return;
     const obj = project.objects.find((o) => o.id === info.objId);
     if (info.isRoot) {
-      if (obj) dragRef.current = { kind: 'root', id, sx: e.clientX, sy: e.clientY, ox: obj.x, oy: obj.y };
+      if (obj) {
+        dragRef.current = { kind: 'root', id, sx: e.clientX, sy: e.clientY, ox: obj.x, oy: obj.y };
+        if (selectTool) snapRef.current = buildSnapContext(rt, [id], W, H);
+      }
     } else {
       const node = (e.target as Element).closest(`[data-mm-id="${id}"]`) ?? null;
       const parent = node?.parentNode as SVGGraphicsElement | null;
@@ -646,7 +737,8 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
         return onPointerMove(e);
       }
       const r = stageRef.current!.getBoundingClientRect();
-      actions.translateObjects(d.ids, dx / (r.width / W), dy / (r.height / H), active.group, d.origins);
+      const moved = snapMove(dx / (r.width / W), dy / (r.height / H), r.width / W, e);
+      actions.translateObjects(d.ids, moved.dx, moved.dy, active.group, d.origins);
       return;
     }
     if (d.kind === 'root') {
@@ -654,13 +746,26 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
       const r = stageRef.current!.getBoundingClientRect();
       const kx = r.width / W;
       const ky = r.height / H;
-      actions.updateObject(d.id, { x: d.ox + dx / kx, y: d.oy + dy / ky }, active.group);
+      const moved = snapMove(dx / kx, dy / ky, kx, e);
+      actions.updateObject(d.id, { x: d.ox + moved.dx, y: d.oy + moved.dy }, active.group);
     } else {
       const lx = d.inv.a * dx + d.inv.c * dy;
       const ly = d.inv.b * dx + d.inv.d * dy;
       actions.setStyle(d.id, { tx: d.ox + lx, ty: d.oy + ly }, active.group);
     }
   };
+
+  /**
+   * Guías inteligentes al arrastrar con Selección: corrige el desplazamiento (px del escenario) con el ajuste
+   * magnético y actualiza las guías visibles. Mantener Ctrl (o ⌘) desactiva el ajuste mientras se arrastra.
+   */
+  function snapMove(dx: number, dy: number, screenScale: number, event: PointerEvent): { dx: number; dy: number } {
+    const ctx = snapRef.current;
+    if (!ctx) return { dx, dy };
+    const result = applySnap(ctx, dx, dy, SNAP_THRESHOLD / (screenScale || 1), !(event.ctrlKey || event.metaKey));
+    setGuides((prev) => (prev.length === 0 && result.guides.length === 0 ? prev : result.guides));
+    return result;
+  }
 
   /** Redimensiona un plano desde una esquina (ancho/alto del plano, no su escala), con la esquina opuesta fija. */
   function resizePlane(drag: Extract<Drag, { kind: 'resize' }>, event: PointerEvent, group: symbol) {
@@ -796,6 +901,8 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
     }
     pointer.current = null;
     dragRef.current = null;
+    snapRef.current = null;
+    setGuides(NO_GUIDES);
     draft.current = null;
     setSketch(null);
     setMarquee(null);
@@ -918,6 +1025,26 @@ export function Stage({ viewportScale }: { viewportScale: number }) {
                   style={{ left: b.x, top: b.y, width: b.w, height: b.h,
                     outline: `${Math.max(2, 2 / k)}px dashed #5c9ef4`, outlineOffset: `${3 / k}px` }} />
               ))}
+              {guides.length > 0 && (
+                <svg data-smart-guides className="absolute inset-0 overflow-visible" width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true">
+                  {guides.map((g) => {
+                    const u = 1 / (k * viewportScale);
+                    const pad = 8 * u;
+                    const [x1, y1, x2, y2] = g.axis === 'x'
+                      ? [g.at, g.from - pad, g.at, g.to + pad]
+                      : [g.from - pad, g.at, g.to + pad, g.at];
+                    return (
+                      <g key={`${g.axis}${g.at}`}>
+                        <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={SMART_GUIDE_COLOR} strokeWidth={u} shapeRendering="crispEdges" />
+                        {[[x1, y1], [x2, y2]].map(([cx, cy], i) => (
+                          <path key={i} d={`M${cx - 3 * u} ${cy - 3 * u}L${cx + 3 * u} ${cy + 3 * u}M${cx - 3 * u} ${cy + 3 * u}L${cx + 3 * u} ${cy - 3 * u}`}
+                            stroke={SMART_GUIDE_COLOR} strokeWidth={u} />
+                        ))}
+                      </g>
+                    );
+                  })}
+                </svg>
+              )}
               {marquee && (
                 <div data-marquee className="absolute"
                   style={{
