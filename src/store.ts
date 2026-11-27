@@ -28,11 +28,15 @@ import {
   normalizeSceneBackground,
   resolveSceneBackground,
   type StageFormat,
+  type Box,
   type VoiceMeta,
   type VectorGeometry,
   type VectorTool,
   type Vertex,
 } from './types';
+
+/** Modos de alineación estilo Illustrator (bordes y centros de la caja envolvente). */
+export type AlignMode = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom';
 
 export type RecordingPhase = 'idle' | 'picker' | 'preparing' | 'recording' | 'finishing';
 
@@ -707,6 +711,82 @@ export const actions = {
       });
       return changed ? { ...p, objects } : p;
     }, group);
+  },
+
+  /**
+   * Desplaza varios objetos raíz en una sola entrada de historial. `offsets` = desplazamiento (px del escenario)
+   * de cada objeto; los nulos se ignoran.
+   */
+  shiftObjects(offsets: Record<string, Vertex>) {
+    store.setProject((p) => {
+      let changed = false;
+      const objects = p.objects.map((object) => {
+        const off = offsets[object.id];
+        if (!off || (Math.abs(off.x) < 0.005 && Math.abs(off.y) < 0.005)) return object;
+        changed = true;
+        return { ...object, x: r2(object.x + off.x), y: r2(object.y + off.y) };
+      });
+      return changed ? { ...p, objects } : p;
+    });
+  },
+
+  /**
+   * Alinea objetos según sus cajas en el escenario (`boxes`, en px lógicos). Con un único objeto, o con
+   * `toStage`, la referencia es el propio escenario; si no, la caja envolvente de la selección.
+   */
+  alignObjects(boxes: Record<string, Box>, mode: AlignMode, toStage = false) {
+    const ids = Object.keys(boxes).filter((id) => state.project.objects.some((object) => object.id === id));
+    if (!ids.length) return;
+    let ref: Box;
+    if (toStage || ids.length === 1) {
+      const { w, h } = STAGE_SIZES[state.project.format];
+      ref = { x: 0, y: 0, w, h };
+    } else {
+      const x1 = Math.min(...ids.map((id) => boxes[id].x));
+      const y1 = Math.min(...ids.map((id) => boxes[id].y));
+      const x2 = Math.max(...ids.map((id) => boxes[id].x + boxes[id].w));
+      const y2 = Math.max(...ids.map((id) => boxes[id].y + boxes[id].h));
+      ref = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+    }
+    const offsets: Record<string, Vertex> = {};
+    for (const id of ids) {
+      const b = boxes[id];
+      let dx = 0;
+      let dy = 0;
+      if (mode === 'left') dx = ref.x - b.x;
+      else if (mode === 'hcenter') dx = ref.x + ref.w / 2 - (b.x + b.w / 2);
+      else if (mode === 'right') dx = ref.x + ref.w - (b.x + b.w);
+      else if (mode === 'top') dy = ref.y - b.y;
+      else if (mode === 'vcenter') dy = ref.y + ref.h / 2 - (b.y + b.h / 2);
+      else dy = ref.y + ref.h - (b.y + b.h);
+      offsets[id] = { x: dx, y: dy };
+    }
+    actions.shiftObjects(offsets);
+  },
+
+  /**
+   * Distribuye 3 o más objetos con espaciado idéntico entre sus cajas a lo largo de `axis`: los extremos quedan
+   * fijos y los huecos intermedios se igualan (ideal para columnas de ecuaciones).
+   */
+  distributeObjects(boxes: Record<string, Box>, axis: 'x' | 'y') {
+    const ids = Object.keys(boxes).filter((id) => state.project.objects.some((object) => object.id === id));
+    if (ids.length < 3) return;
+    const start = (b: Box) => (axis === 'x' ? b.x : b.y);
+    const size = (b: Box) => (axis === 'x' ? b.w : b.h);
+    const sorted = [...ids].sort((a, b) => start(boxes[a]) + size(boxes[a]) / 2 - (start(boxes[b]) + size(boxes[b]) / 2));
+    const first = boxes[sorted[0]];
+    const last = boxes[sorted[sorted.length - 1]];
+    const span = start(last) + size(last) - start(first);
+    const total = sorted.reduce((sum, id) => sum + size(boxes[id]), 0);
+    const gap = (span - total) / (sorted.length - 1);
+    const offsets: Record<string, Vertex> = {};
+    let cursor = start(first);
+    for (const id of sorted) {
+      const d = cursor - start(boxes[id]);
+      offsets[id] = axis === 'x' ? { x: d, y: 0 } : { x: 0, y: d };
+      cursor += size(boxes[id]) + gap;
+    }
+    actions.shiftObjects(offsets);
   },
 
   /** Entra en el modo de edición de términos de una fórmula. */
