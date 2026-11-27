@@ -156,7 +156,7 @@ export const SOUND_IDS = Object.keys(SOUND_LABEL) as SoundId[];
 
 export type ClipType =
   | 'draw' | 'radar' | 'glow' | 'appear' | 'rotate'
-  | 'indicate' | 'circumscribe' | 'focus' | 'transform' | 'transformMatch' | 'colorChange';
+  | 'indicate' | 'circumscribe' | 'focus' | 'transform' | 'transformMatch' | 'colorChange' | 'groupTransform';
 export const CLIP_LABEL: Record<ClipType, string> = {
   draw: 'Escribir / Dibujar',
   radar: 'Radar',
@@ -169,6 +169,7 @@ export const CLIP_LABEL: Record<ClipType, string> = {
   transform: 'Transform',
   transformMatch: 'TransformMatchingTex',
   colorChange: 'Cambiar Color',
+  groupTransform: 'Transformar Grupo',
 };
 
 export type ClipParams = Record<string, number | string | boolean>;
@@ -260,9 +261,75 @@ export function glyphTransformOf(clip: Pick<Clip, 'type' | 'targetId' | 'paramet
   };
 }
 
+/**
+ * Transformación de grupo multi-objeto (`ReplacementTransform(VGroup(...), VGroup(...))`). Es un clip
+ * `groupTransform` cuyo `targetId` es el primer objeto origen; las listas viajan como texto (`"o1,o2"`) porque
+ * `ClipParams` solo admite escalares. `keepSource` (por defecto `false`): `true` equivale a `TransformFromCopy`.
+ */
+export interface GroupTransformSpec {
+  sourceObjectIds: string[];
+  targetObjectIds: string[];
+  keepSource: boolean;
+}
+
+const OBJECT_ID_RE = /^o[1-9]\d*$/;
+
+/** Lista de ids de objeto raíz (`"o1,o2"`), sin duplicados y en el orden dado. */
+export function parseObjectIds(text: unknown): string[] {
+  if (typeof text !== 'string') return [];
+  const out: string[] = [];
+  for (const part of text.split(',')) {
+    const id = part.trim();
+    if (OBJECT_ID_RE.test(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+export function groupTransformParams(spec: GroupTransformSpec): ClipParams {
+  return {
+    sourceObjectIds: spec.sourceObjectIds.join(','),
+    targetObjectIds: spec.targetObjectIds.join(','),
+    keepSource: spec.keepSource,
+  };
+}
+
+/** Especificación de un clip de grupo, o `null` si no es válido (listas vacías o que se solapan). */
+export function groupTransformOf(clip: Pick<Clip, 'type' | 'parameters'>): GroupTransformSpec | null {
+  if (clip.type !== 'groupTransform') return null;
+  const sourceObjectIds = parseObjectIds(clip.parameters.sourceObjectIds);
+  const targetObjectIds = parseObjectIds(clip.parameters.targetObjectIds).filter((id) => !sourceObjectIds.includes(id));
+  if (!sourceObjectIds.length || !targetObjectIds.length) return null;
+  return { sourceObjectIds, targetObjectIds, keepSource: clip.parameters.keepSource === true };
+}
+
+/**
+ * Quita de los clips de grupo los objetos eliminados. Si un grupo se queda vacío el clip desaparece; si se elimina
+ * el objeto que hacía de `targetId`, el clip pasa al siguiente objeto origen. Los demás clips no se tocan.
+ */
+export function pruneGroupClips(clips: Clip[], removed: Set<string>): Clip[] {
+  const out: Clip[] = [];
+  for (const clip of clips) {
+    if (clip.type !== 'groupTransform') {
+      out.push(clip);
+      continue;
+    }
+    const sources = parseObjectIds(clip.parameters.sourceObjectIds).filter((id) => !removed.has(id));
+    const targets = parseObjectIds(clip.parameters.targetObjectIds).filter((id) => !removed.has(id));
+    if (!sources.length || !targets.length) continue;
+    out.push({
+      ...clip,
+      targetId: sources[0],
+      parameters: { ...clip.parameters, sourceObjectIds: sources.join(','), targetObjectIds: targets.join(',') },
+    });
+  }
+  return out;
+}
+
 /** Etiqueta del clip (distingue la transformación dirigida de glifos de un Transform normal). */
 export function clipLabel(clip: Pick<Clip, 'type' | 'targetId' | 'parameters'>): string {
   if (clip.type === 'appear' && clip.parameters.mode === 'pop') return 'GrowFromCenter (Pop)';
+  const group = groupTransformOf(clip);
+  if (group) return `Transformar Grupo (${group.sourceObjectIds.length} → ${group.targetObjectIds.length} objetos)`;
   const spec = glyphTransformOf(clip);
   if (spec) return spec.keepSource ? 'TransformFromCopy' : 'ReplacementTransform (glifos)';
   return CLIP_LABEL[clip.type];

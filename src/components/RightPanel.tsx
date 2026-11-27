@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
-import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2 } from 'lucide-react';
-import { actions, defaultClipParams, store, useStore } from '../store';
+import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2, Shapes, X } from 'lucide-react';
+import { actions, defaultClipParams, selectedObjectIds, store, useStore } from '../store';
 import { ColorChangeFields, patchParams } from './Timeline';
 import {
   ARC_LIMITS, DEFAULT_ARC, DEFAULT_TEXT_STYLE, FONT_CATALOG, isPathTool, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
@@ -1435,11 +1435,75 @@ function SceneBackgroundPanel() {
   );
 }
 
+/**
+ * «Transformación de Grupo» en dos pasos: (1) fijar la selección múltiple actual como grupo origen y (2) con otra
+ * selección, crear el clip `groupTransform` (ReplacementTransform de grupos o, manteniendo el origen, TransformFromCopy).
+ */
+function GroupTransformPanel() {
+  const multi = useStore((s) => s.ui.multiSelection);
+  const selection = useStore((s) => s.ui.selection);
+  const pending = useStore((s) => s.ui.pendingTransformSourceIds);
+  const time = useStore((s) => s.ui.time);
+  const objects = useStore((s) => s.project.objects);
+  const [duration, setDuration] = useState(2);
+  const [keepSource, setKeepSource] = useState(false);
+  const selected = selectedObjectIds({ selection, multiSelection: multi });
+  if (!pending && selected.length < 2) return null;
+
+  const nameOf = (id: string) => objects.find((object) => object.id === id)?.name ?? id;
+  const targets = pending ? selected.filter((id) => !pending.includes(id)) : [];
+  const sameAsSource = !!pending && selected.length === pending.length && selected.every((id) => pending.includes(id));
+  const start = Math.round(time * 100) / 100;
+
+  return (
+    <Section title="Transformación de Grupo">
+      {!pending ? (
+        <button className={`${btn} w-full justify-start`} onClick={() => actions.setPendingTransformSource(selected)}
+          title={selected.map(nameOf).join(', ')}>
+          <Shapes size={14} /> 1. Fijar como Grupo Origen ({selected.length} objetos)
+        </button>
+      ) : (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-2 rounded border border-accent bg-accent-soft px-2 py-1 text-[11px] text-accent-light"
+            role="status" title={pending.map(nameOf).join(', ')}>
+            <span className="truncate">Grupo Origen fijado: {pending.length} objetos</span>
+            <button type="button" className="shrink-0 rounded p-0.5 hover:bg-white/10" aria-label="Cancelar grupo origen"
+              onClick={() => actions.setPendingTransformSource(null)}>
+              <X size={12} />
+            </button>
+          </div>
+          {targets.length > 0 && !sameAsSource ? (
+            <>
+              <Field label="Duración (s)">
+                <NumberInput className={`${input} w-20`} value={duration} min={0.1} step={0.1} onChange={setDuration} />
+              </Field>
+              <label className="flex items-center gap-1.5 text-[11px] text-slate-300">
+                <input type="checkbox" checked={keepSource} onChange={(event) => setKeepSource(event.target.checked)} />
+                Mantener grupo origen
+              </label>
+              <button className={`${btnPrimary} w-full justify-start`} title={targets.map(nameOf).join(', ')}
+                onClick={() => actions.addGroupTransform(targets, { start, duration, keepSource })}>
+                <MoveRight size={14} /> 2. Transformar Grupo Origen → aquí ({targets.length} objetos)
+              </button>
+              <p className="text-[10px] leading-snug text-slate-500">
+                Se crea en el cabezal ({start.toFixed(2)} s). {keepSource ? 'TransformFromCopy: el origen permanece.' : 'ReplacementTransform: el origen se reemplaza.'}
+              </p>
+            </>
+          ) : (
+            <p className="text-[11px] leading-snug text-slate-500">Selecciona ahora en el lienzo los objetos del grupo destino.</p>
+          )}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 export function RightPanel() {
   const hasSelection = useStore((s) => !!s.ui.selection || s.ui.multiSelection.length > 0);
   return (
     <aside className="scroll-thin w-[248px] shrink-0 overflow-y-auto border-l border-bezel bg-ink-800">
       <Inspector />
+      <GroupTransformPanel />
       {!hasSelection && <SceneBackgroundPanel />}
       <PlaneInspector />
       <GlyphPanel />

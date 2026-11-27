@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { FPS, SOUND_IDS, SOUND_LABEL, clipLabel, glyphTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type Project, type SoundId } from '../types';
+import { FPS, SOUND_IDS, SOUND_LABEL, clipLabel, glyphTransformOf, groupTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type Project, type SoundId } from '../types';
 import { formatGlyphList } from '../engine/glyphs';
 import { engine } from '../engine';
 import { NumberInput, btn, input } from './ui';
@@ -91,6 +91,14 @@ function clipSubject(clip: Clip, objects: Project['objects']): string {
   // Clip de una gráfica o punto de un plano cartesiano: «Plano · f(x) = x^2» / «Plano · Punto (2, 2)».
   const sub = planeSubElementOf(clip);
   if (sub) return `Plano · ${planeSubLabel(objects.find((o) => o.id === clip.targetId.split('.')[0])?.plane, sub)}`;
+  const group = groupTransformOf(clip);
+  if (group) {
+    const names = (ids: string[]) => {
+      const list = ids.map((id) => objects.find((o) => o.id === id)?.name ?? id);
+      return list.length > 2 ? `${list.slice(0, 2).join(', ')}…` : list.join(', ');
+    };
+    return `· ${names(group.sourceObjectIds)} → ${names(group.targetObjectIds)}`;
+  }
   const directed = glyphTransformOf(clip);
   if (directed) {
     const dest = objects.find((o) => o.id === directed.targetObjectId)?.name ?? directed.targetObjectId;
@@ -166,9 +174,16 @@ function ClipEditor() {
   }
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="max-w-[200px] truncate font-medium text-slate-200" title={runtimeName(clip.targetId)}>
-        {clipLabel(clip)} · {planeSubElementOf(clip) ? '' : `${runtimeName(clip.targetId)} `}{clipSubject(clip, objects)}
+      <span className="max-w-[200px] truncate font-medium text-slate-200" title={groupTransformOf(clip) ? clipSubject(clip, objects) : runtimeName(clip.targetId)}>
+        {clipLabel(clip)} {groupTransformOf(clip) ? '' : `· ${planeSubElementOf(clip) ? '' : `${runtimeName(clip.targetId)} `}`}{clipSubject(clip, objects)}
       </span>
+      {groupTransformOf(clip) && (
+        <label className="flex items-center gap-1" title="Activo: el grupo origen permanece y una copia viaja (TransformFromCopy). Inactivo: el origen se reemplaza (ReplacementTransform)">
+          <input type="checkbox" checked={clip.parameters.keepSource === true}
+            onChange={(e) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, keepSource: e.target.checked } })} />
+          Mantener grupo origen
+        </label>
+      )}
       {glyphTransformOf(clip) && (
         <label className="flex items-center gap-1" title="Los conectores (·, +, =) sin glifo dirigido brotan en el último 40 % del clip que completa a sus vecinos">
           <input type="checkbox" checked={clip.parameters.revealConnectors === true}
@@ -430,7 +445,7 @@ function Lane({
           <div
             key={c.id}
             data-clip={c.id}
-            className={`absolute top-1 flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-[10px] leading-tight ${selectedClip === c.id ? 'border-accent bg-accent-soft' : 'border-bezel bg-ink-600'}`}
+            className={`absolute top-1 flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-[10px] leading-tight ${selectedClip === c.id ? 'border-accent bg-accent-soft' : c.type === 'groupTransform' ? 'border-dashed border-accent/60 bg-ink-600' : 'border-bezel bg-ink-600'}`}
             style={{ left: c.start * pps, width: Math.max(26, c.duration * pps), height: LANE_H - 8 }}
             onPointerDown={(e) => onDown(e, c.id, c.start)}
             onPointerMove={onMove}

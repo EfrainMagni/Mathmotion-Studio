@@ -1,4 +1,4 @@
-import { BACKGROUND_COLOR, STAGE_SIZES, planeSubElementOf, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
+import { BACKGROUND_COLOR, STAGE_SIZES, groupTransformOf, planeSubElementOf, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
 import { svgWithVertices } from './vertices';
 import { expressionToPython, normalizePlane } from './cartesianPlane';
 import { clipGlyphs, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphRuns } from './glyphs';
@@ -513,6 +513,27 @@ export function generateManim(project: Project): { script: string; notes: string
       if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
       ends.set(target, start + clip.duration);
       events.push({ start, time: clip.duration, id: target, code, entrance: clip.type === 'draw' || clip.type === 'appear', overlay: false, reveal: [] });
+      continue;
+    }
+    if (clip.type === 'groupTransform') {
+      // Transformación de grupo: ReplacementTransform(VGroup(origen…), VGroup(destino…)) o TransformFromCopy.
+      const spec = groupTransformOf(clip);
+      const sources = spec?.sourceObjectIds.filter((id) => byId.has(id)) ?? [];
+      const targets = spec?.targetObjectIds.filter((id) => byId.has(id)) ?? [];
+      if (!spec || !sources.length || !targets.length) {
+        notes.add('Se omitieron transformaciones de grupo sin objetos válidos.');
+        continue;
+      }
+      const ids = [...sources, ...targets];
+      const start = Math.max(clip.start, ...ids.map((id) => ends.get(id) ?? 0));
+      if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
+      for (const id of ids) ends.set(id, start + clip.duration);
+      const groups = `VGroup(${sources.join(', ')}), VGroup(${targets.join(', ')})`;
+      const run = `run_time=${n(clip.duration)}`;
+      notes.add('Transformación de grupo: Manim empareja los submobjects de los VGroup por orden, no por tipo ni cercanía como el editor.');
+      events.push(spec.keepSource
+        ? { start, time: clip.duration, id: sources[0], code: `TransformFromCopy(${groups}, ${run})`, entrance: false, overlay: true, keep: true, reveal: targets }
+        : { start, time: clip.duration, id: sources[0], code: `ReplacementTransform(${groups}, ${run})`, entrance: false, overlay: false, reveal: targets });
       continue;
     }
     const dg = directedOf.get(clip);
