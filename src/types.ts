@@ -625,8 +625,40 @@ export interface Project {
   objects: SceneObject[];
   styles: Record<string, NodeStyle>;
   clips: Clip[];
+  /**
+   * Grupos guardados con etiqueta (conjuntos de selección con nombre), p. ej. «Triángulo» y «Pentágono»
+   * superpuestos en el mismo sitio. Solo agrupan ids de objetos raíz: borrar una etiqueta no borra objetos.
+   */
+  savedGroups?: SavedGroup[];
   voice: VoiceMeta | null;
   counters: { obj: number; clip: number };
+}
+
+/** Conjunto de selección con nombre. `id` tiene la forma `g<n>`. */
+export interface SavedGroup {
+  id: string;
+  name: string;
+  objectIds: string[];
+}
+
+/** Longitud máxima de la etiqueta de un grupo guardado. */
+export const SAVED_GROUP_NAME_MAX = 60;
+
+/**
+ * Quita de los grupos guardados los objetos que ya no existen (sin duplicados) y descarta los grupos que se
+ * quedan vacíos. Devuelve la misma lista si no cambia nada.
+ */
+export function pruneSavedGroups(groups: SavedGroup[] | undefined, exists: (id: string) => boolean): SavedGroup[] | undefined {
+  if (!groups) return groups;
+  let changed = false;
+  const out: SavedGroup[] = [];
+  for (const group of groups) {
+    const objectIds = group.objectIds.filter((id, i) => exists(id) && group.objectIds.indexOf(id) === i);
+    if (objectIds.length !== group.objectIds.length) changed = true;
+    if (!objectIds.length) continue;
+    out.push(objectIds.length === group.objectIds.length ? group : { ...group, objectIds });
+  }
+  return changed ? out : groups;
 }
 
 export function sceneDuration(p: Project): number {
