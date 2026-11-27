@@ -148,7 +148,7 @@ export function tipLayout(start: Vertex, end: Vertex, tips: ReturnType<typeof li
 
 // ------------------------------------------------------------------ trazados Bézier (pluma y curva suavizada)
 
-type Cubic = [Vertex, Vertex, Vertex, Vertex];
+export type Cubic = [Vertex, Vertex, Vertex, Vertex];
 const fmt = (v: number) => (Math.round(v * 1000) / 1000).toString();
 const same = (a: Vertex, b: Vertex) => Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9;
 const lerp = (a: Vertex, b: Vertex, t: number): Vertex => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
@@ -223,15 +223,14 @@ function segmentsToD(segments: Cubic[], closed: boolean): string {
 }
 
 /**
- * Datos `d` del trazado y polígonos de sus puntas para un grosor `sw`. En los trazados abiertos con punta, el
- * cuerpo se recorta en la muesca/base de la punta (igual que `tipLayout` en las líneas).
+ * Segmentos cúbicos (ya recortados en las puntas) y polígonos de las puntas de un trazado para un grosor `sw`.
+ * Lo comparten el SVG del editor (`pathLayout`) y la exportación a Manim (puntos de control de un `VMobject`).
  */
-export function pathLayout(vector: VectorGeometry, sw: number) {
+export function pathBody(vector: VectorGeometry, sw: number): { segments: Cubic[]; closed: boolean; start: string | null; end: string | null } {
   const nodes = vector.nodes ?? [];
   const closed = !!vector.closed && nodes.length > 2;
   const segments = pathSegments(nodes, closed);
-  if (!segments.length) return { d: '', start: null as string | null, end: null as string | null };
-  if (closed) return { d: segmentsToD(segments, true), start: null, end: null };
+  if (!segments.length || closed) return { segments, closed, start: null, end: null };
   const tips = lineTips(vector);
   const first = segments[0];
   const last = segments[segments.length - 1];
@@ -242,7 +241,17 @@ export function pathLayout(vector: VectorGeometry, sw: number) {
   const body = segments.slice();
   body[body.length - 1] = trimToBase(body[body.length - 1], tipInset(tips.end, sw, tips.scale), true, endTheta);
   body[0] = trimToBase(body[0], tipInset(tips.start, sw, tips.scale), false, startTheta);
-  return { d: segmentsToD(body, false), start, end };
+  return { segments: body, closed, start, end };
+}
+
+/**
+ * Datos `d` del trazado y polígonos de sus puntas para un grosor `sw`. En los trazados abiertos con punta, el
+ * cuerpo se recorta en la muesca/base de la punta (igual que `tipLayout` en las líneas).
+ */
+export function pathLayout(vector: VectorGeometry, sw: number) {
+  const { segments, closed, start, end } = pathBody(vector, sw);
+  if (!segments.length) return { d: '', start: null as string | null, end: null as string | null };
+  return { d: segmentsToD(segments, closed), start, end };
 }
 
 /** Manejadores simétricos de un nodo suave a partir de sus vecinos (tangente tipo Catmull-Rom). */

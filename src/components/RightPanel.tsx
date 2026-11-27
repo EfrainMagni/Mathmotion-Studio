@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
-import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2, Shapes, X, Bookmark, Pencil } from 'lucide-react';
+import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Minimize2, EyeOff, Trash2, Shapes, X, Bookmark, Pencil } from 'lucide-react';
 import { actions, defaultClipParams, selectedObjectIds, store, useStore, type AlignMode } from '../store';
 import { ColorChangeFields, patchParams } from './Timeline';
 import {
@@ -736,6 +736,18 @@ function removePlaneClips(object: Obj2D, subElementId: string) {
 
 const PLANE_HEADING = 'pt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500';
 
+/** Salida de una gráfica o un punto: Desvanecer (FadeOut) o Contraer (ShrinkToCenter) en el cabezal. */
+function PlaneExitButtons({ object, subElementId }: { object: Obj2D; subElementId: string }) {
+  return (
+    <div className="flex gap-1" role="group" aria-label={`Salida de ${subElementId}`}>
+      <button className={`${btn} flex-1`} title="Desvanecer (FadeOut) este elemento en el cabezal"
+        onClick={() => addPlaneClip(object, subElementId, 'disappear', 0.8, { mode: 'fade' })}>FadeOut</button>
+      <button className={`${btn} flex-1`} title="Contraer (ShrinkToCenter) este elemento en el cabezal"
+        onClick={() => addPlaneClip(object, subElementId, 'disappear', 0.8, { mode: 'shrink' })}>Contraer</button>
+    </div>
+  );
+}
+
 /** Inspector del plano cartesiano (`NumberPlane`): intervalos, ejes y flechas, cuadrícula, números y marcas. */
 function PlaneInspector() {
   const object = useStore((s) => {
@@ -881,6 +893,7 @@ function PlaneInspector() {
               <button className={`${btn} flex-1`} title="Cambiar Color permanente de esta gráfica (edítalo en la línea de tiempo)"
                 onClick={() => addPlaneClip(object, `plot:${plot.id}`, 'colorChange', 1)}>Color</button>
             </div>
+            <PlaneExitButtons object={object} subElementId={`plot:${plot.id}`} />
           </div>
         );
       })}
@@ -927,6 +940,7 @@ function PlaneInspector() {
               <button className={`${btn} flex-1`} title="Cambiar Color permanente de este punto (edítalo en la línea de tiempo)"
                 onClick={() => addPlaneClip(object, `point:${point.id}`, 'colorChange', 1)}>Color</button>
             </div>
+            <PlaneExitButtons object={object} subElementId={`point:${point.id}`} />
           </div>
         );
       })}
@@ -945,35 +959,42 @@ const DIRS: { id: string; label: string }[] = [
   { id: 'down', label: 'Desde abajo' },
 ];
 
+const GROUP_HEADING = 'text-[10px] font-semibold uppercase tracking-wide text-slate-500';
+
+/**
+ * Animaciones del Objeto: disponibles para TODO objeto del lienzo (figuras, trazados, textos, planos cartesianos y
+ * ecuaciones completas). Las herramientas glifo a glifo viven aparte, en «Animaciones de Glifos y Fórmulas».
+ */
 function Animations() {
   const selection = useStore((s) => s.ui.selection);
-  const objects = useStore((s) => s.project.objects);
   const time = useStore((s) => s.ui.time);
-  const nodeExists = useStore((s) => (s.ui.selection ? true : false));
+  useStore((s) => s.ui.treeVersion);
   const [duration, setDuration] = useState(1.5);
   const [sound, setSound] = useState<SoundId | ''>('');
-  const [dir, setDir] = useState('left');
+  const [dir, setDir] = useState('none');
   const [dist, setDist] = useState(150);
   const [rotMode, setRotMode] = useState<'angle' | 'spin'>('angle');
   const [angle, setAngle] = useState(360);
   const [speed, setSpeed] = useState(90);
+  const [factor, setFactor] = useState(1.3);
+  const [emphasis, setEmphasis] = useState('#ffff00');
+  const [colorParams, setColorParams] = useState<ClipParams>(() => defaultClipParams('colorChange'));
 
   const info = selection ? engine.runtime?.getNodeInfo(selection) ?? null : null;
-  const enabled = !!selection && nodeExists && !!info;
+  const enabled = !!selection && !!info;
   const start = Math.round(time * 100) / 100;
+  const reason = enabled ? undefined : 'Selecciona un objeto primero';
 
-  const add = (type: ClipType, parameters: Record<string, number | string> = {}) => {
+  const add = (type: ClipType, parameters: ClipParams = {}) => {
     if (!selection) return;
     actions.addClip({ targetId: selection, type, start, duration, parameters, sound: sound || null });
   };
-
-  const reason = enabled ? undefined : 'Selecciona un objeto primero';
-  const [colorParams, setColorParams] = useState<ClipParams>(() => defaultClipParams('colorChange'));
+  const button = `${btn} w-full justify-start`;
 
   return (
-    <Section title="Animaciones">
+    <Section title="Animaciones del Objeto">
       <p className="text-[11px] leading-snug text-slate-500">
-        Cada botón crea un clip para la selección en el cabezal actual ({start.toFixed(2)} s).
+        Para cualquier objeto (figura, trazado, texto, plano o ecuación completa). Cada botón crea un clip en el cabezal ({start.toFixed(2)} s).
       </p>
       <Field label="Duración (s)">
         <NumberInput className={`${input} w-20`} value={duration} min={0.1} step={0.1} onChange={setDuration} />
@@ -987,62 +1008,86 @@ function Animations() {
         </select>
       </Field>
 
-      <div className="space-y-1.5">
-        <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('draw')}>
-          <PenTool size={14} /> Escribir / Dibujar
+      <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Entrada">
+        <div className={GROUP_HEADING}>Entrada</div>
+        <button className={button} disabled={!enabled} title={reason ?? 'Create / Write: dibuja el contorno (o escribe el texto) y rellena al final'} onClick={() => add('draw')}>
+          <PenTool size={14} /> Create / Write
         </button>
-        <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('radar')}>
-          <Radio size={14} /> Radar
+        <button className={button} disabled={!enabled} title={reason ?? 'FadeIn: aparece con fundido; elige una dirección para que además se deslice'}
+          onClick={() => add('appear', { direction: dir, distance: dist })}>
+          <Sparkles size={14} /> {dir === 'none' ? 'FadeIn' : 'FadeIn + deslizar'}
         </button>
-        <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('glow')}>
-          <Sparkles size={14} /> Brillar
-        </button>
-
-        <div className="space-y-1.5 rounded border border-bezel p-2">
-          <button className={`${btn} w-full justify-start`} disabled={!enabled}
-            title={reason ?? (colorParams.revertOnEnd === true ? 'Cambia el color y regresa al original al terminar' : 'Cambia el color de forma permanente (se mantiene tras el clip)')}
-            onClick={() => selection && actions.addClip({ targetId: selection, type: 'colorChange', start, duration, parameters: colorParams, sound: sound || null })}>
-            <Palette size={14} /> Cambiar Color
-          </button>
-          <ColorChangeFields compact value={colorParams} onChange={(patch) => setColorParams((current) => patchParams(current, patch))} />
+        <div className="flex gap-1.5">
+          <select className={input} value={dir} onChange={(e) => setDir(e.target.value)} aria-label="Dirección de entrada">
+            {DIRS.map((d) => (
+              <option key={d.id} value={d.id}>{d.label}</option>
+            ))}
+          </select>
+          <NumberInput className={`${input} w-16`} value={dist} min={0} step={10} onChange={setDist} ariaLabel="Distancia (px)" disabled={dir === 'none'} />
         </div>
+        <button className={button} disabled={!enabled} title={reason ?? 'Brotar (GrowFromCenter): crece desde su centro (0 → 1.2 → 1) con fundido'}
+          onClick={() => add('appear', { mode: 'pop' })}>
+          <Maximize size={14} /> Brotar (Pop)
+        </button>
+      </div>
 
-        <div className="space-y-1.5 rounded border border-bezel p-2">
-          <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('appear', { direction: dir, distance: dist })}>
-            <MoveRight size={14} /> Aparecer / Deslizar
+      <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Énfasis y color">
+        <div className={GROUP_HEADING}>Énfasis y Color</div>
+        <div className="flex items-center gap-1.5">
+          <button className={`${btn} flex-1 justify-start`} disabled={!enabled} title={reason ?? 'Indicate: pulso de escala y color que vuelve al estado original'}
+            onClick={() => add('indicate', { scale: factor, color: emphasis })}>
+            <Sparkles size={14} /> Indicate
           </button>
-          <div className="flex gap-1.5">
-            <select className={input} value={dir} onChange={(e) => setDir(e.target.value)} aria-label="Dirección">
-              {DIRS.map((d) => (
-                <option key={d.id} value={d.id}>{d.label}</option>
-              ))}
-            </select>
-            <NumberInput className={`${input} w-16`} value={dist} min={0} step={10} onChange={setDist} ariaLabel="Distancia (px)" />
-          </div>
+          <input type="color" className="h-6 w-8 shrink-0 cursor-pointer rounded border border-bezel bg-transparent" value={emphasis}
+            onChange={(e) => setEmphasis(e.target.value)} aria-label="Color de Indicate" title="Color de Indicate" />
+          <NumberInput className={`${input} w-14`} value={factor} min={0.1} max={10} step={0.1} onChange={setFactor} ariaLabel="Escala de Indicate" />
         </div>
+        <button className={button} disabled={!enabled}
+          title={reason ?? (colorParams.revertOnEnd === true ? 'Cambia el color y regresa al original al terminar' : 'Cambia el color de forma permanente (se mantiene tras el clip)')}
+          onClick={() => add('colorChange', colorParams)}>
+          <Palette size={14} /> Cambiar Color
+        </button>
+        <ColorChangeFields compact value={colorParams} onChange={(patch) => setColorParams((current) => patchParams(current, patch))} />
+      </div>
 
-        <div className="space-y-1.5 rounded border border-bezel p-2">
-          <button
-            className={`${btn} w-full justify-start`}
-            disabled={!enabled}
-            title={reason}
-            onClick={() => add('rotate', rotMode === 'angle' ? { mode: 'angle', angle } : { mode: 'spin', speed })}
-          >
-            <RotateCw size={14} /> Rotar
+      <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Salida">
+        <div className={GROUP_HEADING}>Salida / Desaparecer</div>
+        <button className={button} disabled={!enabled} title={reason ?? 'FadeOut: la opacidad baja de 1 a 0 y el objeto queda oculto hasta una nueva entrada'}
+          onClick={() => add('disappear', { mode: 'fade' })}>
+          <EyeOff size={14} /> Desvanecer (FadeOut)
+        </button>
+        <button className={button} disabled={!enabled} title={reason ?? 'ShrinkToCenter: se contrae hacia su centro mientras se desvanece'}
+          onClick={() => add('disappear', { mode: 'shrink' })}>
+          <Minimize2 size={14} /> Contraer (ShrinkToCenter)
+        </button>
+      </div>
+
+      <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Otros efectos">
+        <div className={GROUP_HEADING}>Otros efectos</div>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button className={`${btn} justify-start`} disabled={!enabled} title={reason} onClick={() => add('radar')}>
+            <Radio size={14} /> Radar
           </button>
-          <div className="flex gap-1.5">
-            <select className={input} value={rotMode} onChange={(e) => setRotMode(e.target.value as 'angle' | 'spin')} aria-label="Modo de giro">
-              <option value="angle">Ángulo exacto (°)</option>
-              <option value="spin">Giro sostenido (°/s)</option>
-            </select>
-            <NumberInput
-              className={`${input} w-16`}
-              value={rotMode === 'angle' ? angle : speed}
-              step={rotMode === 'angle' ? 15 : 10}
-              onChange={rotMode === 'angle' ? setAngle : setSpeed}
-              ariaLabel={rotMode === 'angle' ? 'Ángulo' : 'Velocidad'}
-            />
-          </div>
+          <button className={`${btn} justify-start`} disabled={!enabled} title={reason} onClick={() => add('glow')}>
+            <Sparkles size={14} /> Brillar
+          </button>
+        </div>
+        <button className={button} disabled={!enabled} title={reason}
+          onClick={() => add('rotate', rotMode === 'angle' ? { mode: 'angle', angle } : { mode: 'spin', speed })}>
+          <RotateCw size={14} /> Rotar
+        </button>
+        <div className="flex gap-1.5">
+          <select className={input} value={rotMode} onChange={(e) => setRotMode(e.target.value as 'angle' | 'spin')} aria-label="Modo de giro">
+            <option value="angle">Ángulo exacto (°)</option>
+            <option value="spin">Giro sostenido (°/s)</option>
+          </select>
+          <NumberInput
+            className={`${input} w-16`}
+            value={rotMode === 'angle' ? angle : speed}
+            step={rotMode === 'angle' ? 15 : 10}
+            onChange={rotMode === 'angle' ? setAngle : setSpeed}
+            ariaLabel={rotMode === 'angle' ? 'Ángulo' : 'Velocidad'}
+          />
         </div>
       </div>
     </Section>
@@ -1080,7 +1125,7 @@ function GlyphPanel() {
   };
 
   return (
-    <Section title="Términos de la ecuación">
+    <Section title="Glifos y Términos (MathTex)">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[11px] text-slate-500">{glyphs.length} glifos · doble clic en el lienzo</span>
         <button className={editing ? btnPrimary : btn} aria-pressed={editing}
@@ -1253,9 +1298,10 @@ function EquationAnimations() {
     : { ...scopeParams(), replace, dx, dy, scale: moveScale, rotation: turn, opacity: fade / 100, ...(tint ? { color } : {}) });
 
   return (
-    <Section title="Ecuaciones (Manim)">
+    <Section title="Animaciones de Glifos y Fórmulas">
       <p className="text-[11px] leading-snug text-slate-500">
-        Crean un clip en el cabezal ({start.toFixed(2)} s). El énfasis afecta solo al alcance elegido.
+        Solo para ecuaciones (MathTex): actúan sobre el alcance elegido (toda la ecuación, la selección de glifos o un término).
+        Crean un clip en el cabezal ({start.toFixed(2)} s).
       </p>
       <Field label="Duración (s)">
         <NumberInput className={`${input} w-20`} value={duration} min={0.1} step={0.1} onChange={setDuration} />
@@ -1275,11 +1321,11 @@ function EquationAnimations() {
         </button>
         <button className={`${btn} w-full justify-start`} onClick={() => add('appear', { ...scopeParams(), direction: 'up', distance: 40 })}
           title="FadeIn del alcance elegido (por ejemplo «+» o paréntesis de la ecuación destino)">
-          <Sparkles size={14} /> FadeIn
+          <Sparkles size={14} /> FadeIn por glifo
         </button>
         <button className={`${btn} w-full justify-start`} disabled={!chosen && !sel.length} onClick={pop}
           title={chosen || sel.length ? 'GrowFromCenter: el glifo seleccionado brota desde su centro (0 → 1.2 → 1)' : 'Selecciona glifos con los chips de «Términos de la ecuación»'}>
-          <Maximize size={14} /> Brotar (Pop)
+          <Maximize size={14} /> Brotar (Pop) por glifo
         </button>
         <Field label="lag_ratio">
           <NumberInput className={`${input} w-16`} value={lag} min={0} max={5} step={0.05} onChange={setLag} ariaLabel="lag_ratio" />
@@ -1288,7 +1334,7 @@ function EquationAnimations() {
 
       <div className="space-y-1.5 rounded border border-bezel p-2">
         <button className={`${btn} w-full justify-start`} onClick={() => add('indicate', { ...scopeParams(), scale: factor, color })}>
-          <Sparkles size={14} /> Indicate
+          <Sparkles size={14} /> Indicate por glifo
         </button>
         <div className="flex items-center gap-1.5">
           <button className={`${btn} flex-1 justify-start`}
@@ -1297,7 +1343,7 @@ function EquationAnimations() {
               ...scopeParams(), fillEnabled: true, targetFillColor: glyphColor, ...(glyphStroke ? { strokeEnabled: true, targetStrokeColor: glyphStrokeColor, targetStrokeWidth: glyphStrokeWidth } : { strokeEnabled: false }),
               ...(glyphRevert ? { revertOnEnd: true } : {}),
             })}>
-            <Palette size={14} /> Cambiar Color
+            <Palette size={14} /> Color por glifo
           </button>
           <input type="color" className="h-6 w-8 shrink-0 cursor-pointer rounded border border-bezel bg-transparent"
             aria-label="Nuevo color de los glifos" title="Nuevo color de los glifos" value={glyphColor} onChange={(e) => setGlyphColor(e.target.value)} />
@@ -1322,6 +1368,16 @@ function EquationAnimations() {
         <button className={`${btn} w-full justify-start`} onClick={() => add('focus', { ...scopeParams(), color: '#888888', opacity: 0.2 })}>
           <Maximize size={14} /> FocusOn
         </button>
+        <div className="flex gap-1.5" role="group" aria-label="Salida de glifos">
+          <button className={`${btn} flex-1 justify-start`} onClick={() => add('disappear', { ...scopeParams(), mode: 'fade' })}
+            title="FadeOut del alcance elegido: los glifos se desvanecen y quedan ocultos">
+            <EyeOff size={14} /> FadeOut
+          </button>
+          <button className={`${btn} flex-1 justify-start`} onClick={() => add('disappear', { ...scopeParams(), mode: 'shrink' })}
+            title="ShrinkToCenter del alcance elegido: los glifos se contraen hacia su centro">
+            <Minimize2 size={14} /> Contraer
+          </button>
+        </div>
         <Field label="Escala">
           <NumberInput className={`${input} w-16`} value={factor} min={0.1} max={10} step={0.1} onChange={setFactor} ariaLabel="Escala del énfasis" />
         </Field>
@@ -1695,8 +1751,9 @@ export function RightPanel() {
       <GroupTransformPanel />
       {!hasSelection && <SceneBackgroundPanel />}
       <PlaneInspector />
-      <GlyphPanel />
       <Animations />
+      {/* Bloque aparte, solo con una ecuación (MathTex) seleccionada: glifos, términos y animaciones glifo a glifo. */}
+      <GlyphPanel />
       <EquationAnimations />
     </aside>
   );

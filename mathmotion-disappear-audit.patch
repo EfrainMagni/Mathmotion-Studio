@@ -1,0 +1,1308 @@
+From 17e8c029285894d8c285e3fefe796065bac50263 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 26 Nov 2026 21:28:37 -0500
+Subject: [PATCH] =?UTF-8?q?feat:=20animaci=C3=B3n=20de=20salida=20Desapare?=
+ =?UTF-8?q?cer=20(FadeOut=20/=20ShrinkToCenter),=20inspector=20reorganizad?=
+ =?UTF-8?q?o=20y=20auditor=C3=ADa=20de=20estabilizaci=C3=B3n?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Parte A — Animaciones
+- Nuevo clip `disappear` con modos `fade` (Desvanecer · FadeOut) y `shrink` (Contraer · ShrinkToCenter): nada antes
+  del inicio, curva `smooth` durante el clip y oculto (sin interceptar clics) desde el final. Funciona en objetos
+  completos, nodos SVG, glifos/términos de ecuaciones y gráficas/puntos de planos cartesianos.
+- Re-entrada: un clip de entrada (Write, FadeIn, Pop) posterior a una salida vuelve a mostrar el objeto y ya no lo
+  oculta antes de su inicio.
+- Brotar (Pop) para cualquier objeto o ecuación completa (antes solo glifos y puntos de plano).
+- Inspector: «Animaciones del Objeto» (Entrada / Énfasis y Color / Salida / Otros efectos) para todo objeto, con
+  Indicate y Cambiar Color generales; «Glifos y Términos» y «Animaciones de Glifos y Fórmulas» aparte, solo para MathTex.
+- Línea de tiempo: etiquetas «Desvanecer (FadeOut)» / «Contraer (Shrink)», selector de modo y bloque diferenciado.
+
+Parte B — Auditoría
+- projectFiles (zod): `disappear` y validación de su modo; ida y vuelta verificada sin pérdidas.
+- Manim: plantillas de fondo (retícula/isométrica), trazados Bézier y arcos como VMobject con sus puntas,
+  degradados, fuentes de texto, colorChange con grosor de trazo, savedGroups como VGroup, FadeOut/ShrinkToCenter
+  con re-entrada, GrowFromCenter para Pop y énfasis de nodos SVG sobre el objeto completo.
+- Grabación MP4: la instantánea conserva `paint-order` (contorno exterior de glifos) y `letter-spacing`.
+- Duplicar un objeto conserva sus transformaciones glifo → glifo.
+- Atajos: Espacio no alterna en cada repetición ni se anula con el foco en un botón; las herramientas de dibujo
+  responden con el panel izquierdo oculto; «\» con AltGr.
+- Limpieza de variables sin usar; pruebas DOM nuevas (FadeOut, ShrinkToCenter, glifos, re-entrada, Pop, Indicate en
+  trazos y textos, sub-elementos del plano y Manim).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012muCWzE4fwMwKVvjwcU6fA
+---
+ README.md                     |   5 +-
+ src/components/LeftPanel.tsx  |  12 ++-
+ src/components/RightPanel.tsx | 189 ++++++++++++++++++++++------------
+ src/components/Timeline.tsx   |  29 ++++--
+ src/engine/manim.ts           | 153 ++++++++++++++++++++++-----
+ src/engine/projectFiles.ts    |   5 +-
+ src/engine/runtime.ts         |  66 ++++++++++--
+ src/engine/vector.ts          |  23 +++--
+ src/store.ts                  |  10 +-
+ src/types.ts                  |  25 ++++-
+ tests/harness.ts              | 107 +++++++++++++++++++
+ tests/project-test.mjs        |   2 +-
+ tests/vector-test.mjs         |   8 +-
+ 13 files changed, 503 insertions(+), 131 deletions(-)
+
+diff --git a/README.md b/README.md
+index e6da2bb..1046699 100644
+--- a/README.md
++++ b/README.md
+@@ -18,7 +18,8 @@ Requiere Node 18+ y un navegador basado en Chromium (la grabación codifica MP4/
+ 
+ 1. **Importar SVG** (panel izquierdo; «Ejemplo» carga un SVG de prueba) o escribir una fórmula LaTeX.
+ 2. Clic en el lienzo = selecciona el elemento hijo; **Mayús+clic / Mayús+arrastrar** = objeto completo.
+-3. En el panel derecho, pulsa una animación (Escribir/Dibujar, Radar, Brillar, Aparecer/Deslizar, Rotar): crea un clip en el cabezal.
++3. En el panel derecho, **Animaciones del Objeto** (para cualquier figura, trazado, texto, plano o ecuación completa) agrupa los clips en **Entrada** (Create / Write, FadeIn, Brotar (Pop)), **Énfasis y Color** (Indicate, Cambiar Color con *Regresar al terminar*), **Salida / Desaparecer** (Desvanecer `FadeOut`, Contraer `ShrinkToCenter`) y **Otros efectos** (Radar, Brillar, Rotar). Cada botón crea un clip en el cabezal. Con una ecuación seleccionada aparece además el bloque **Animaciones de Glifos y Fórmulas** (glifos, términos, TransformMatchingTex, TransformFromCopy glifo a glifo, color, Pop y salida por glifo).
++   - Una salida deja el objeto oculto (sin interceptar clics) hasta que un clip de entrada posterior lo vuelve a mostrar.
+ 4. En la línea de tiempo mueve, edita numéricamente o elimina clips; arrastra el cabezal; ←/→ avanzan un fotograma (30 fps) cuando no hay un objeto seleccionado. Espacio reproduce.
+ 
+ ## Polígonos y edición de vértices
+@@ -31,7 +32,7 @@ Pulsa **A** o usa **Selección Directa (Vértices)** en la barra del lienzo. Sel
+ 
+ Elige una herramienta en **Dibujo vectorial** y arrastra sobre el lienzo. Mantén Mayús para dibujar círculos o cuadrados. Para colocar texto, escribe en la barra lateral y haz clic o define su caja arrastrando. El inspector permite cambiar estilos, editar la punta de las flechas y alinear u ordenar los objetos.
+ 
+-Usa Ctrl+Z para deshacer, Ctrl+Y o Ctrl+Mayús+Z para rehacer, Ctrl+D para duplicar y Supr para eliminar. Las flechas mueven la selección 1 píxel lógico o 10 con Mayús. Sin un objeto seleccionado, izquierda y derecha recorren fotogramas. En macOS también funciona ⌘ para los atajos con Ctrl.
++Usa V (Selección), A (Selección Directa), P (Pluma), \\ (Línea, también con AltGr), G (plano cartesiano), Ctrl+Z para deshacer, Ctrl+Y o Ctrl+Mayús+Z para rehacer, Ctrl+D para duplicar y Supr para eliminar. Las herramientas de dibujo responden aunque el panel izquierdo esté oculto. Espacio reproduce o pausa (mantenerlo no la alterna en cada repetición). Las flechas mueven la selección 1 píxel lógico o 10 con Mayús. Sin un objeto seleccionado, izquierda y derecha recorren fotogramas. En macOS también funciona ⌘ para los atajos con Ctrl.
+ 
+ **Exportar código Manim (.py)** muestra el script, permite copiarlo y descarga `escena.py`. Ejecútalo con Manim Community. Las fórmulas requieren una instalación de LaTeX.
+ 
+diff --git a/src/components/LeftPanel.tsx b/src/components/LeftPanel.tsx
+index a9f9ea8..54006a6 100644
+--- a/src/components/LeftPanel.tsx
++++ b/src/components/LeftPanel.tsx
+@@ -598,20 +598,23 @@ export function LeftPanel({ visible }: { visible: boolean }) {
+   }, [active]);
+ 
+   useEffect(() => {
+-    if (!visible) return;
+     function onKey(event: KeyboardEvent) {
+-      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey ||
++      // «\» se escribe con AltGr en teclados latinoamericanos y españoles (Ctrl+Alt en Windows): se acepta igual.
++      const altGraph = event.getModifierState?.('AltGraph') && event.key === '\\';
++      if (event.defaultPrevented || event.isComposing || ((event.ctrlKey || event.metaKey) && !altGraph) ||
+         document.querySelector('dialog[open]')) return;
+       const editing = event.target instanceof HTMLElement &&
+         (event.target.isContentEditable || event.target.closest('input, textarea, select'));
+       const inRail = event.target instanceof Node && rail.current?.contains(event.target);
+-      if (event.key === 'Escape' && open && (inRail || (!editing && !store.getState().ui.termEdit))) {
++      if (event.key === 'Escape' && open && visible && (inRail || (!editing && !store.getState().ui.termEdit))) {
+         event.preventDefault();
+         close(open);
+         return;
+       }
+       if (editing || event.repeat) return;
+-      if (event.altKey) {
++      if (event.altKey && !altGraph) {
++        // Los módulos del panel solo se abren con el panel visible.
++        if (!visible) return;
+         if (event.code === 'Digit1') {
+           event.preventDefault();
+           setDrawing((current) => !current);
+@@ -623,6 +626,7 @@ export function LeftPanel({ visible }: { visible: boolean }) {
+         }
+         return;
+       }
++      // Las herramientas de dibujo (R, E, Y, \, P, T) funcionan aunque el panel izquierdo esté oculto, como V, A y G.
+       if (disabled) return;
+       const tool = DRAW_TOOLS.find(({ shortcut }) => shortcut === event.key.toUpperCase());
+       if (!tool || tool.id === 'select' || tool.id === 'direct') return;
+diff --git a/src/components/RightPanel.tsx b/src/components/RightPanel.tsx
+index 5bf1e88..002d195 100644
+--- a/src/components/RightPanel.tsx
++++ b/src/components/RightPanel.tsx
+@@ -1,5 +1,5 @@
+ import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
+-import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2, Shapes, X, Bookmark, Pencil } from 'lucide-react';
++import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Minimize2, EyeOff, Trash2, Shapes, X, Bookmark, Pencil } from 'lucide-react';
+ import { actions, defaultClipParams, selectedObjectIds, store, useStore, type AlignMode } from '../store';
+ import { ColorChangeFields, patchParams } from './Timeline';
+ import {
+@@ -736,6 +736,18 @@ function removePlaneClips(object: Obj2D, subElementId: string) {
+ 
+ const PLANE_HEADING = 'pt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500';
+ 
++/** Salida de una gráfica o un punto: Desvanecer (FadeOut) o Contraer (ShrinkToCenter) en el cabezal. */
++function PlaneExitButtons({ object, subElementId }: { object: Obj2D; subElementId: string }) {
++  return (
++    <div className="flex gap-1" role="group" aria-label={`Salida de ${subElementId}`}>
++      <button className={`${btn} flex-1`} title="Desvanecer (FadeOut) este elemento en el cabezal"
++        onClick={() => addPlaneClip(object, subElementId, 'disappear', 0.8, { mode: 'fade' })}>FadeOut</button>
++      <button className={`${btn} flex-1`} title="Contraer (ShrinkToCenter) este elemento en el cabezal"
++        onClick={() => addPlaneClip(object, subElementId, 'disappear', 0.8, { mode: 'shrink' })}>Contraer</button>
++    </div>
++  );
++}
++
+ /** Inspector del plano cartesiano (`NumberPlane`): intervalos, ejes y flechas, cuadrícula, números y marcas. */
+ function PlaneInspector() {
+   const object = useStore((s) => {
+@@ -881,6 +893,7 @@ function PlaneInspector() {
+               <button className={`${btn} flex-1`} title="Cambiar Color permanente de esta gráfica (edítalo en la línea de tiempo)"
+                 onClick={() => addPlaneClip(object, `plot:${plot.id}`, 'colorChange', 1)}>Color</button>
+             </div>
++            <PlaneExitButtons object={object} subElementId={`plot:${plot.id}`} />
+           </div>
+         );
+       })}
+@@ -927,6 +940,7 @@ function PlaneInspector() {
+               <button className={`${btn} flex-1`} title="Cambiar Color permanente de este punto (edítalo en la línea de tiempo)"
+                 onClick={() => addPlaneClip(object, `point:${point.id}`, 'colorChange', 1)}>Color</button>
+             </div>
++            <PlaneExitButtons object={object} subElementId={`point:${point.id}`} />
+           </div>
+         );
+       })}
+@@ -945,35 +959,42 @@ const DIRS: { id: string; label: string }[] = [
+   { id: 'down', label: 'Desde abajo' },
+ ];
+ 
++const GROUP_HEADING = 'text-[10px] font-semibold uppercase tracking-wide text-slate-500';
++
++/**
++ * Animaciones del Objeto: disponibles para TODO objeto del lienzo (figuras, trazados, textos, planos cartesianos y
++ * ecuaciones completas). Las herramientas glifo a glifo viven aparte, en «Animaciones de Glifos y Fórmulas».
++ */
+ function Animations() {
+   const selection = useStore((s) => s.ui.selection);
+-  const objects = useStore((s) => s.project.objects);
+   const time = useStore((s) => s.ui.time);
+-  const nodeExists = useStore((s) => (s.ui.selection ? true : false));
++  useStore((s) => s.ui.treeVersion);
+   const [duration, setDuration] = useState(1.5);
+   const [sound, setSound] = useState<SoundId | ''>('');
+-  const [dir, setDir] = useState('left');
++  const [dir, setDir] = useState('none');
+   const [dist, setDist] = useState(150);
+   const [rotMode, setRotMode] = useState<'angle' | 'spin'>('angle');
+   const [angle, setAngle] = useState(360);
+   const [speed, setSpeed] = useState(90);
++  const [factor, setFactor] = useState(1.3);
++  const [emphasis, setEmphasis] = useState('#ffff00');
++  const [colorParams, setColorParams] = useState<ClipParams>(() => defaultClipParams('colorChange'));
+ 
+   const info = selection ? engine.runtime?.getNodeInfo(selection) ?? null : null;
+-  const enabled = !!selection && nodeExists && !!info;
++  const enabled = !!selection && !!info;
+   const start = Math.round(time * 100) / 100;
++  const reason = enabled ? undefined : 'Selecciona un objeto primero';
+ 
+-  const add = (type: ClipType, parameters: Record<string, number | string> = {}) => {
++  const add = (type: ClipType, parameters: ClipParams = {}) => {
+     if (!selection) return;
+     actions.addClip({ targetId: selection, type, start, duration, parameters, sound: sound || null });
+   };
+-
+-  const reason = enabled ? undefined : 'Selecciona un objeto primero';
+-  const [colorParams, setColorParams] = useState<ClipParams>(() => defaultClipParams('colorChange'));
++  const button = `${btn} w-full justify-start`;
+ 
+   return (
+-    <Section title="Animaciones">
++    <Section title="Animaciones del Objeto">
+       <p className="text-[11px] leading-snug text-slate-500">
+-        Cada botón crea un clip para la selección en el cabezal actual ({start.toFixed(2)} s).
++        Para cualquier objeto (figura, trazado, texto, plano o ecuación completa). Cada botón crea un clip en el cabezal ({start.toFixed(2)} s).
+       </p>
+       <Field label="Duración (s)">
+         <NumberInput className={`${input} w-20`} value={duration} min={0.1} step={0.1} onChange={setDuration} />
+@@ -987,62 +1008,86 @@ function Animations() {
+         </select>
+       </Field>
+ 
+-      <div className="space-y-1.5">
+-        <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('draw')}>
+-          <PenTool size={14} /> Escribir / Dibujar
++      <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Entrada">
++        <div className={GROUP_HEADING}>Entrada</div>
++        <button className={button} disabled={!enabled} title={reason ?? 'Create / Write: dibuja el contorno (o escribe el texto) y rellena al final'} onClick={() => add('draw')}>
++          <PenTool size={14} /> Create / Write
+         </button>
+-        <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('radar')}>
+-          <Radio size={14} /> Radar
++        <button className={button} disabled={!enabled} title={reason ?? 'FadeIn: aparece con fundido; elige una dirección para que además se deslice'}
++          onClick={() => add('appear', { direction: dir, distance: dist })}>
++          <Sparkles size={14} /> {dir === 'none' ? 'FadeIn' : 'FadeIn + deslizar'}
+         </button>
+-        <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('glow')}>
+-          <Sparkles size={14} /> Brillar
++        <div className="flex gap-1.5">
++          <select className={input} value={dir} onChange={(e) => setDir(e.target.value)} aria-label="Dirección de entrada">
++            {DIRS.map((d) => (
++              <option key={d.id} value={d.id}>{d.label}</option>
++            ))}
++          </select>
++          <NumberInput className={`${input} w-16`} value={dist} min={0} step={10} onChange={setDist} ariaLabel="Distancia (px)" disabled={dir === 'none'} />
++        </div>
++        <button className={button} disabled={!enabled} title={reason ?? 'Brotar (GrowFromCenter): crece desde su centro (0 → 1.2 → 1) con fundido'}
++          onClick={() => add('appear', { mode: 'pop' })}>
++          <Maximize size={14} /> Brotar (Pop)
+         </button>
++      </div>
+ 
+-        <div className="space-y-1.5 rounded border border-bezel p-2">
+-          <button className={`${btn} w-full justify-start`} disabled={!enabled}
+-            title={reason ?? (colorParams.revertOnEnd === true ? 'Cambia el color y regresa al original al terminar' : 'Cambia el color de forma permanente (se mantiene tras el clip)')}
+-            onClick={() => selection && actions.addClip({ targetId: selection, type: 'colorChange', start, duration, parameters: colorParams, sound: sound || null })}>
+-            <Palette size={14} /> Cambiar Color
++      <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Énfasis y color">
++        <div className={GROUP_HEADING}>Énfasis y Color</div>
++        <div className="flex items-center gap-1.5">
++          <button className={`${btn} flex-1 justify-start`} disabled={!enabled} title={reason ?? 'Indicate: pulso de escala y color que vuelve al estado original'}
++            onClick={() => add('indicate', { scale: factor, color: emphasis })}>
++            <Sparkles size={14} /> Indicate
+           </button>
+-          <ColorChangeFields compact value={colorParams} onChange={(patch) => setColorParams((current) => patchParams(current, patch))} />
++          <input type="color" className="h-6 w-8 shrink-0 cursor-pointer rounded border border-bezel bg-transparent" value={emphasis}
++            onChange={(e) => setEmphasis(e.target.value)} aria-label="Color de Indicate" title="Color de Indicate" />
++          <NumberInput className={`${input} w-14`} value={factor} min={0.1} max={10} step={0.1} onChange={setFactor} ariaLabel="Escala de Indicate" />
+         </div>
++        <button className={button} disabled={!enabled}
++          title={reason ?? (colorParams.revertOnEnd === true ? 'Cambia el color y regresa al original al terminar' : 'Cambia el color de forma permanente (se mantiene tras el clip)')}
++          onClick={() => add('colorChange', colorParams)}>
++          <Palette size={14} /> Cambiar Color
++        </button>
++        <ColorChangeFields compact value={colorParams} onChange={(patch) => setColorParams((current) => patchParams(current, patch))} />
++      </div>
+ 
+-        <div className="space-y-1.5 rounded border border-bezel p-2">
+-          <button className={`${btn} w-full justify-start`} disabled={!enabled} title={reason} onClick={() => add('appear', { direction: dir, distance: dist })}>
+-            <MoveRight size={14} /> Aparecer / Deslizar
+-          </button>
+-          <div className="flex gap-1.5">
+-            <select className={input} value={dir} onChange={(e) => setDir(e.target.value)} aria-label="Dirección">
+-              {DIRS.map((d) => (
+-                <option key={d.id} value={d.id}>{d.label}</option>
+-              ))}
+-            </select>
+-            <NumberInput className={`${input} w-16`} value={dist} min={0} step={10} onChange={setDist} ariaLabel="Distancia (px)" />
+-          </div>
+-        </div>
++      <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Salida">
++        <div className={GROUP_HEADING}>Salida / Desaparecer</div>
++        <button className={button} disabled={!enabled} title={reason ?? 'FadeOut: la opacidad baja de 1 a 0 y el objeto queda oculto hasta una nueva entrada'}
++          onClick={() => add('disappear', { mode: 'fade' })}>
++          <EyeOff size={14} /> Desvanecer (FadeOut)
++        </button>
++        <button className={button} disabled={!enabled} title={reason ?? 'ShrinkToCenter: se contrae hacia su centro mientras se desvanece'}
++          onClick={() => add('disappear', { mode: 'shrink' })}>
++          <Minimize2 size={14} /> Contraer (ShrinkToCenter)
++        </button>
++      </div>
+ 
+-        <div className="space-y-1.5 rounded border border-bezel p-2">
+-          <button
+-            className={`${btn} w-full justify-start`}
+-            disabled={!enabled}
+-            title={reason}
+-            onClick={() => add('rotate', rotMode === 'angle' ? { mode: 'angle', angle } : { mode: 'spin', speed })}
+-          >
+-            <RotateCw size={14} /> Rotar
++      <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Otros efectos">
++        <div className={GROUP_HEADING}>Otros efectos</div>
++        <div className="grid grid-cols-2 gap-1.5">
++          <button className={`${btn} justify-start`} disabled={!enabled} title={reason} onClick={() => add('radar')}>
++            <Radio size={14} /> Radar
+           </button>
+-          <div className="flex gap-1.5">
+-            <select className={input} value={rotMode} onChange={(e) => setRotMode(e.target.value as 'angle' | 'spin')} aria-label="Modo de giro">
+-              <option value="angle">Ángulo exacto (°)</option>
+-              <option value="spin">Giro sostenido (°/s)</option>
+-            </select>
+-            <NumberInput
+-              className={`${input} w-16`}
+-              value={rotMode === 'angle' ? angle : speed}
+-              step={rotMode === 'angle' ? 15 : 10}
+-              onChange={rotMode === 'angle' ? setAngle : setSpeed}
+-              ariaLabel={rotMode === 'angle' ? 'Ángulo' : 'Velocidad'}
+-            />
+-          </div>
++          <button className={`${btn} justify-start`} disabled={!enabled} title={reason} onClick={() => add('glow')}>
++            <Sparkles size={14} /> Brillar
++          </button>
++        </div>
++        <button className={button} disabled={!enabled} title={reason}
++          onClick={() => add('rotate', rotMode === 'angle' ? { mode: 'angle', angle } : { mode: 'spin', speed })}>
++          <RotateCw size={14} /> Rotar
++        </button>
++        <div className="flex gap-1.5">
++          <select className={input} value={rotMode} onChange={(e) => setRotMode(e.target.value as 'angle' | 'spin')} aria-label="Modo de giro">
++            <option value="angle">Ángulo exacto (°)</option>
++            <option value="spin">Giro sostenido (°/s)</option>
++          </select>
++          <NumberInput
++            className={`${input} w-16`}
++            value={rotMode === 'angle' ? angle : speed}
++            step={rotMode === 'angle' ? 15 : 10}
++            onChange={rotMode === 'angle' ? setAngle : setSpeed}
++            ariaLabel={rotMode === 'angle' ? 'Ángulo' : 'Velocidad'}
++          />
+         </div>
+       </div>
+     </Section>
+@@ -1080,7 +1125,7 @@ function GlyphPanel() {
+   };
+ 
+   return (
+-    <Section title="Términos de la ecuación">
++    <Section title="Glifos y Términos (MathTex)">
+       <div className="flex items-center justify-between gap-2">
+         <span className="text-[11px] text-slate-500">{glyphs.length} glifos · doble clic en el lienzo</span>
+         <button className={editing ? btnPrimary : btn} aria-pressed={editing}
+@@ -1253,9 +1298,10 @@ function EquationAnimations() {
+     : { ...scopeParams(), replace, dx, dy, scale: moveScale, rotation: turn, opacity: fade / 100, ...(tint ? { color } : {}) });
+ 
+   return (
+-    <Section title="Ecuaciones (Manim)">
++    <Section title="Animaciones de Glifos y Fórmulas">
+       <p className="text-[11px] leading-snug text-slate-500">
+-        Crean un clip en el cabezal ({start.toFixed(2)} s). El énfasis afecta solo al alcance elegido.
++        Solo para ecuaciones (MathTex): actúan sobre el alcance elegido (toda la ecuación, la selección de glifos o un término).
++        Crean un clip en el cabezal ({start.toFixed(2)} s).
+       </p>
+       <Field label="Duración (s)">
+         <NumberInput className={`${input} w-20`} value={duration} min={0.1} step={0.1} onChange={setDuration} />
+@@ -1275,11 +1321,11 @@ function EquationAnimations() {
+         </button>
+         <button className={`${btn} w-full justify-start`} onClick={() => add('appear', { ...scopeParams(), direction: 'up', distance: 40 })}
+           title="FadeIn del alcance elegido (por ejemplo «+» o paréntesis de la ecuación destino)">
+-          <Sparkles size={14} /> FadeIn
++          <Sparkles size={14} /> FadeIn por glifo
+         </button>
+         <button className={`${btn} w-full justify-start`} disabled={!chosen && !sel.length} onClick={pop}
+           title={chosen || sel.length ? 'GrowFromCenter: el glifo seleccionado brota desde su centro (0 → 1.2 → 1)' : 'Selecciona glifos con los chips de «Términos de la ecuación»'}>
+-          <Maximize size={14} /> Brotar (Pop)
++          <Maximize size={14} /> Brotar (Pop) por glifo
+         </button>
+         <Field label="lag_ratio">
+           <NumberInput className={`${input} w-16`} value={lag} min={0} max={5} step={0.05} onChange={setLag} ariaLabel="lag_ratio" />
+@@ -1288,7 +1334,7 @@ function EquationAnimations() {
+ 
+       <div className="space-y-1.5 rounded border border-bezel p-2">
+         <button className={`${btn} w-full justify-start`} onClick={() => add('indicate', { ...scopeParams(), scale: factor, color })}>
+-          <Sparkles size={14} /> Indicate
++          <Sparkles size={14} /> Indicate por glifo
+         </button>
+         <div className="flex items-center gap-1.5">
+           <button className={`${btn} flex-1 justify-start`}
+@@ -1297,7 +1343,7 @@ function EquationAnimations() {
+               ...scopeParams(), fillEnabled: true, targetFillColor: glyphColor, ...(glyphStroke ? { strokeEnabled: true, targetStrokeColor: glyphStrokeColor, targetStrokeWidth: glyphStrokeWidth } : { strokeEnabled: false }),
+               ...(glyphRevert ? { revertOnEnd: true } : {}),
+             })}>
+-            <Palette size={14} /> Cambiar Color
++            <Palette size={14} /> Color por glifo
+           </button>
+           <input type="color" className="h-6 w-8 shrink-0 cursor-pointer rounded border border-bezel bg-transparent"
+             aria-label="Nuevo color de los glifos" title="Nuevo color de los glifos" value={glyphColor} onChange={(e) => setGlyphColor(e.target.value)} />
+@@ -1322,6 +1368,16 @@ function EquationAnimations() {
+         <button className={`${btn} w-full justify-start`} onClick={() => add('focus', { ...scopeParams(), color: '#888888', opacity: 0.2 })}>
+           <Maximize size={14} /> FocusOn
+         </button>
++        <div className="flex gap-1.5" role="group" aria-label="Salida de glifos">
++          <button className={`${btn} flex-1 justify-start`} onClick={() => add('disappear', { ...scopeParams(), mode: 'fade' })}
++            title="FadeOut del alcance elegido: los glifos se desvanecen y quedan ocultos">
++            <EyeOff size={14} /> FadeOut
++          </button>
++          <button className={`${btn} flex-1 justify-start`} onClick={() => add('disappear', { ...scopeParams(), mode: 'shrink' })}
++            title="ShrinkToCenter del alcance elegido: los glifos se contraen hacia su centro">
++            <Minimize2 size={14} /> Contraer
++          </button>
++        </div>
+         <Field label="Escala">
+           <NumberInput className={`${input} w-16`} value={factor} min={0.1} max={10} step={0.1} onChange={setFactor} ariaLabel="Escala del énfasis" />
+         </Field>
+@@ -1695,8 +1751,9 @@ export function RightPanel() {
+       <GroupTransformPanel />
+       {!hasSelection && <SceneBackgroundPanel />}
+       <PlaneInspector />
+-      <GlyphPanel />
+       <Animations />
++      {/* Bloque aparte, solo con una ecuación (MathTex) seleccionada: glifos, términos y animaciones glifo a glifo. */}
++      <GlyphPanel />
+       <EquationAnimations />
+     </aside>
+   );
+diff --git a/src/components/Timeline.tsx b/src/components/Timeline.tsx
+index fe36347..8955c80 100644
+--- a/src/components/Timeline.tsx
++++ b/src/components/Timeline.tsx
+@@ -1,7 +1,7 @@
+ import { useEffect, useMemo, useRef, useState } from 'react';
+ import { Minus, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
+ import { actions, store, useStore } from '../store';
+-import { FPS, SOUND_IDS, SOUND_LABEL, clipLabel, glyphTransformOf, groupTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type Project, type SoundId } from '../types';
++import { DISAPPEAR_MODES, FPS, SOUND_IDS, SOUND_LABEL, clipLabel, disappearModeOf, glyphTransformOf, groupTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type Project, type SoundId } from '../types';
+ import { formatGlyphList } from '../engine/glyphs';
+ import { engine } from '../engine';
+ import { NumberInput, btn, input } from './ui';
+@@ -227,6 +227,13 @@ function ClipEditor() {
+           Mantener ecuación origen
+         </label>
+       )}
++      {clip.type === 'disappear' && (
++        <select className={`${input} w-40`} aria-label="Modo de salida" title="Desvanecer = FadeOut · Contraer = ShrinkToCenter"
++          value={disappearModeOf(clip.parameters)}
++          onChange={(e) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, mode: e.target.value } })}>
++          {DISAPPEAR_MODES.map((mode) => <option key={mode.id} value={mode.id}>{mode.label}</option>)}
++        </select>
++      )}
+       {clip.type === 'colorChange' && (
+         <ColorChangeFields value={clip.parameters}
+           onChange={(patch) => actions.updateClip(clip.id, { parameters: patchParams(clip.parameters, patch) })} />
+@@ -287,18 +294,22 @@ export function Timeline() {
+     return ids;
+   }, [clips]);
+ 
+-  // Espacio reproduce cuando el foco está fuera de campos y diálogos.
++  // Espacio reproduce/pausa cuando el foco está fuera de campos y diálogos (igual en 16:9 y 9:16).
+   useEffect(() => {
+     const onKey = (e: KeyboardEvent) => {
+-      const t = e.target as HTMLElement;
+-      if (t.closest('input,textarea,select,[contenteditable]') || document.querySelector('dialog[open]')) return;
++      if (e.code !== 'Space' || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
++      const t = e.target instanceof HTMLElement ? e.target : null;
++      if (t?.closest('input,textarea,select,[contenteditable]') || document.querySelector('dialog[open]')) return;
+       if (store.getState().ui.recording.phase !== 'idle') return;
+       const pb = engine.playback;
+       if (!pb) return;
+-      if (e.code === 'Space') {
+-        e.preventDefault();
+-        pb.toggle();
+-      }
++      e.preventDefault();
++      // Mantener Espacio (mano de desplazamiento) no debe alternar la reproducción en cada repetición.
++      if (e.repeat) return;
++      // Con el foco en un botón, el navegador también lo «pulsaría» al soltar Espacio (p. ej. Reproducir: doble
++      // alternancia que se anula). Se suelta el foco para que Espacio solo reproduzca o pause.
++      if (t?.closest('button,[role="button"]')) t.blur();
++      pb.toggle();
+     };
+     window.addEventListener('keydown', onKey);
+     return () => window.removeEventListener('keydown', onKey);
+@@ -445,7 +456,7 @@ function Lane({
+           <div
+             key={c.id}
+             data-clip={c.id}
+-            className={`absolute top-1 flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-[10px] leading-tight ${selectedClip === c.id ? 'border-accent bg-accent-soft' : c.type === 'groupTransform' ? 'border-dashed border-accent/60 bg-ink-600' : 'border-bezel bg-ink-600'}`}
++            className={`absolute top-1 flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-[10px] leading-tight ${selectedClip === c.id ? 'border-accent bg-accent-soft' : c.type === 'groupTransform' ? 'border-dashed border-accent/60 bg-ink-600' : c.type === 'disappear' ? 'border-rose-400/60 bg-ink-600' : 'border-bezel bg-ink-600'}`}
+             style={{ left: c.start * pps, width: Math.max(26, c.duration * pps), height: LANE_H - 8 }}
+             onPointerDown={(e) => onDown(e, c.id, c.start)}
+             onPointerMove={onMove}
+diff --git a/src/engine/manim.ts b/src/engine/manim.ts
+index 9bd08b5..f4c05ac 100644
+--- a/src/engine/manim.ts
++++ b/src/engine/manim.ts
+@@ -1,8 +1,11 @@
+-import { BACKGROUND_COLOR, STAGE_SIZES, groupTransformOf, planeSubElementOf, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
++import {
++  SCENE_GRID_LINE_WIDTH, STAGE_SIZES, disappearModeOf, groupTransformOf, isEntranceClip, isPathTool, planeSubElementOf, resolveSceneBackground,
++  sceneBackgroundGeometry, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject,
++} from '../types';
+ import { svgWithVertices } from './vertices';
+ import { expressionToPython, normalizePlane } from './cartesianPlane';
+ import { clipGlyphs, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphRuns } from './glyphs';
+-import { VECTOR_FILL, VECTOR_STROKE, VECTOR_STROKE_WIDTH } from './vector';
++import { VECTOR_FILL, VECTOR_STROKE, VECTOR_STROKE_WIDTH, arcAsPath, isLinearVector, pathBody } from './vector';
+ 
+ const n = (value: number) => Number(value.toFixed(7)).toString();
+ const quoted = (value: string) => JSON.stringify(value);
+@@ -38,7 +41,14 @@ function vectorConstructor(object: Obj2D, unit: number) {
+   if (vector.tool === 'ellipse') {
+     return Math.abs(w - h) < 0.00001 ? `Circle(radius=${n(w / 2)})` : `Ellipse(width=${n(w)}, height=${n(h)})`;
+   }
+-  if (vector.tool === 'text') return `Text(${quoted(vector.text?.trim() ? vector.text : ' ')})`;
++  if (vector.tool === 'text') {
++    // Tipografía del catálogo (11 familias): Manim usa Pango, así que la fuente debe estar instalada en el sistema.
++    const style = vector.textStyle;
++    const font = style ? [`font=${quoted(style.fontFamily)}`, style.fontWeight === 700 ? 'weight=BOLD' : style.fontWeight === 600 ? 'weight=SEMIBOLD' : null,
++      style.italic ? 'slant=ITALIC' : null].filter(Boolean) : [];
++    return `Text(${[quoted(vector.text?.trim() ? vector.text : ' '), ...font].join(', ')})`;
++  }
++  if (isPathTool(vector.tool) || vector.tool === 'arc') return 'VMobject()';
+   const dx = object.bw <= 1 ? 0 : (vector.reverseX ? -w : w) / 2;
+   const dy = object.bh <= 1 ? 0 : (vector.reverseY ? h : -h) / 2;
+   return `Line(${point(-dx, -dy)}, ${point(dx, dy)})`;
+@@ -115,6 +125,20 @@ function glyphCommands(object: Obj2D, info: TexInfo) {
+   return commands;
+ }
+ 
++/** Trazados Bézier (pluma / curva) y arcos: puntos de control cúbicos y polígonos de las puntas (coordenadas Manim). */
++function pathCode(object: Obj2D, unit: number, strokeWidth: number) {
++  const vector = object.vector!;
++  const geometry = vector.tool === 'arc' ? arcAsPath(vector, object.bw, object.bh) : vector;
++  const { segments, start, end } = pathBody(geometry, strokeWidth > 0 ? strokeWidth : 1);
++  const local = (x: number, y: number) => `[${n((x - object.bw / 2) * unit)}, ${n((object.bh / 2 - y) * unit)}, 0.0]`;
++  const points = segments.flatMap((segment) => segment.map(({ x, y }) => local(x, y)));
++  const tip = (polygon: string | null) => polygon
++    ? polygon.trim().split(/\s+/).map((pair) => pair.split(',').map(Number)).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y))
++      .map(([x, y]) => `np.array(${local(x, y)})`)
++    : null;
++  return { points: points.length ? `np.array([${points.join(', ')}])` : null, tips: [tip(start), tip(end)].filter((list): list is string[] => !!list && list.length >= 3) };
++}
++
+ /** Plano cartesiano → `NumberPlane` de Manim (cuadrícula, subcuadrícula, ejes con punta Stealth, coordenadas). */
+ function planeCode(object: Obj2D, style: NodeStyle, width: number, height: number) {
+   const plane = normalizePlane(object.plane);
+@@ -203,7 +227,11 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
+ 
+   const commands = [`${name} = ${constructor}`];
+   const vector = object.vector;
+-  const linear = vector?.tool === 'line' || vector?.tool === 'arrow';
++  /** Líneas, flechas, arcos y trazados abiertos: su pintura principal es el trazo. */
++  const strokeOnly = isLinearVector(vector);
++  const path = vector && (isPathTool(vector.tool) || vector.tool === 'arc')
++    ? pathCode(object, unit, style.strokeWidth ?? VECTOR_STROKE_WIDTH) : null;
++  if (path?.points) commands.push(`${name}.set_points(${path.points})`);
+   if (vector?.tool === 'text' || !vector) {
+     commands.push(`if ${name}.width > 0: ${name}.scale_to_fit_width(${n(object.bw * unit)})`);
+     if (vector?.tool === 'text') commands.push(`if ${name}.height > 0: ${name}.stretch_to_fit_height(${n(object.bh * unit)})`);
+@@ -211,20 +239,30 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
+ 
+   const defaultFormulaColor = object.kind === 'formula'
+     ? object.markup.match(/style="[^"]*\bcolor:(#[\da-f]{6})/i)?.[1] : undefined;
+-  const fill = cssColor(style.fill) ?? (vector && !linear ? VECTOR_FILL : defaultFormulaColor);
+-  const stroke = cssColor(style.stroke) ?? (linear ? VECTOR_STROKE : undefined);
+-  const hiddenFill = style.fill === 'none' || style.fill === 'transparent';
++  const fill = strokeOnly ? undefined : cssColor(style.fill) ?? (vector ? VECTOR_FILL : defaultFormulaColor);
++  const stroke = cssColor(style.stroke) ?? (strokeOnly ? VECTOR_STROKE : undefined);
++  // Arcos y trazados abiertos no tienen relleno (las líneas y flechas de Manim tampoco lo muestran).
++  const hiddenFill = !!path && strokeOnly ? true : style.fill === 'none' || style.fill === 'transparent';
+   const hiddenStroke = style.stroke === 'none' || style.stroke === 'transparent';
+   const opacity = style.opacity ?? 1;
+   if (fill || hiddenFill) {
+     commands.push(`${name}.set_fill(${fill ? `color=${quoted(fill)}, ` : ''}opacity=${hiddenFill ? 0 : 1})`);
+   }
+-  const strokeWidth = style.strokeWidth ?? (linear ? VECTOR_STROKE_WIDTH : vector ? 0 : undefined);
++  const strokeWidth = style.strokeWidth ?? (strokeOnly ? VECTOR_STROKE_WIDTH : vector ? 0 : undefined);
+   if (stroke || hiddenStroke || strokeWidth !== undefined) {
+     const args = [stroke && `color=${quoted(stroke)}`, strokeWidth !== undefined && `width=${n(strokeWidth)}`,
+       `opacity=${hiddenStroke ? 0 : 1}`].filter(Boolean);
+     commands.push(`${name}.set_stroke(${args.join(', ')})`);
+   }
++  // Degradado (lineal o radial): Manim lo aproxima con un degradado lineal en la dirección del ángulo.
++  const gradient = style.fillGradient && style.fillGradient.mode !== 'solid' ? style.fillGradient : undefined;
++  const stops = gradient ? [...gradient.stops].sort((a, b) => a.offset - b.offset).map((stop) => cssColor(stop.color)).filter((c): c is string => !!c) : [];
++  if (gradient && stops.length >= 2) {
++    const colors = `[${stops.map(quoted).join(', ')}]`;
++    commands.push(strokeOnly ? `${name}.set_stroke(color=${colors})` : `${name}.set_fill(color=${colors}, opacity=1)`);
++    const angle = gradient.mode === 'linear' ? (gradient.angle * Math.PI) / 180 : Math.PI / 4;
++    commands.push(`${name}.set_sheen_direction(${point(Math.cos(angle), -Math.sin(angle))})`);
++  }
+   if (vector?.tool === 'arrow' && vector.tip !== 'none') {
+     const tip = vector.tip === 'open' ? 'ArrowTriangleTip' : 'ArrowTriangleFilledTip';
+     const tipLength = n(Math.min(0.16, 0.25 * Math.hypot(object.bw, object.bh) * unit));
+@@ -236,14 +274,21 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
+     const outline = `DashedVMobject(${name}.copy().set_fill(opacity=0), num_dashes=${count}, dashed_ratio=0.18)`;
+     if (vector?.tool === 'arrow' && vector.tip !== 'none') {
+       commands.push(`${name} = VGroup(${outline}, *${name}.get_tips())`);
+-    } else if (!linear) {
++    } else if (!strokeOnly) {
+       commands.push(`${name} = VGroup(${name}.copy().set_stroke(width=0), ${outline})`);
+     } else {
+       commands.push(`${name} = ${outline}`);
+     }
+   }
++  if (path?.tips.length) {
++    // Puntas de los trazados abiertos y arcos: los mismos polígonos del editor, del color del trazo.
++    const tipColor = (strokeOnly && stops.length ? stops[stops.length - 1] : undefined) ?? stroke ?? VECTOR_STROKE;
++    const tips = path.tips.map((pts) => `Polygon(${pts.join(', ')}, stroke_width=0, fill_color=${quoted(tipColor)}, fill_opacity=${hiddenStroke ? 0 : 1})`);
++    commands.push(`${name} = VGroup(${name}, ${tips.join(', ')})`);
++  }
+   if (opacity !== 1) commands.push(`${name}.fade(${n(1 - opacity)})`);
+-  const pivot = vector?.tool === 'polygon' ? ', about_point=ORIGIN' : '';
++  // Polígonos, trazados y arcos: geometría relativa al centro de su caja (se escalan y giran sobre ese punto).
++  const pivot = vector?.tool === 'polygon' || path ? ', about_point=ORIGIN' : '';
+   if (object.scale !== 1) commands.push(`${name}.scale(${n(object.scale)}${pivot})`);
+   if (object.rotation) commands.push(`${name}.rotate(${n(-object.rotation)} * DEGREES, axis=OUT${pivot})`);
+   commands.push(`${name}.${pivot ? 'shift' : 'move_to'}(${stagePoint(object, width, height)})`);
+@@ -252,14 +297,15 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
+ }
+ 
+ /** `Cambiar Color` → `mob.animate(run_time=…).set_fill(...).set_stroke(...)` (cambio permanente). */
+-function colorChangeCode(clip: Clip, variable: string): string | null {
++function colorChangeCode(clip: Clip, variable: string, defaultStrokeWidth?: number): string | null {
+   const params = clip.parameters;
+   const fill = params.fillEnabled === false ? null : cssColor(typeof params.targetFillColor === 'string' ? params.targetFillColor : undefined);
+   const stroke = params.strokeEnabled === false ? null : cssColor(typeof params.targetStrokeColor === 'string' ? params.targetStrokeColor : undefined);
+   const opacity = params.fillEnabled !== false && typeof params.targetFillOpacity === 'number' ? Math.min(1, Math.max(0, params.targetFillOpacity)) : null;
+   const calls: string[] = [];
+   if (fill || opacity !== null) calls.push(`.set_fill(${[fill ? quoted(fill) : null, opacity !== null ? `opacity=${n(opacity)}` : null].filter(Boolean).join(', ')})`);
+-  if (stroke) calls.push(`.set_stroke(color=${quoted(stroke)})`);
++  const width = typeof params.targetStrokeWidth === 'number' ? Math.min(20, Math.max(0, params.targetStrokeWidth)) : defaultStrokeWidth;
++  if (stroke) calls.push(`.set_stroke(color=${quoted(stroke)}${width !== undefined ? `, width=${n(width)}` : ''})`);
+   if (!calls.length) return null;
+   if (params.revertOnEnd === true) {
+     // Ida y vuelta: 25 % hacia el color nuevo, espera del 50 % y regreso al estado previo. `variable.copy()` se
+@@ -285,6 +331,7 @@ function planeSubAnimation(clip: Clip, plane: NonNullable<Obj2D['plane']>, varia
+     if (clip.type === 'appear') return `FadeIn(${variable}, ${duration})`;
+     if (clip.type === 'indicate') return `Indicate(${variable}, scale_factor=${n(typeof clip.parameters.scale === 'number' ? clip.parameters.scale : 1.3)}, color=${quoted(cssColor(String(clip.parameters.color)) ?? '#ffff00')}, ${duration})`;
+     if (clip.type === 'colorChange') return colorChangeCode(clip, variable);
++    if (clip.type === 'disappear') return disappearCode(clip, variable);
+     return null;
+   }
+   const point = geometry.points?.find((entry) => entry.id === id);
+@@ -295,9 +342,15 @@ function planeSubAnimation(clip: Clip, plane: NonNullable<Obj2D['plane']>, varia
+   if (clip.type === 'appear') return `FadeIn(${variable}, ${duration})`;
+   if (clip.type === 'indicate') return `Indicate(${variable}, scale_factor=${n(typeof clip.parameters.scale === 'number' ? clip.parameters.scale : 1.3)}, color=${quoted(cssColor(String(clip.parameters.color)) ?? '#ffff00')}, ${duration})`;
+   if (clip.type === 'colorChange') return colorChangeCode(clip, variable);
++  if (clip.type === 'disappear') return disappearCode(clip, variable);
+   return null;
+ }
+ 
++/** Desaparecer → `FadeOut(obj)` o `ShrinkToCenter(obj)`. */
++function disappearCode(clip: Clip, variable: string) {
++  return `${disappearModeOf(clip.parameters) === 'shrink' ? 'ShrinkToCenter' : 'FadeOut'}(${variable}, run_time=${n(clip.duration)})`;
++}
++
+ function animation(clip: Clip, object: SceneObject, width: number, height: number, scoped?: string) {
+   const unit = FRAME_HEIGHT / height;
+   const id = scoped ?? object.id;
+@@ -311,6 +364,7 @@ function animation(clip: Clip, object: SceneObject, width: number, height: numbe
+       return `${write ? 'Write' : 'Create'}(${id}${lag}, ${duration})`;
+     }
+     case 'appear': {
++      if (params.mode === 'pop') return `GrowFromCenter(${id}, ${duration})`;
+       const direction: Record<string, string> = { left: 'RIGHT', right: 'LEFT', up: 'DOWN', down: 'UP' };
+       const offset = direction[String(params.direction)];
+       const distance = typeof params.distance === 'number' ? params.distance : 120;
+@@ -323,6 +377,8 @@ function animation(clip: Clip, object: SceneObject, width: number, height: numbe
+         ? `, about_point=${stagePoint(object, width, height)}` : '';
+       return `Rotate(${id}, angle=${n(-degrees)} * DEGREES, axis=OUT${pivot}, ${duration})`;
+     }
++    case 'disappear':
++      return disappearCode(clip, id);
+     case 'glow':
+     case 'radar':
+       return `Indicate(${id}, color=${quoted(cssColor(String(params.color)) ?? '#fde047')}, ${duration})`;
+@@ -362,7 +418,7 @@ function equationAnimation(
+     case 'indicate':
+       return { key, overlay: false, reveal: [], code: `Indicate(${selection}, scale_factor=${n(typeof params.scale === 'number' ? params.scale : 1.3)}, color=${quoted(color)}, ${duration})` };
+     case 'colorChange': {
+-      const code = colorChangeCode(clip, selection);
++      const code = colorChangeCode(clip, selection, own.count ? 2 : undefined);
+       return code ? { key, overlay: false, reveal: [], code } : null;
+     }
+     case 'circumscribe':
+@@ -412,6 +468,27 @@ function equationAnimation(
+   }
+ }
+ 
++/** Plantilla de fondo con retícula (cuadrícula o isométrica): líneas y nodos detrás de todos los objetos. */
++function backgroundCode(bg: ReturnType<typeof resolveSceneBackground>, width: number, height: number): string[] {
++  if (bg.type === 'solid') return [];
++  const unit = FRAME_HEIGHT / height;
++  const { lines, dots } = sceneBackgroundGeometry(bg, width / 2, height / 2, 0, 0, width, height);
++  const c = (v: number) => Number(v.toFixed(4)).toString();
++  const xy = (x: number, y: number) => `${c((x - width / 2) * unit)}, ${c((height / 2 - y) * unit)}`;
++  const color = quoted(cssColor(bg.lineColor) ?? '#7c878e');
++  const out = ['# Plantilla de fondo de la escena', 'scene_grid = VGroup()'];
++  if (lines.length) {
++    out.push(`for x1, y1, x2, y2 in [${lines.map(([x1, y1, x2, y2]) => `(${xy(x1, y1)}, ${xy(x2, y2)})`).join(', ')}]:`,
++      `    scene_grid.add(Line(np.array([x1, y1, 0.0]), np.array([x2, y2, 0.0]), stroke_color=${color}, stroke_width=${n(SCENE_GRID_LINE_WIDTH)}, stroke_opacity=${n(bg.opacity)}))`);
++  }
++  if (dots.length && bg.dotRadius > 0) {
++    out.push(`for x, y in [${dots.map(([x, y]) => `(${xy(x, y)})`).join(', ')}]:`,
++      `    scene_grid.add(Dot(np.array([x, y, 0.0]), radius=${n(bg.dotRadius * unit)}, color=${color}, fill_opacity=${n(bg.opacity)}, stroke_width=0))`);
++  }
++  out.push('scene_grid.set_z_index(-1000)', 'self.add(scene_grid)', '');
++  return out;
++}
++
+ const SVG_HELPER = `def embedded_svg(markup):
+     with TemporaryDirectory() as folder:
+         path = Path(folder) / "shape.svg"
+@@ -422,6 +499,7 @@ const SVG_HELPER = `def embedded_svg(markup):
+ const TIMELINE_HELPER = `def play_timeline(scene, objects, events, duration):
+     # Los eventos de distintos objetos avanzan en paralelo.
+     hidden = {}
++    exits = {}
+     seen = set()
+     for start, length, mob, entrance, build, opts in events:
+         if mob not in seen and entrance:
+@@ -458,6 +536,11 @@ const TIMELINE_HELPER = `def play_timeline(scene, objects, events, duration):
+             finish_until(start)
+             if mob in hidden:
+                 mob.become(hidden.pop(mob))
++            if opts.get("exit"):
++                # Salida (FadeOut / ShrinkToCenter): se guarda el estado previo para una re-entrada posterior.
++                exits[mob] = mob.copy()
++            elif entrance and mob in exits:
++                mob.become(exits.pop(mob))
+             for other in opts.get("reveal", []):
+                 if other in hidden:
+                     other.become(hidden.pop(other))
+@@ -485,7 +568,7 @@ export function generateManim(project: Project): { script: string; notes: string
+   const notes = new Set<string>();
+   const byId = new Map(project.objects.map((object) => [object.id, object]));
+   const ends = new Map<string, number>();
+-  const events: { start: number; time: number; id: string; code: string; entrance: boolean; overlay: boolean; keep?: boolean; reveal: string[] }[] = [];
++  const events: { start: number; time: number; id: string; code: string; entrance: boolean; overlay: boolean; keep?: boolean; exit?: boolean; reveal: string[] }[] = [];
+   const infos = new Map<string, TexInfo>();
+   const infoOf = (object: Obj2D) => {
+     let info = infos.get(object.id);
+@@ -496,7 +579,7 @@ export function generateManim(project: Project): { script: string; notes: string
+   const directed = directedGlyphClips(project.clips);
+   const directedOf = new Map(directed.map((entry) => [entry.clip, entry]));
+   const targeted = directedTargets(directed);
+-  const isEntrance = (clip: Clip) => clip.type === 'draw' || clip.type === 'appear';
++  const isEntrance = isEntranceClip;
+   for (const clip of [...project.clips].sort((a, b) => a.start - b.start)) {
+     const object = byId.get(clip.targetId.split('.')[0]);
+     if (!object) continue;
+@@ -512,7 +595,7 @@ export function generateManim(project: Project): { script: string; notes: string
+       const start = Math.max(clip.start, ends.get(target) ?? 0);
+       if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
+       ends.set(target, start + clip.duration);
+-      events.push({ start, time: clip.duration, id: target, code, entrance: clip.type === 'draw' || clip.type === 'appear', overlay: false, reveal: [] });
++      events.push({ start, time: clip.duration, id: target, code, entrance: isEntrance(clip), overlay: false, exit: clip.type === 'disappear', reveal: [] });
+       continue;
+     }
+     if (clip.type === 'groupTransform') {
+@@ -562,11 +645,14 @@ export function generateManim(project: Project): { script: string; notes: string
+       continue;
+     }
+     if (EQUATION_CLIPS.has(clip.type)) {
+-      const built = clip.targetId === object.id ? equationAnimation(clip, object, project, infoOf, notes, FRAME_HEIGHT / h) : null;
++      // Énfasis (Indicate, Cambiar Color, Circumscribe, FocusOn) sobre un nodo SVG: se aplica al objeto completo.
++      const wholeObject = clip.targetId === object.id || (clip.type !== 'transform' && clip.type !== 'transformMatch');
++      const built = wholeObject ? equationAnimation(clip, object, project, infoOf, notes, FRAME_HEIGHT / h) : null;
+       if (!built) {
+         notes.add('Se omitieron clips de ecuaciones sin objeto de destino válido.');
+         continue;
+       }
++      if (clip.targetId !== object.id) notes.add('Los clips de nodos SVG se aplican al objeto completo.');
+       const start = Math.max(clip.start, ends.get(built.key) ?? 0);
+       if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
+       ends.set(built.key, start + clip.duration);
+@@ -575,10 +661,10 @@ export function generateManim(project: Project): { script: string; notes: string
+     }
+     let target = object.id;
+     let scoped: string | undefined;
+-    if (isEntrance(clip) && object.kind === 'formula' && !object.vector && object.tex && clip.targetId === object.id) {
+-      // Write / FadeIn sobre glifos concretos (o sobre los que no llegan desde otro objeto).
++    if ((isEntrance(clip) || clip.type === 'disappear') && object.kind === 'formula' && !object.vector && object.tex && clip.targetId === object.id) {
++      // Write / FadeIn / FadeOut sobre glifos concretos (o, en las entradas, sobre los que no llegan desde otro objeto).
+       const info = infoOf(object);
+-      const scope = entranceScope(object, clip.parameters, targeted.get(object.id), info.count);
++      const scope = clip.type === 'disappear' ? clipGlyphs(object, clip.parameters) : entranceScope(object, clip.parameters, targeted.get(object.id), info.count);
+       if (scope) {
+         const ref = glyphGroup(object.id, info, scope);
+         if (!ref) continue;
+@@ -592,7 +678,11 @@ export function generateManim(project: Project): { script: string; notes: string
+     const start = Math.max(clip.start, ends.get(target) ?? 0);
+     if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
+     ends.set(target, start + clip.duration);
+-    events.push({ start, time: clip.duration, id: target, code: code!, entrance: clip.type === 'draw' || clip.type === 'appear', overlay: false, reveal: [] });
++    if (!code) {
++      notes.add(`Se omitieron clips sin equivalente en Manim (${clip.type}).`);
++      continue;
++    }
++    events.push({ start, time: clip.duration, id: target, code, entrance: isEntrance(clip), overlay: false, exit: clip.type === 'disappear', reveal: [] });
+   }
+   // Glifos de una ecuación destino que no llegan de otro objeto ni tienen clip de entrada: aparecen al llegar el último.
+   for (const [objectId, set] of targeted) {
+@@ -614,16 +704,27 @@ export function generateManim(project: Project): { script: string; notes: string
+   if (project.objects.some((object) => object.plane)) notes.add('Planos cartesianos: se exportan como NumberPlane; el tamaño de los números y los grosores se aproximan a las unidades de Manim.');
+   if (svg) notes.add('Los SVG se incrustan. Manim interpreta sus estilos y filtros según su compatibilidad.');
+   if (project.voice || project.clips.some((clip) => clip.sound)) notes.add('El audio queda fuera del script.');
+-  if (project.background === 'grid') notes.add('La cuadrícula se exporta como fondo liso.');
++  const background = resolveSceneBackground(project);
++  if (project.background === 'grid' && !project.sceneBackground) notes.add('La cuadrícula clásica se exporta como fondo liso (usa una plantilla de fondo para exportar la retícula).');
+   if (Object.entries(project.styles).some(([id, style]) => id.includes('.') && Object.keys(style).some((key) => key !== 'vertices'))) notes.add('Los estilos del inspector aplicados a nodos SVG no se trasladan a Manim.');
+ 
+-  const body = project.objects.flatMap((object, index) =>
+-    [...objectCode(object, project.styles[object.id] ?? {}, w, h, project.styles), `${object.id}.set_z_index(${index})`, '']);
++  const body = [
++    ...backgroundCode(background, w, h),
++    ...project.objects.flatMap((object, index) =>
++      [...objectCode(object, project.styles[object.id] ?? {}, w, h, project.styles), `${object.id}.set_z_index(${index})`, '']),
++  ];
++  // Grupos guardados con etiqueta → VGroup con nombre (solo agrupan; no cambian el orden ni las animaciones).
++  for (const group of project.savedGroups ?? []) {
++    const members = group.objectIds.filter((id) => byId.has(id));
++    if (/^g[1-9]\d*$/.test(group.id) && members.length) body.push(`group_${group.id} = VGroup(${members.join(', ')})  # ${quoted(group.name.replace(/[\r\n]+/g, ' '))}`);
++  }
++  if (project.savedGroups?.length) body.push('');
+   const ids = project.objects.map((object) => object.id);
+   const length = [...ends.values()].reduce((max, end) => Math.max(max, end), sceneDuration(project));
+   if (events.length) {
+     const options = (event: (typeof events)[number]) => {
+-      const entries = [event.overlay && '"overlay": True', event.keep && '"keep": True', event.reveal.length && `"reveal": [${event.reveal.join(', ')}]`].filter(Boolean);
++      const entries = [event.overlay && '"overlay": True', event.keep && '"keep": True', event.exit && '"exit": True',
++        event.reveal.length && `"reveal": [${event.reveal.join(', ')}]`].filter(Boolean);
+       return `{${entries.join(', ')}}`;
+     };
+     body.push('events = [', ...events.map((event) => `    (${n(event.start)}, ${n(event.time)}, ${event.id}, ${event.entrance ? 'True' : 'False'}, lambda: ${event.code}, ${options(event)}),`),
+@@ -642,7 +743,7 @@ export function generateManim(project: Project): { script: string; notes: string
+       '',
+       `config.pixel_width = ${w}`, `config.pixel_height = ${h}`,
+       `config.frame_width = ${n(FRAME_HEIGHT * w / h)}`, `config.frame_height = ${FRAME_HEIGHT}`,
+-      `config.background_color = ${quoted(BACKGROUND_COLOR[project.background])}`, '',
++      `config.background_color = ${quoted(cssColor(background.bgColor) ?? '#141414')}`, '',
+       ...(svg ? [SVG_HELPER] : []), ...(events.length ? [TIMELINE_HELPER] : []),
+       `class EscenaMathMotion(Scene):`,
+       '    def construct(self):', ...body.map((line) => line ? '        ' + line : ''), '',
+diff --git a/src/engine/projectFiles.ts b/src/engine/projectFiles.ts
+index 824cae7..d447305 100644
+--- a/src/engine/projectFiles.ts
++++ b/src/engine/projectFiles.ts
+@@ -128,11 +128,12 @@ const project = z.object({
+   clips: z.array(z.object({
+     id: clipId, targetId, type: z.enum([
+       'draw', 'radar', 'glow', 'appear', 'rotate', 'orbit', // 'orbit' es legado 3D: se descarta al abrir
+-      'indicate', 'circumscribe', 'focus', 'transform', 'transformMatch', 'colorChange', 'groupTransform',
++      'indicate', 'circumscribe', 'focus', 'transform', 'transformMatch', 'colorChange', 'groupTransform', 'disappear',
+     ]),
+     start: nonnegative, duration: positive, sound: z.enum(['chalk', 'pop', 'radar', 'sparkle']).nullable(),
+     parameters,
+-  })),
++  }).refine((clip) => clip.type !== 'disappear' || clip.parameters.mode === undefined || clip.parameters.mode === 'fade' || clip.parameters.mode === 'shrink',
++    { message: 'Modo de salida no válido.' })),
+   // Grupos guardados con etiqueta (opcional: los archivos antiguos no los tienen).
+   savedGroups: z.array(z.object({
+     id: z.string().regex(/^g[1-9]\d*$/),
+diff --git a/src/engine/runtime.ts b/src/engine/runtime.ts
+index 9ea738d..3f6a8f5 100644
+--- a/src/engine/runtime.ts
++++ b/src/engine/runtime.ts
+@@ -1,7 +1,6 @@
+-import { STAGE_SIZES, groupTransformOf, isPathTool, type Box, type Clip, type GroupTransformSpec, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
++import { STAGE_SIZES, disappearModeOf, groupTransformOf, isEntranceClip, isPathTool, planeSubElementOf, type Box, type Clip, type GroupTransformSpec, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
+ import { vertexAttributes, vertexGeometry } from './vertices';
+ import { arcAsPath, arcCircle, arcEndAngle, arcPoint, gradientId, gradientMarkup, isLinearVector, lineTips, pathLayout, tipLayout } from './vector';
+-import { planeSubElementOf } from '../types';
+ import { SELECTABLE_SHAPES } from './svgImport';
+ import {
+   clipGlyphs, connectorPlan, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor,
+@@ -280,7 +279,6 @@ export class SceneRuntime {
+   private project: Project | null = null;
+   private objs = new Map<string, ObjRec>();
+   private nodes = new Map<string, NodeRec>();
+-  private alive = true;
+   private k = 1;
+   private applied = new Map<Element, Props>();
+   /** Copias visuales de la ecuación origen (opción «Mantener ecuación origen»). */
+@@ -322,6 +320,8 @@ export class SceneRuntime {
+       'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-dasharray', 'stroke-dashoffset',
+       'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'opacity', 'font-family', 'font-size', 'font-weight', 'font-style',
+       'text-anchor', 'visibility', 'display',
++      // Contorno exterior de glifos (Cambiar Color con grosor): el trazo se pinta debajo del relleno.
++      'paint-order', 'letter-spacing',
+     ];
+     for (const wrapper of Array.from(this.els.layer.children) as HTMLElement[]) {
+       const live = wrapper.firstElementChild as SVGSVGElement | null;
+@@ -1573,6 +1573,31 @@ export class SceneRuntime {
+     const directed = directedGlyphClips(sorted);
+     const directedOf = new Map<Clip, DirectedGlyphClip>(directed.map((d) => [d.clip, d]));
+     const targeted = directedTargets(directed);
++    // Salidas (`disappear`) y re-entradas: una salida deja oculto su alcance hasta que empieza un clip de entrada
++    // posterior sobre el mismo objeto (y glifos); ese clip de entrada no oculta nada antes de su inicio.
++    const scopeOf = (c: Clip): number[] | null => {
++      const fo = this.formulaOf(c.targetId);
++      return fo ? clipGlyphs(fo, c.parameters) : null;
++    };
++    const overlaps = (a: number[] | null, b: number[] | null) => !a || !b || a.some((i) => b.includes(i));
++    const exits = sorted.filter((c) => c.type === 'disappear');
++    const reentries = new Map<Clip, { start: number; scope: number[] | null }[]>();
++    const afterExit = new Set<Clip>();
++    for (const d of exits) {
++      const scope = scopeOf(d);
++      const list: { start: number; scope: number[] | null }[] = [];
++      for (const e of sorted) {
++        if (!isEntranceClip(e) || e.targetId !== d.targetId || e.start <= d.start + 1e-9) continue;
++        const scopeE = scopeOf(e);
++        if (!overlaps(scope, scopeE)) continue;
++        list.push({ start: e.start, scope: scopeE });
++        afterExit.add(e);
++      }
++      reentries.set(d, list);
++    }
++    /** ¿Algún clip de entrada posterior a la salida `d` ya empezó en `t` (para el glifo `glyph`, o el objeto)? */
++    const reentered = (d: Clip, glyph: number | null) =>
++      (reentries.get(d) ?? []).some((e) => t >= e.start && (glyph === null || !e.scope || e.scope.includes(glyph)));
+     /** Glifos de la copia visual del origen que viajan en este instante (el resto de la copia se oculta). */
+     const ghostMoving = new Map<string, Set<number>>();
+     // Destinos de transformaciones sin entrada propia anterior: ocultos hasta que empieza la transformación.
+@@ -1641,6 +1666,8 @@ export class SceneRuntime {
+       const p = clamp01(raw);
+       const live = raw >= 0 && raw <= 1;
+       const par = c.parameters;
++      // Re-entrada tras una salida: antes de su inicio, la salida previa ya mantiene oculto el alcance.
++      if (raw < 0 && afterExit.has(c)) continue;
+       switch (c.type) {
+         case 'draw': {
+           const fo = this.formulaOf(c.targetId);
+@@ -1682,8 +1709,9 @@ export class SceneRuntime {
+             }
+             break;
+           }
+-          if (par.mode === 'pop' && typeof par.subElementId === 'string') {
+-            // Punto de un plano: brota desde su centro (escala 0 → 1.2 → 1) con su etiqueta y líneas guía.
++          if (par.mode === 'pop') {
++            // Brotar (GrowFromCenter) de un objeto completo, un nodo o un punto de un plano (con su etiqueta y líneas
++            // guía): escala 0 → 1.2 → 1 desde su centro y opacidad 0 → 1 (`smooth`).
+             const sub = get(c.targetId);
+             sub.scale *= Math.max(0.001, p < 0.7 ? 1.2 * smooth(p / 0.7) : 1.2 - 0.2 * smooth((p - 0.7) / 0.3));
+             sub.opacity *= smooth(p);
+@@ -1792,6 +1820,33 @@ export class SceneRuntime {
+           if (fillOpacity !== null) s.fillOpacityTo.push([fillOpacity, e]);
+           break;
+         }
++        case 'disappear': {
++          // Desvanecer (FadeOut) o Contraer (ShrinkToCenter): nada antes del inicio; `smooth` durante el clip y, desde
++          // el final, oculto hasta que un clip de entrada posterior lo vuelva a mostrar.
++          if (raw < 0) break;
++          const e = smooth(p);
++          const shrink = disappearModeOf(par) === 'shrink';
++          const fo = this.formulaOf(c.targetId);
++          if (fo) {
++            // Ecuaciones: por glifo (toda la ecuación o el alcance elegido); contrae hacia el centro del conjunto.
++            const rec = this.objs.get(fo.id)!;
++            const explicit = clipGlyphs(fo, par);
++            const idx = (explicit ?? glyphsOf(fo)).filter((i) => i >= 0 && i < rec.glyphs.length && !reentered(c, i));
++            if (!idx.length) break;
++            const geo = shrink ? this.geoOf(rec) : null;
++            if (geo) moveGroup(fo, geo, idx.filter((i) => i < geo.length), Math.max(1e-3, 1 - e), 0, { x: 0, y: 0 });
++            for (const i of idx) glyphState(fo.id, i).opacity *= 1 - e;
++            if (raw >= 1 && !explicit && idx.length === rec.glyphs.length) hiddenIds.add(fo.id);
++            break;
++          }
++          if (reentered(c, null)) break;
++          const s = get(c.targetId);
++          s.opacity *= 1 - e;
++          if (shrink) s.scale *= Math.max(1e-3, 1 - e);
++          // Ya fuera de escena: el objeto no intercepta clics en el lienzo.
++          if (raw >= 1 && this.nodes.get(c.targetId)?.isRoot) hiddenIds.add(c.targetId);
++          break;
++        }
+         case 'circumscribe':
+         case 'focus': {
+           if (!live) break;
+@@ -2311,7 +2366,6 @@ export class SceneRuntime {
+   }
+ 
+   dispose() {
+-    this.alive = false;
+     this.restoreAll();
+     for (const rec of this.objs.values()) rec.wrapper.remove();
+     for (const ghost of this.ghosts.values()) ghost.wrapper.remove();
+diff --git a/src/engine/vector.ts b/src/engine/vector.ts
+index c6a0a2f..909431a 100644
+--- a/src/engine/vector.ts
++++ b/src/engine/vector.ts
+@@ -148,7 +148,7 @@ export function tipLayout(start: Vertex, end: Vertex, tips: ReturnType<typeof li
+ 
+ // ------------------------------------------------------------------ trazados Bézier (pluma y curva suavizada)
+ 
+-type Cubic = [Vertex, Vertex, Vertex, Vertex];
++export type Cubic = [Vertex, Vertex, Vertex, Vertex];
+ const fmt = (v: number) => (Math.round(v * 1000) / 1000).toString();
+ const same = (a: Vertex, b: Vertex) => Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9;
+ const lerp = (a: Vertex, b: Vertex, t: number): Vertex => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+@@ -223,15 +223,14 @@ function segmentsToD(segments: Cubic[], closed: boolean): string {
+ }
+ 
+ /**
+- * Datos `d` del trazado y polígonos de sus puntas para un grosor `sw`. En los trazados abiertos con punta, el
+- * cuerpo se recorta en la muesca/base de la punta (igual que `tipLayout` en las líneas).
++ * Segmentos cúbicos (ya recortados en las puntas) y polígonos de las puntas de un trazado para un grosor `sw`.
++ * Lo comparten el SVG del editor (`pathLayout`) y la exportación a Manim (puntos de control de un `VMobject`).
+  */
+-export function pathLayout(vector: VectorGeometry, sw: number) {
++export function pathBody(vector: VectorGeometry, sw: number): { segments: Cubic[]; closed: boolean; start: string | null; end: string | null } {
+   const nodes = vector.nodes ?? [];
+   const closed = !!vector.closed && nodes.length > 2;
+   const segments = pathSegments(nodes, closed);
+-  if (!segments.length) return { d: '', start: null as string | null, end: null as string | null };
+-  if (closed) return { d: segmentsToD(segments, true), start: null, end: null };
++  if (!segments.length || closed) return { segments, closed, start: null, end: null };
+   const tips = lineTips(vector);
+   const first = segments[0];
+   const last = segments[segments.length - 1];
+@@ -242,7 +241,17 @@ export function pathLayout(vector: VectorGeometry, sw: number) {
+   const body = segments.slice();
+   body[body.length - 1] = trimToBase(body[body.length - 1], tipInset(tips.end, sw, tips.scale), true, endTheta);
+   body[0] = trimToBase(body[0], tipInset(tips.start, sw, tips.scale), false, startTheta);
+-  return { d: segmentsToD(body, false), start, end };
++  return { segments: body, closed, start, end };
++}
++
++/**
++ * Datos `d` del trazado y polígonos de sus puntas para un grosor `sw`. En los trazados abiertos con punta, el
++ * cuerpo se recorta en la muesca/base de la punta (igual que `tipLayout` en las líneas).
++ */
++export function pathLayout(vector: VectorGeometry, sw: number) {
++  const { segments, closed, start, end } = pathBody(vector, sw);
++  if (!segments.length) return { d: '', start: null as string | null, end: null as string | null };
++  return { d: segmentsToD(segments, closed), start, end };
+ }
+ 
+ /** Manejadores simétricos de un nodo suave a partir de sus vecinos (tangente tipo Catmull-Rom). */
+diff --git a/src/store.ts b/src/store.ts
+index b86e34f..dc49e54 100644
+--- a/src/store.ts
++++ b/src/store.ts
+@@ -264,6 +264,8 @@ export function defaultClipParams(type: ClipType): ClipParams {
+       return { fillEnabled: true, targetFillColor: '#ffff00', strokeEnabled: true, targetStrokeColor: '#ffff00' };
+     case 'groupTransform':
+       return { keepSource: false };
++    case 'disappear':
++      return { mode: 'fade' };
+     default:
+       return {};
+   }
+@@ -466,7 +468,13 @@ export const actions = {
+           // Las transformaciones de grupo enlazan varios objetos: no se copian al duplicar uno de ellos.
+           if (entry.type === 'groupTransform') continue;
+           if (entry.targetId === id || entry.targetId.startsWith(id + '.')) {
+-            clips.push({ ...entry, id: `c${++clip}`, targetId: nextId + entry.targetId.slice(id.length) });
++            // Glifo → glifo: los ids de glifo origen llevan el prefijo del objeto (`o1.g0`); sin reescribirlos, la copia
++            // dejaría de ser una transformación dirigida y se reproduciría como un Transform de objeto completo.
++            const glyphs = entry.parameters.sourceGlyphIds;
++            const parameters = typeof glyphs === 'string'
++              ? { ...entry.parameters, sourceGlyphIds: glyphs.split(',').map((g) => (g.trim().startsWith(`${id}.g`) ? nextId + g.trim().slice(id.length) : g)).join(',') }
++              : entry.parameters;
++            clips.push({ ...entry, id: `c${++clip}`, targetId: nextId + entry.targetId.slice(id.length), parameters });
+           }
+         }
+       }
+diff --git a/src/types.ts b/src/types.ts
+index 64c8957..97518ae 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -156,12 +156,16 @@ export const SOUND_IDS = Object.keys(SOUND_LABEL) as SoundId[];
+ 
+ export type ClipType =
+   | 'draw' | 'radar' | 'glow' | 'appear' | 'rotate'
+-  | 'indicate' | 'circumscribe' | 'focus' | 'transform' | 'transformMatch' | 'colorChange' | 'groupTransform';
++  | 'indicate' | 'circumscribe' | 'focus' | 'transform' | 'transformMatch' | 'colorChange' | 'groupTransform'
++  | 'disappear';
++/** Clips de entrada: ocultan su alcance antes de empezar (o desde el final de una salida previa). */
++export const ENTRANCE_CLIPS: ReadonlySet<ClipType> = new Set<ClipType>(['draw', 'appear']);
++export const isEntranceClip = (clip: Pick<Clip, 'type'>) => ENTRANCE_CLIPS.has(clip.type);
+ export const CLIP_LABEL: Record<ClipType, string> = {
+-  draw: 'Escribir / Dibujar',
++  draw: 'Create / Write',
+   radar: 'Radar',
+   glow: 'Brillar',
+-  appear: 'Aparecer / Deslizar',
++  appear: 'FadeIn / Deslizar',
+   rotate: 'Rotar',
+   indicate: 'Indicate',
+   circumscribe: 'Circumscribe',
+@@ -170,8 +174,21 @@ export const CLIP_LABEL: Record<ClipType, string> = {
+   transformMatch: 'TransformMatchingTex',
+   colorChange: 'Cambiar Color',
+   groupTransform: 'Transformar Grupo',
++  disappear: 'Desaparecer',
+ };
+ 
++/**
++ * Animación de salida (`disappear`): `'fade'` = Desvanecer (`FadeOut`), `'shrink'` = Contraer (`ShrinkToCenter`).
++ * Antes del clip no toca el objeto; durante él (curva `smooth`) baja la opacidad (y la escala, hacia su centro);
++ * desde el final queda oculto hasta que un clip de entrada posterior (Write, FadeIn, Pop…) lo vuelva a mostrar.
++ */
++export type DisappearMode = 'fade' | 'shrink';
++export const DISAPPEAR_MODES: { id: DisappearMode; label: string; manim: string }[] = [
++  { id: 'fade', label: 'Desvanecer (FadeOut)', manim: 'FadeOut' },
++  { id: 'shrink', label: 'Contraer (Shrink)', manim: 'ShrinkToCenter' },
++];
++export const disappearModeOf = (params: ClipParams): DisappearMode => (params.mode === 'shrink' ? 'shrink' : 'fade');
++
+ export type ClipParams = Record<string, number | string | boolean>;
+ 
+ /**
+@@ -328,6 +345,8 @@ export function pruneGroupClips(clips: Clip[], removed: Set<string>): Clip[] {
+ /** Etiqueta del clip (distingue la transformación dirigida de glifos de un Transform normal). */
+ export function clipLabel(clip: Pick<Clip, 'type' | 'targetId' | 'parameters'>): string {
+   if (clip.type === 'appear' && clip.parameters.mode === 'pop') return 'GrowFromCenter (Pop)';
++  if (clip.type === 'appear' && clip.parameters.direction === 'none') return 'FadeIn';
++  if (clip.type === 'disappear') return DISAPPEAR_MODES.find((m) => m.id === disappearModeOf(clip.parameters))!.label;
+   const group = groupTransformOf(clip);
+   if (group) return `Transformar Grupo (${group.sourceObjectIds.length} → ${group.targetObjectIds.length} objetos)`;
+   const spec = glyphTransformOf(clip);
+diff --git a/tests/harness.ts b/tests/harness.ts
+index b0e5e2b..90dd12c 100644
+--- a/tests/harness.ts
++++ b/tests/harness.ts
+@@ -5,6 +5,7 @@
+ import { SAMPLE_SVG, inlineUses, prepareSvg } from '../src/engine/svgImport';
+ import { SceneRuntime, type TreeNode } from '../src/engine/runtime';
+ import { matchGlyphs } from '../src/engine/glyphs';
++import { normalizePlane, planeSvg } from '../src/engine/cartesianPlane';
+ import { generateManim } from '../src/engine/manim';
+ import type { Clip, NodeStyle, Obj2D, Project } from '../src/types';
+ 
+@@ -593,8 +594,100 @@ async function glyphTests() {
+   check('Transform de estado: posición y escala del término', near(twoEnd.x, two.x + 100, 1) && near(twoEnd.y, two.y + 40, 1) && near(twoEnd.h, two.w * 2, 1), JSON.stringify([two, twoEnd]));
+   check('Transform de estado: color y opacidad destino', fillOf(glyphEl('o1', 6)) === 'rgb(0, 255, 0)' && near(Number(getComputedStyle(glyphEl('o1', 6)).opacity), 0.5, 0.01));
+   rt.renderAt(0);
++
++  // Desaparecer: FadeOut / ShrinkToCenter de objetos completos, glifos y re-entrada
++  const opOf = (el: Element) => Number(getComputedStyle(el).opacity);
++  const wrap1 = document.querySelector('[data-mm-obj="o1"]') as HTMLElement;
++  rt.setProject(mkProject([A], [mkClip('c1', 'o1', 'disappear', 1, 1, { mode: 'fade' })]));
++  rt.renderAt(0.5);
++  const fadeBefore = opOf(glyphEl('o1', 0));
++  rt.renderAt(1.5);
++  const fadeMid = opOf(glyphEl('o1', 0));
++  rt.renderAt(2.5);
++  check('FadeOut: visible antes, a medias durante y oculto después', fadeBefore === 1 && near(fadeMid, 0.5, 0.02) && opOf(glyphEl('o1', 0)) === 0 && wrap1.style.pointerEvents === 'none',
++    JSON.stringify([fadeBefore, fadeMid, opOf(glyphEl('o1', 0)), wrap1.style.pointerEvents]));
++  const fullBox = unionOf(Array.from({ length: 7 }, (_, i) => glyphEl('o1', i)));
++  rt.setProject(mkProject([A], [mkClip('c1', 'o1', 'disappear', 0, 1, { mode: 'shrink' })]));
++  rt.renderAt(0);
++  const shrinkStart = unionOf(Array.from({ length: 7 }, (_, i) => glyphEl('o1', i)));
++  rt.renderAt(0.5);
++  const shrinkMid = unionOf(Array.from({ length: 7 }, (_, i) => glyphEl('o1', i)));
++  check('ShrinkToCenter: la ecuación se contrae hacia su centro', near(shrinkStart.w, fullBox.w, 0.5) && near(shrinkMid.w, fullBox.w / 2, 2)
++    && near(shrinkMid.x, fullBox.x, 1.5) && near(shrinkMid.y, fullBox.y, 1.5) && near(opOf(glyphEl('o1', 3)), 0.5, 0.02), JSON.stringify([fullBox, shrinkMid]));
++  rt.setProject(mkProject([A], [mkClip('c1', 'o1', 'disappear', 0, 1, { mode: 'fade', glyphs: '0-1' })]));
++  rt.renderAt(2);
++  check('FadeOut por glifo: solo el alcance desaparece', opOf(glyphEl('o1', 0)) === 0 && opOf(glyphEl('o1', 1)) === 0 && opOf(glyphEl('o1', 2)) === 1 && wrap1.style.pointerEvents === '');
++  rt.setProject(mkProject([A], [
++    mkClip('c1', 'o1', 'appear', 0, 1, { direction: 'none' }),
++    mkClip('c2', 'o1', 'disappear', 2, 1, { mode: 'fade' }),
++    mkClip('c3', 'o1', 'appear', 4, 1, { direction: 'none' }),
++  ]));
++  rt.renderAt(1.5);
++  const reVisible = [wrap1.style.opacity, opOf(glyphEl('o1', 0))];
++  rt.renderAt(3.5);
++  const reHidden = opOf(glyphEl('o1', 0));
++  rt.renderAt(4.5);
++  const reMid = Number(wrap1.style.opacity) * opOf(glyphEl('o1', 0));
++  rt.renderAt(6);
++  check('Re-entrada: FadeIn posterior vuelve a mostrar el objeto tras la salida', reVisible[0] === '1' && reVisible[1] === 1 && reHidden === 0 && reMid > 0.2 && reMid < 1
++    && wrap1.style.opacity === '1' && opOf(glyphEl('o1', 0)) === 1, JSON.stringify([reVisible, reHidden, reMid, wrap1.style.opacity, opOf(glyphEl('o1', 0))]));
++  rt.renderAt(0);
+   rt.dispose();
+ 
++  // Desaparecer / Brotar sobre figuras SVG (objeto completo)
++  {
++    const { rt: rs } = mkStage(1);
++    const sq = mkObj('o3', prepareSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#ff0000"/></svg>', 'o3').markup, 200, 200);
++    const w3 = () => document.querySelector('[data-mm-obj="o3"]') as HTMLElement;
++    rs.setProject(mkProject([sq], [mkClip('c1', 'o3', 'disappear', 1, 1, { mode: 'shrink' })]));
++    rs.renderAt(0.5);
++    const before = rectOf(w3());
++    rs.renderAt(1.5);
++    const mid = rectOf(w3());
++    rs.renderAt(3);
++    check('Contraer figura: escala a la mitad en el centro y oculta al final', near(mid.width, before.width / 2, 1) && near(mid.left + mid.width / 2, before.left + before.width / 2, 1)
++      && near(Number(w3().style.opacity), 0, 1e-6), JSON.stringify([before.width, mid.width, w3().style.opacity]));
++    rs.setProject(mkProject([sq], [mkClip('c1', 'o3', 'appear', 0, 1, { mode: 'pop', direction: 'up', distance: 120 })]));
++    rs.renderAt(0.7);
++    const pop = rectOf(w3());
++    rs.renderAt(2);
++    const popEnd = rectOf(w3());
++    check('Brotar (Pop) de figura: crece desde su centro (1.2×) sin deslizarse', near(pop.width, popEnd.width * 1.2, 1.5) && near(pop.top + pop.height / 2, popEnd.top + popEnd.height / 2, 1)
++      && w3().style.opacity === '1', JSON.stringify([pop, popEnd]));
++    const lineSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 20"><line x1="0" y1="10" x2="200" y2="10" stroke="#0000ff" stroke-width="4"/></svg>';
++    const textSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 40"><text x="0" y="30" font-size="30" fill="#0000ff">Hola</text></svg>';
++    const ln = mkObj('o4', prepareSvg(lineSvg, 'o4').markup, 200, 20);
++    const tx = { ...mkObj('o5', prepareSvg(textSvg, 'o5').markup, 200, 40), y: 300 };
++    rs.setProject(mkProject([ln, tx], [
++      mkClip('c1', 'o4', 'indicate', 0, 1, { scale: 1.3, color: '#ff0000' }),
++      mkClip('c2', 'o5', 'indicate', 0, 1, { scale: 1.3, color: '#ff0000' }),
++    ]));
++    rs.renderAt(0.5);
++    const lineEl = document.querySelector('[data-mm-obj="o4"] line') as SVGElement;
++    const textEl = document.querySelector('[data-mm-obj="o5"] text') as SVGElement;
++    const midStroke = getComputedStyle(lineEl).stroke;
++    const midFill = getComputedStyle(textEl).fill;
++    rs.renderAt(1.5);
++    check('Indicate en trazos y textos: pulso de color que vuelve al original', midStroke === 'rgb(255, 0, 0)' && midFill === 'rgb(255, 0, 0)'
++      && getComputedStyle(lineEl).stroke === 'rgb(0, 0, 255)' && getComputedStyle(textEl).fill === 'rgb(0, 0, 255)', JSON.stringify([midStroke, midFill]));
++    const plane = normalizePlane({ plots: [{ id: 'f1', expression: 'x', color: '#ffff00', width: 3, visible: true }],
++      points: [{ id: 'pt1', x: 1, y: 1, color: '#ff0000', radius: 6, visible: true }] });
++    const pSvg = planeSvg(plane);
++    const pl = { ...mkObj('o6', prepareSvg(pSvg, 'o6').markup, plane.width, plane.height), sourceSvg: pSvg, plane };
++    rs.setProject(mkProject([pl], [
++      mkClip('c1', 'o6', 'disappear', 0, 1, { mode: 'fade', subElementId: 'plot:f1' }),
++      mkClip('c2', 'o6', 'disappear', 0, 1, { mode: 'shrink', subElementId: 'point:pt1' }),
++    ]));
++    rs.renderAt(2);
++    const plotG = document.querySelector('[data-mm-obj="o6"] [data-mm-sub="plot:f1"]') as SVGElement;
++    const pointG = document.querySelector('[data-mm-obj="o6"] [data-mm-sub="point:pt1"]') as SVGElement;
++    const wrap6 = document.querySelector('[data-mm-obj="o6"]') as HTMLElement;
++    check('Salida de sub-elementos del plano: la gráfica y el punto se ocultan; el plano sigue visible',
++      getComputedStyle(plotG).opacity === '0' && getComputedStyle(pointG).opacity === '0' && wrap6.style.opacity === '1',
++      JSON.stringify([getComputedStyle(plotG).opacity, getComputedStyle(pointG).opacity, wrap6.style.opacity]));
++    rs.dispose();
++  }
++
+   // Exportación a Manim
+   const manim = generateManim(mkProject(
+     [{ ...A, glyphStyles: { '0': { color: '#ff0000' }, '1': { color: '#ff0000' }, '6': { scale: 1.5 } }, terms: [{ id: 't1', name: '4x', glyphs: [0, 1] }] }, B],
+@@ -609,4 +702,18 @@ async function glyphTests() {
+   check('Manim: Indicate sobre un único glifo', manim.includes('Indicate(o1[5],'));
+   check('Manim: TransformMatchingTex(eq1, eq2)', manim.includes('TransformMatchingTex(o1, o2, run_time=1)') && manim.includes('"reveal": [o2]'));
+   check('Manim: Write con lag_ratio', manim.includes('Write(o1, lag_ratio=0.2, run_time=1)'));
++  const exits = generateManim({
++    ...mkProject([A, B], [
++      mkClip('c1', 'o1', 'draw', 0, 1), mkClip('c2', 'o1', 'disappear', 2, 1, { mode: 'fade' }),
++      mkClip('c3', 'o2', 'disappear', 1, 0.5, { mode: 'shrink', glyphs: '0' }), mkClip('c4', 'o1', 'appear', 4, 1, { direction: 'none' }),
++      mkClip('c5', 'o2', 'appear', 5, 1, { mode: 'pop' }),
++    ]),
++    savedGroups: [{ id: 'g1', name: 'Ecuaciones', objectIds: ['o1', 'o2'] }],
++    sceneBackground: { type: 'grid-dots', bgColor: '#0b121c', lineColor: '#7c878e', opacity: 0.35, cellSize: 160, dotRadius: 2 },
++  }).script;
++  check('Manim: FadeOut del objeto', exits.includes('FadeOut(o1, run_time=1)') && exits.includes('"exit": True'));
++  check('Manim: ShrinkToCenter de un glifo', exits.includes('ShrinkToCenter(o2[0], run_time=0.5)'));
++  check('Manim: GrowFromCenter (Pop) de un objeto', exits.includes('GrowFromCenter(o2, run_time=1)'));
++  check('Manim: grupos guardados como VGroup', exits.includes('group_g1 = VGroup(o1, o2)'));
++  check('Manim: plantilla de fondo con retícula', exits.includes('config.background_color = "#0b121c"') && exits.includes('scene_grid'));
+ }
+diff --git a/tests/project-test.mjs b/tests/project-test.mjs
+index 32f9d56..553b702 100644
+--- a/tests/project-test.mjs
++++ b/tests/project-test.mjs
+@@ -97,7 +97,7 @@ try {
+   await input.fill(formula);
+   await button('Insertar fórmula').click();
+   await page.getByRole('treeitem', { name: /Fórmula 1/ }).waitFor();
+-  await button('Escribir / Dibujar').click();
++  await button('Create / Write').click();
+   const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 30"><style>.shape{fill:#123456}</style><g id="group"><path id="line" class="shape" d="M0 0 L40 0 L40 30Z"/></g></svg>';
+   await page.locator('input[accept=".svg,image/svg+xml"]').setInputFiles({
+     name: 'figura.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(svg),
+diff --git a/tests/vector-test.mjs b/tests/vector-test.mjs
+index c26cff5..09b8895 100644
+--- a/tests/vector-test.mjs
++++ b/tests/vector-test.mjs
+@@ -93,11 +93,11 @@ try {
+   });
+   assert.ok(Math.abs(centered[0] - 960) < 0.001);
+   assert.ok(Math.abs(centered[1] - 540) < 0.001);
+-  await button('Escribir / Dibujar').click();
++  await button('Create / Write').click();
+   console.log('PASS creación, gestos, Deshacer/Rehacer, duplicación, Suprimir y alineación');
+ 
+   await draw('Círculo / Elipse', 0.62, 0.12, 0.84, 0.34);
+-  await button('Aparecer / Deslizar').click();
++  await button('FadeIn').click();
+   await draw('Línea', 0.66, 0.65, 0.9, 0.65);
+   await draw('Flecha vectorial', 0.28, 0.72, 0.12, 0.48);
+   await page.getByLabel('Punta de flecha').selectOption('both');
+@@ -110,11 +110,11 @@ try {
+   await button('Texto libre').click();
+   await page.getByLabel('Texto para dibujar').fill('Texto «libre»: <x> y "comillas"');
+   await draw('Texto libre', 0.52, 0.74, 0.85, 0.84);
+-  await button('Escribir / Dibujar').click();
++  await button('Create / Write').click();
+   assert.equal(await object('o6').locator('text').textContent(), 'Texto «libre»: <x> y "comillas"');
+   await page.getByRole('textbox', { name: 'Fórmula LaTeX' }).fill('x^2+1');
+   await button('Insertar fórmula').click();
+-  await button('Escribir / Dibujar').click();
++  await button('Create / Write').click();
+   await button('Ejemplo').click();
+   await page.getByLabel('Grosor', { exact: true }).fill('5');
+   await page.getByLabel('Estilo de línea').selectOption('dotted');
+-- 
+2.43.0
+

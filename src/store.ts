@@ -264,6 +264,8 @@ export function defaultClipParams(type: ClipType): ClipParams {
       return { fillEnabled: true, targetFillColor: '#ffff00', strokeEnabled: true, targetStrokeColor: '#ffff00' };
     case 'groupTransform':
       return { keepSource: false };
+    case 'disappear':
+      return { mode: 'fade' };
     default:
       return {};
   }
@@ -466,7 +468,13 @@ export const actions = {
           // Las transformaciones de grupo enlazan varios objetos: no se copian al duplicar uno de ellos.
           if (entry.type === 'groupTransform') continue;
           if (entry.targetId === id || entry.targetId.startsWith(id + '.')) {
-            clips.push({ ...entry, id: `c${++clip}`, targetId: nextId + entry.targetId.slice(id.length) });
+            // Glifo → glifo: los ids de glifo origen llevan el prefijo del objeto (`o1.g0`); sin reescribirlos, la copia
+            // dejaría de ser una transformación dirigida y se reproduciría como un Transform de objeto completo.
+            const glyphs = entry.parameters.sourceGlyphIds;
+            const parameters = typeof glyphs === 'string'
+              ? { ...entry.parameters, sourceGlyphIds: glyphs.split(',').map((g) => (g.trim().startsWith(`${id}.g`) ? nextId + g.trim().slice(id.length) : g)).join(',') }
+              : entry.parameters;
+            clips.push({ ...entry, id: `c${++clip}`, targetId: nextId + entry.targetId.slice(id.length), parameters });
           }
         }
       }

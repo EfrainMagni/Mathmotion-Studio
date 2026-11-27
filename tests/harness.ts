@@ -5,6 +5,7 @@
 import { SAMPLE_SVG, inlineUses, prepareSvg } from '../src/engine/svgImport';
 import { SceneRuntime, type TreeNode } from '../src/engine/runtime';
 import { matchGlyphs } from '../src/engine/glyphs';
+import { normalizePlane, planeSvg } from '../src/engine/cartesianPlane';
 import { generateManim } from '../src/engine/manim';
 import type { Clip, NodeStyle, Obj2D, Project } from '../src/types';
 
@@ -593,7 +594,99 @@ async function glyphTests() {
   check('Transform de estado: posición y escala del término', near(twoEnd.x, two.x + 100, 1) && near(twoEnd.y, two.y + 40, 1) && near(twoEnd.h, two.w * 2, 1), JSON.stringify([two, twoEnd]));
   check('Transform de estado: color y opacidad destino', fillOf(glyphEl('o1', 6)) === 'rgb(0, 255, 0)' && near(Number(getComputedStyle(glyphEl('o1', 6)).opacity), 0.5, 0.01));
   rt.renderAt(0);
+
+  // Desaparecer: FadeOut / ShrinkToCenter de objetos completos, glifos y re-entrada
+  const opOf = (el: Element) => Number(getComputedStyle(el).opacity);
+  const wrap1 = document.querySelector('[data-mm-obj="o1"]') as HTMLElement;
+  rt.setProject(mkProject([A], [mkClip('c1', 'o1', 'disappear', 1, 1, { mode: 'fade' })]));
+  rt.renderAt(0.5);
+  const fadeBefore = opOf(glyphEl('o1', 0));
+  rt.renderAt(1.5);
+  const fadeMid = opOf(glyphEl('o1', 0));
+  rt.renderAt(2.5);
+  check('FadeOut: visible antes, a medias durante y oculto después', fadeBefore === 1 && near(fadeMid, 0.5, 0.02) && opOf(glyphEl('o1', 0)) === 0 && wrap1.style.pointerEvents === 'none',
+    JSON.stringify([fadeBefore, fadeMid, opOf(glyphEl('o1', 0)), wrap1.style.pointerEvents]));
+  const fullBox = unionOf(Array.from({ length: 7 }, (_, i) => glyphEl('o1', i)));
+  rt.setProject(mkProject([A], [mkClip('c1', 'o1', 'disappear', 0, 1, { mode: 'shrink' })]));
+  rt.renderAt(0);
+  const shrinkStart = unionOf(Array.from({ length: 7 }, (_, i) => glyphEl('o1', i)));
+  rt.renderAt(0.5);
+  const shrinkMid = unionOf(Array.from({ length: 7 }, (_, i) => glyphEl('o1', i)));
+  check('ShrinkToCenter: la ecuación se contrae hacia su centro', near(shrinkStart.w, fullBox.w, 0.5) && near(shrinkMid.w, fullBox.w / 2, 2)
+    && near(shrinkMid.x, fullBox.x, 1.5) && near(shrinkMid.y, fullBox.y, 1.5) && near(opOf(glyphEl('o1', 3)), 0.5, 0.02), JSON.stringify([fullBox, shrinkMid]));
+  rt.setProject(mkProject([A], [mkClip('c1', 'o1', 'disappear', 0, 1, { mode: 'fade', glyphs: '0-1' })]));
+  rt.renderAt(2);
+  check('FadeOut por glifo: solo el alcance desaparece', opOf(glyphEl('o1', 0)) === 0 && opOf(glyphEl('o1', 1)) === 0 && opOf(glyphEl('o1', 2)) === 1 && wrap1.style.pointerEvents === '');
+  rt.setProject(mkProject([A], [
+    mkClip('c1', 'o1', 'appear', 0, 1, { direction: 'none' }),
+    mkClip('c2', 'o1', 'disappear', 2, 1, { mode: 'fade' }),
+    mkClip('c3', 'o1', 'appear', 4, 1, { direction: 'none' }),
+  ]));
+  rt.renderAt(1.5);
+  const reVisible = [wrap1.style.opacity, opOf(glyphEl('o1', 0))];
+  rt.renderAt(3.5);
+  const reHidden = opOf(glyphEl('o1', 0));
+  rt.renderAt(4.5);
+  const reMid = Number(wrap1.style.opacity) * opOf(glyphEl('o1', 0));
+  rt.renderAt(6);
+  check('Re-entrada: FadeIn posterior vuelve a mostrar el objeto tras la salida', reVisible[0] === '1' && reVisible[1] === 1 && reHidden === 0 && reMid > 0.2 && reMid < 1
+    && wrap1.style.opacity === '1' && opOf(glyphEl('o1', 0)) === 1, JSON.stringify([reVisible, reHidden, reMid, wrap1.style.opacity, opOf(glyphEl('o1', 0))]));
+  rt.renderAt(0);
   rt.dispose();
+
+  // Desaparecer / Brotar sobre figuras SVG (objeto completo)
+  {
+    const { rt: rs } = mkStage(1);
+    const sq = mkObj('o3', prepareSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#ff0000"/></svg>', 'o3').markup, 200, 200);
+    const w3 = () => document.querySelector('[data-mm-obj="o3"]') as HTMLElement;
+    rs.setProject(mkProject([sq], [mkClip('c1', 'o3', 'disappear', 1, 1, { mode: 'shrink' })]));
+    rs.renderAt(0.5);
+    const before = rectOf(w3());
+    rs.renderAt(1.5);
+    const mid = rectOf(w3());
+    rs.renderAt(3);
+    check('Contraer figura: escala a la mitad en el centro y oculta al final', near(mid.width, before.width / 2, 1) && near(mid.left + mid.width / 2, before.left + before.width / 2, 1)
+      && near(Number(w3().style.opacity), 0, 1e-6), JSON.stringify([before.width, mid.width, w3().style.opacity]));
+    rs.setProject(mkProject([sq], [mkClip('c1', 'o3', 'appear', 0, 1, { mode: 'pop', direction: 'up', distance: 120 })]));
+    rs.renderAt(0.7);
+    const pop = rectOf(w3());
+    rs.renderAt(2);
+    const popEnd = rectOf(w3());
+    check('Brotar (Pop) de figura: crece desde su centro (1.2×) sin deslizarse', near(pop.width, popEnd.width * 1.2, 1.5) && near(pop.top + pop.height / 2, popEnd.top + popEnd.height / 2, 1)
+      && w3().style.opacity === '1', JSON.stringify([pop, popEnd]));
+    const lineSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 20"><line x1="0" y1="10" x2="200" y2="10" stroke="#0000ff" stroke-width="4"/></svg>';
+    const textSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 40"><text x="0" y="30" font-size="30" fill="#0000ff">Hola</text></svg>';
+    const ln = mkObj('o4', prepareSvg(lineSvg, 'o4').markup, 200, 20);
+    const tx = { ...mkObj('o5', prepareSvg(textSvg, 'o5').markup, 200, 40), y: 300 };
+    rs.setProject(mkProject([ln, tx], [
+      mkClip('c1', 'o4', 'indicate', 0, 1, { scale: 1.3, color: '#ff0000' }),
+      mkClip('c2', 'o5', 'indicate', 0, 1, { scale: 1.3, color: '#ff0000' }),
+    ]));
+    rs.renderAt(0.5);
+    const lineEl = document.querySelector('[data-mm-obj="o4"] line') as SVGElement;
+    const textEl = document.querySelector('[data-mm-obj="o5"] text') as SVGElement;
+    const midStroke = getComputedStyle(lineEl).stroke;
+    const midFill = getComputedStyle(textEl).fill;
+    rs.renderAt(1.5);
+    check('Indicate en trazos y textos: pulso de color que vuelve al original', midStroke === 'rgb(255, 0, 0)' && midFill === 'rgb(255, 0, 0)'
+      && getComputedStyle(lineEl).stroke === 'rgb(0, 0, 255)' && getComputedStyle(textEl).fill === 'rgb(0, 0, 255)', JSON.stringify([midStroke, midFill]));
+    const plane = normalizePlane({ plots: [{ id: 'f1', expression: 'x', color: '#ffff00', width: 3, visible: true }],
+      points: [{ id: 'pt1', x: 1, y: 1, color: '#ff0000', radius: 6, visible: true }] });
+    const pSvg = planeSvg(plane);
+    const pl = { ...mkObj('o6', prepareSvg(pSvg, 'o6').markup, plane.width, plane.height), sourceSvg: pSvg, plane };
+    rs.setProject(mkProject([pl], [
+      mkClip('c1', 'o6', 'disappear', 0, 1, { mode: 'fade', subElementId: 'plot:f1' }),
+      mkClip('c2', 'o6', 'disappear', 0, 1, { mode: 'shrink', subElementId: 'point:pt1' }),
+    ]));
+    rs.renderAt(2);
+    const plotG = document.querySelector('[data-mm-obj="o6"] [data-mm-sub="plot:f1"]') as SVGElement;
+    const pointG = document.querySelector('[data-mm-obj="o6"] [data-mm-sub="point:pt1"]') as SVGElement;
+    const wrap6 = document.querySelector('[data-mm-obj="o6"]') as HTMLElement;
+    check('Salida de sub-elementos del plano: la gráfica y el punto se ocultan; el plano sigue visible',
+      getComputedStyle(plotG).opacity === '0' && getComputedStyle(pointG).opacity === '0' && wrap6.style.opacity === '1',
+      JSON.stringify([getComputedStyle(plotG).opacity, getComputedStyle(pointG).opacity, wrap6.style.opacity]));
+    rs.dispose();
+  }
 
   // Exportación a Manim
   const manim = generateManim(mkProject(
@@ -609,4 +702,18 @@ async function glyphTests() {
   check('Manim: Indicate sobre un único glifo', manim.includes('Indicate(o1[5],'));
   check('Manim: TransformMatchingTex(eq1, eq2)', manim.includes('TransformMatchingTex(o1, o2, run_time=1)') && manim.includes('"reveal": [o2]'));
   check('Manim: Write con lag_ratio', manim.includes('Write(o1, lag_ratio=0.2, run_time=1)'));
+  const exits = generateManim({
+    ...mkProject([A, B], [
+      mkClip('c1', 'o1', 'draw', 0, 1), mkClip('c2', 'o1', 'disappear', 2, 1, { mode: 'fade' }),
+      mkClip('c3', 'o2', 'disappear', 1, 0.5, { mode: 'shrink', glyphs: '0' }), mkClip('c4', 'o1', 'appear', 4, 1, { direction: 'none' }),
+      mkClip('c5', 'o2', 'appear', 5, 1, { mode: 'pop' }),
+    ]),
+    savedGroups: [{ id: 'g1', name: 'Ecuaciones', objectIds: ['o1', 'o2'] }],
+    sceneBackground: { type: 'grid-dots', bgColor: '#0b121c', lineColor: '#7c878e', opacity: 0.35, cellSize: 160, dotRadius: 2 },
+  }).script;
+  check('Manim: FadeOut del objeto', exits.includes('FadeOut(o1, run_time=1)') && exits.includes('"exit": True'));
+  check('Manim: ShrinkToCenter de un glifo', exits.includes('ShrinkToCenter(o2[0], run_time=0.5)'));
+  check('Manim: GrowFromCenter (Pop) de un objeto', exits.includes('GrowFromCenter(o2, run_time=1)'));
+  check('Manim: grupos guardados como VGroup', exits.includes('group_g1 = VGroup(o1, o2)'));
+  check('Manim: plantilla de fondo con retícula', exits.includes('config.background_color = "#0b121c"') && exits.includes('scene_grid'));
 }

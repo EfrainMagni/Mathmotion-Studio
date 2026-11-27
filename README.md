@@ -18,7 +18,8 @@ Requiere Node 18+ y un navegador basado en Chromium (la grabación codifica MP4/
 
 1. **Importar SVG** (panel izquierdo; «Ejemplo» carga un SVG de prueba) o escribir una fórmula LaTeX.
 2. Clic en el lienzo = selecciona el elemento hijo; **Mayús+clic / Mayús+arrastrar** = objeto completo.
-3. En el panel derecho, pulsa una animación (Escribir/Dibujar, Radar, Brillar, Aparecer/Deslizar, Rotar): crea un clip en el cabezal.
+3. En el panel derecho, **Animaciones del Objeto** (para cualquier figura, trazado, texto, plano o ecuación completa) agrupa los clips en **Entrada** (Create / Write, FadeIn, Brotar (Pop)), **Énfasis y Color** (Indicate, Cambiar Color con *Regresar al terminar*), **Salida / Desaparecer** (Desvanecer `FadeOut`, Contraer `ShrinkToCenter`) y **Otros efectos** (Radar, Brillar, Rotar). Cada botón crea un clip en el cabezal. Con una ecuación seleccionada aparece además el bloque **Animaciones de Glifos y Fórmulas** (glifos, términos, TransformMatchingTex, TransformFromCopy glifo a glifo, color, Pop y salida por glifo).
+   - Una salida deja el objeto oculto (sin interceptar clics) hasta que un clip de entrada posterior lo vuelve a mostrar.
 4. En la línea de tiempo mueve, edita numéricamente o elimina clips; arrastra el cabezal; ←/→ avanzan un fotograma (30 fps) cuando no hay un objeto seleccionado. Espacio reproduce.
 
 ## Polígonos y edición de vértices
@@ -31,7 +32,7 @@ Pulsa **A** o usa **Selección Directa (Vértices)** en la barra del lienzo. Sel
 
 Elige una herramienta en **Dibujo vectorial** y arrastra sobre el lienzo. Mantén Mayús para dibujar círculos o cuadrados. Para colocar texto, escribe en la barra lateral y haz clic o define su caja arrastrando. El inspector permite cambiar estilos, editar la punta de las flechas y alinear u ordenar los objetos.
 
-Usa Ctrl+Z para deshacer, Ctrl+Y o Ctrl+Mayús+Z para rehacer, Ctrl+D para duplicar y Supr para eliminar. Las flechas mueven la selección 1 píxel lógico o 10 con Mayús. Sin un objeto seleccionado, izquierda y derecha recorren fotogramas. En macOS también funciona ⌘ para los atajos con Ctrl.
+Usa V (Selección), A (Selección Directa), P (Pluma), \\ (Línea, también con AltGr), G (plano cartesiano), Ctrl+Z para deshacer, Ctrl+Y o Ctrl+Mayús+Z para rehacer, Ctrl+D para duplicar y Supr para eliminar. Las herramientas de dibujo responden aunque el panel izquierdo esté oculto. Espacio reproduce o pausa (mantenerlo no la alterna en cada repetición). Las flechas mueven la selección 1 píxel lógico o 10 con Mayús. Sin un objeto seleccionado, izquierda y derecha recorren fotogramas. En macOS también funciona ⌘ para los atajos con Ctrl.
 
 **Exportar código Manim (.py)** muestra el script, permite copiarlo y descarga `escena.py`. Ejecútalo con Manim Community. Las fórmulas requieren una instalación de LaTeX.
 

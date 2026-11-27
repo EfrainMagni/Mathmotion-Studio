@@ -598,20 +598,23 @@ export function LeftPanel({ visible }: { visible: boolean }) {
   }, [active]);
 
   useEffect(() => {
-    if (!visible) return;
     function onKey(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey ||
+      // «\» se escribe con AltGr en teclados latinoamericanos y españoles (Ctrl+Alt en Windows): se acepta igual.
+      const altGraph = event.getModifierState?.('AltGraph') && event.key === '\\';
+      if (event.defaultPrevented || event.isComposing || ((event.ctrlKey || event.metaKey) && !altGraph) ||
         document.querySelector('dialog[open]')) return;
       const editing = event.target instanceof HTMLElement &&
         (event.target.isContentEditable || event.target.closest('input, textarea, select'));
       const inRail = event.target instanceof Node && rail.current?.contains(event.target);
-      if (event.key === 'Escape' && open && (inRail || (!editing && !store.getState().ui.termEdit))) {
+      if (event.key === 'Escape' && open && visible && (inRail || (!editing && !store.getState().ui.termEdit))) {
         event.preventDefault();
         close(open);
         return;
       }
       if (editing || event.repeat) return;
-      if (event.altKey) {
+      if (event.altKey && !altGraph) {
+        // Los módulos del panel solo se abren con el panel visible.
+        if (!visible) return;
         if (event.code === 'Digit1') {
           event.preventDefault();
           setDrawing((current) => !current);
@@ -623,6 +626,7 @@ export function LeftPanel({ visible }: { visible: boolean }) {
         }
         return;
       }
+      // Las herramientas de dibujo (R, E, Y, \, P, T) funcionan aunque el panel izquierdo esté oculto, como V, A y G.
       if (disabled) return;
       const tool = DRAW_TOOLS.find(({ shortcut }) => shortcut === event.key.toUpperCase());
       if (!tool || tool.id === 'select' || tool.id === 'direct') return;

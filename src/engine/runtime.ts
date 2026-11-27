@@ -1,7 +1,6 @@
-import { STAGE_SIZES, groupTransformOf, isPathTool, type Box, type Clip, type GroupTransformSpec, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
+import { STAGE_SIZES, disappearModeOf, groupTransformOf, isEntranceClip, isPathTool, planeSubElementOf, type Box, type Clip, type GroupTransformSpec, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
 import { arcAsPath, arcCircle, arcEndAngle, arcPoint, gradientId, gradientMarkup, isLinearVector, lineTips, pathLayout, tipLayout } from './vector';
-import { planeSubElementOf } from '../types';
 import { SELECTABLE_SHAPES } from './svgImport';
 import {
   clipGlyphs, connectorPlan, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor,
@@ -280,7 +279,6 @@ export class SceneRuntime {
   private project: Project | null = null;
   private objs = new Map<string, ObjRec>();
   private nodes = new Map<string, NodeRec>();
-  private alive = true;
   private k = 1;
   private applied = new Map<Element, Props>();
   /** Copias visuales de la ecuación origen (opción «Mantener ecuación origen»). */
@@ -322,6 +320,8 @@ export class SceneRuntime {
       'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-dasharray', 'stroke-dashoffset',
       'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'opacity', 'font-family', 'font-size', 'font-weight', 'font-style',
       'text-anchor', 'visibility', 'display',
+      // Contorno exterior de glifos (Cambiar Color con grosor): el trazo se pinta debajo del relleno.
+      'paint-order', 'letter-spacing',
     ];
     for (const wrapper of Array.from(this.els.layer.children) as HTMLElement[]) {
       const live = wrapper.firstElementChild as SVGSVGElement | null;
@@ -1573,6 +1573,31 @@ export class SceneRuntime {
     const directed = directedGlyphClips(sorted);
     const directedOf = new Map<Clip, DirectedGlyphClip>(directed.map((d) => [d.clip, d]));
     const targeted = directedTargets(directed);
+    // Salidas (`disappear`) y re-entradas: una salida deja oculto su alcance hasta que empieza un clip de entrada
+    // posterior sobre el mismo objeto (y glifos); ese clip de entrada no oculta nada antes de su inicio.
+    const scopeOf = (c: Clip): number[] | null => {
+      const fo = this.formulaOf(c.targetId);
+      return fo ? clipGlyphs(fo, c.parameters) : null;
+    };
+    const overlaps = (a: number[] | null, b: number[] | null) => !a || !b || a.some((i) => b.includes(i));
+    const exits = sorted.filter((c) => c.type === 'disappear');
+    const reentries = new Map<Clip, { start: number; scope: number[] | null }[]>();
+    const afterExit = new Set<Clip>();
+    for (const d of exits) {
+      const scope = scopeOf(d);
+      const list: { start: number; scope: number[] | null }[] = [];
+      for (const e of sorted) {
+        if (!isEntranceClip(e) || e.targetId !== d.targetId || e.start <= d.start + 1e-9) continue;
+        const scopeE = scopeOf(e);
+        if (!overlaps(scope, scopeE)) continue;
+        list.push({ start: e.start, scope: scopeE });
+        afterExit.add(e);
+      }
+      reentries.set(d, list);
+    }
+    /** ¿Algún clip de entrada posterior a la salida `d` ya empezó en `t` (para el glifo `glyph`, o el objeto)? */
+    const reentered = (d: Clip, glyph: number | null) =>
+      (reentries.get(d) ?? []).some((e) => t >= e.start && (glyph === null || !e.scope || e.scope.includes(glyph)));
     /** Glifos de la copia visual del origen que viajan en este instante (el resto de la copia se oculta). */
     const ghostMoving = new Map<string, Set<number>>();
     // Destinos de transformaciones sin entrada propia anterior: ocultos hasta que empieza la transformación.
@@ -1641,6 +1666,8 @@ export class SceneRuntime {
       const p = clamp01(raw);
       const live = raw >= 0 && raw <= 1;
       const par = c.parameters;
+      // Re-entrada tras una salida: antes de su inicio, la salida previa ya mantiene oculto el alcance.
+      if (raw < 0 && afterExit.has(c)) continue;
       switch (c.type) {
         case 'draw': {
           const fo = this.formulaOf(c.targetId);
@@ -1682,8 +1709,9 @@ export class SceneRuntime {
             }
             break;
           }
-          if (par.mode === 'pop' && typeof par.subElementId === 'string') {
-            // Punto de un plano: brota desde su centro (escala 0 → 1.2 → 1) con su etiqueta y líneas guía.
+          if (par.mode === 'pop') {
+            // Brotar (GrowFromCenter) de un objeto completo, un nodo o un punto de un plano (con su etiqueta y líneas
+            // guía): escala 0 → 1.2 → 1 desde su centro y opacidad 0 → 1 (`smooth`).
             const sub = get(c.targetId);
             sub.scale *= Math.max(0.001, p < 0.7 ? 1.2 * smooth(p / 0.7) : 1.2 - 0.2 * smooth((p - 0.7) / 0.3));
             sub.opacity *= smooth(p);
@@ -1790,6 +1818,33 @@ export class SceneRuntime {
             if (width !== null) s.strokeWidthTo.push([width, e]);
           }
           if (fillOpacity !== null) s.fillOpacityTo.push([fillOpacity, e]);
+          break;
+        }
+        case 'disappear': {
+          // Desvanecer (FadeOut) o Contraer (ShrinkToCenter): nada antes del inicio; `smooth` durante el clip y, desde
+          // el final, oculto hasta que un clip de entrada posterior lo vuelva a mostrar.
+          if (raw < 0) break;
+          const e = smooth(p);
+          const shrink = disappearModeOf(par) === 'shrink';
+          const fo = this.formulaOf(c.targetId);
+          if (fo) {
+            // Ecuaciones: por glifo (toda la ecuación o el alcance elegido); contrae hacia el centro del conjunto.
+            const rec = this.objs.get(fo.id)!;
+            const explicit = clipGlyphs(fo, par);
+            const idx = (explicit ?? glyphsOf(fo)).filter((i) => i >= 0 && i < rec.glyphs.length && !reentered(c, i));
+            if (!idx.length) break;
+            const geo = shrink ? this.geoOf(rec) : null;
+            if (geo) moveGroup(fo, geo, idx.filter((i) => i < geo.length), Math.max(1e-3, 1 - e), 0, { x: 0, y: 0 });
+            for (const i of idx) glyphState(fo.id, i).opacity *= 1 - e;
+            if (raw >= 1 && !explicit && idx.length === rec.glyphs.length) hiddenIds.add(fo.id);
+            break;
+          }
+          if (reentered(c, null)) break;
+          const s = get(c.targetId);
+          s.opacity *= 1 - e;
+          if (shrink) s.scale *= Math.max(1e-3, 1 - e);
+          // Ya fuera de escena: el objeto no intercepta clics en el lienzo.
+          if (raw >= 1 && this.nodes.get(c.targetId)?.isRoot) hiddenIds.add(c.targetId);
           break;
         }
         case 'circumscribe':
@@ -2311,7 +2366,6 @@ export class SceneRuntime {
   }
 
   dispose() {
-    this.alive = false;
     this.restoreAll();
     for (const rec of this.objs.values()) rec.wrapper.remove();
     for (const ghost of this.ghosts.values()) ghost.wrapper.remove();

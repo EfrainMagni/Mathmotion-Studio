@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { FPS, SOUND_IDS, SOUND_LABEL, clipLabel, glyphTransformOf, groupTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type Project, type SoundId } from '../types';
+import { DISAPPEAR_MODES, FPS, SOUND_IDS, SOUND_LABEL, clipLabel, disappearModeOf, glyphTransformOf, groupTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type Project, type SoundId } from '../types';
 import { formatGlyphList } from '../engine/glyphs';
 import { engine } from '../engine';
 import { NumberInput, btn, input } from './ui';
@@ -227,6 +227,13 @@ function ClipEditor() {
           Mantener ecuación origen
         </label>
       )}
+      {clip.type === 'disappear' && (
+        <select className={`${input} w-40`} aria-label="Modo de salida" title="Desvanecer = FadeOut · Contraer = ShrinkToCenter"
+          value={disappearModeOf(clip.parameters)}
+          onChange={(e) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, mode: e.target.value } })}>
+          {DISAPPEAR_MODES.map((mode) => <option key={mode.id} value={mode.id}>{mode.label}</option>)}
+        </select>
+      )}
       {clip.type === 'colorChange' && (
         <ColorChangeFields value={clip.parameters}
           onChange={(patch) => actions.updateClip(clip.id, { parameters: patchParams(clip.parameters, patch) })} />
@@ -287,18 +294,22 @@ export function Timeline() {
     return ids;
   }, [clips]);
 
-  // Espacio reproduce cuando el foco está fuera de campos y diálogos.
+  // Espacio reproduce/pausa cuando el foco está fuera de campos y diálogos (igual en 16:9 y 9:16).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      if (t.closest('input,textarea,select,[contenteditable]') || document.querySelector('dialog[open]')) return;
+      if (e.code !== 'Space' || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+      const t = e.target instanceof HTMLElement ? e.target : null;
+      if (t?.closest('input,textarea,select,[contenteditable]') || document.querySelector('dialog[open]')) return;
       if (store.getState().ui.recording.phase !== 'idle') return;
       const pb = engine.playback;
       if (!pb) return;
-      if (e.code === 'Space') {
-        e.preventDefault();
-        pb.toggle();
-      }
+      e.preventDefault();
+      // Mantener Espacio (mano de desplazamiento) no debe alternar la reproducción en cada repetición.
+      if (e.repeat) return;
+      // Con el foco en un botón, el navegador también lo «pulsaría» al soltar Espacio (p. ej. Reproducir: doble
+      // alternancia que se anula). Se suelta el foco para que Espacio solo reproduzca o pause.
+      if (t?.closest('button,[role="button"]')) t.blur();
+      pb.toggle();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -445,7 +456,7 @@ function Lane({
           <div
             key={c.id}
             data-clip={c.id}
-            className={`absolute top-1 flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-[10px] leading-tight ${selectedClip === c.id ? 'border-accent bg-accent-soft' : c.type === 'groupTransform' ? 'border-dashed border-accent/60 bg-ink-600' : 'border-bezel bg-ink-600'}`}
+            className={`absolute top-1 flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-[10px] leading-tight ${selectedClip === c.id ? 'border-accent bg-accent-soft' : c.type === 'groupTransform' ? 'border-dashed border-accent/60 bg-ink-600' : c.type === 'disappear' ? 'border-rose-400/60 bg-ink-600' : 'border-bezel bg-ink-600'}`}
             style={{ left: c.start * pps, width: Math.max(26, c.duration * pps), height: LANE_H - 8 }}
             onPointerDown={(e) => onDown(e, c.id, c.start)}
             onPointerMove={onMove}

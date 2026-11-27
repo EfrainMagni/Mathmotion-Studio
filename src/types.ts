@@ -156,12 +156,16 @@ export const SOUND_IDS = Object.keys(SOUND_LABEL) as SoundId[];
 
 export type ClipType =
   | 'draw' | 'radar' | 'glow' | 'appear' | 'rotate'
-  | 'indicate' | 'circumscribe' | 'focus' | 'transform' | 'transformMatch' | 'colorChange' | 'groupTransform';
+  | 'indicate' | 'circumscribe' | 'focus' | 'transform' | 'transformMatch' | 'colorChange' | 'groupTransform'
+  | 'disappear';
+/** Clips de entrada: ocultan su alcance antes de empezar (o desde el final de una salida previa). */
+export const ENTRANCE_CLIPS: ReadonlySet<ClipType> = new Set<ClipType>(['draw', 'appear']);
+export const isEntranceClip = (clip: Pick<Clip, 'type'>) => ENTRANCE_CLIPS.has(clip.type);
 export const CLIP_LABEL: Record<ClipType, string> = {
-  draw: 'Escribir / Dibujar',
+  draw: 'Create / Write',
   radar: 'Radar',
   glow: 'Brillar',
-  appear: 'Aparecer / Deslizar',
+  appear: 'FadeIn / Deslizar',
   rotate: 'Rotar',
   indicate: 'Indicate',
   circumscribe: 'Circumscribe',
@@ -170,7 +174,20 @@ export const CLIP_LABEL: Record<ClipType, string> = {
   transformMatch: 'TransformMatchingTex',
   colorChange: 'Cambiar Color',
   groupTransform: 'Transformar Grupo',
+  disappear: 'Desaparecer',
 };
+
+/**
+ * Animación de salida (`disappear`): `'fade'` = Desvanecer (`FadeOut`), `'shrink'` = Contraer (`ShrinkToCenter`).
+ * Antes del clip no toca el objeto; durante él (curva `smooth`) baja la opacidad (y la escala, hacia su centro);
+ * desde el final queda oculto hasta que un clip de entrada posterior (Write, FadeIn, Pop…) lo vuelva a mostrar.
+ */
+export type DisappearMode = 'fade' | 'shrink';
+export const DISAPPEAR_MODES: { id: DisappearMode; label: string; manim: string }[] = [
+  { id: 'fade', label: 'Desvanecer (FadeOut)', manim: 'FadeOut' },
+  { id: 'shrink', label: 'Contraer (Shrink)', manim: 'ShrinkToCenter' },
+];
+export const disappearModeOf = (params: ClipParams): DisappearMode => (params.mode === 'shrink' ? 'shrink' : 'fade');
 
 export type ClipParams = Record<string, number | string | boolean>;
 
@@ -328,6 +345,8 @@ export function pruneGroupClips(clips: Clip[], removed: Set<string>): Clip[] {
 /** Etiqueta del clip (distingue la transformación dirigida de glifos de un Transform normal). */
 export function clipLabel(clip: Pick<Clip, 'type' | 'targetId' | 'parameters'>): string {
   if (clip.type === 'appear' && clip.parameters.mode === 'pop') return 'GrowFromCenter (Pop)';
+  if (clip.type === 'appear' && clip.parameters.direction === 'none') return 'FadeIn';
+  if (clip.type === 'disappear') return DISAPPEAR_MODES.find((m) => m.id === disappearModeOf(clip.parameters))!.label;
   const group = groupTransformOf(clip);
   if (group) return `Transformar Grupo (${group.sourceObjectIds.length} → ${group.targetObjectIds.length} objetos)`;
   const spec = glyphTransformOf(clip);

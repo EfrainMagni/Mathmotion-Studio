@@ -1,8 +1,11 @@
-import { BACKGROUND_COLOR, STAGE_SIZES, groupTransformOf, planeSubElementOf, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject } from '../types';
+import {
+  SCENE_GRID_LINE_WIDTH, STAGE_SIZES, disappearModeOf, groupTransformOf, isEntranceClip, isPathTool, planeSubElementOf, resolveSceneBackground,
+  sceneBackgroundGeometry, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject,
+} from '../types';
 import { svgWithVertices } from './vertices';
 import { expressionToPython, normalizePlane } from './cartesianPlane';
 import { clipGlyphs, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphRuns } from './glyphs';
-import { VECTOR_FILL, VECTOR_STROKE, VECTOR_STROKE_WIDTH } from './vector';
+import { VECTOR_FILL, VECTOR_STROKE, VECTOR_STROKE_WIDTH, arcAsPath, isLinearVector, pathBody } from './vector';
 
 const n = (value: number) => Number(value.toFixed(7)).toString();
 const quoted = (value: string) => JSON.stringify(value);
@@ -38,7 +41,14 @@ function vectorConstructor(object: Obj2D, unit: number) {
   if (vector.tool === 'ellipse') {
     return Math.abs(w - h) < 0.00001 ? `Circle(radius=${n(w / 2)})` : `Ellipse(width=${n(w)}, height=${n(h)})`;
   }
-  if (vector.tool === 'text') return `Text(${quoted(vector.text?.trim() ? vector.text : ' ')})`;
+  if (vector.tool === 'text') {
+    // Tipografía del catálogo (11 familias): Manim usa Pango, así que la fuente debe estar instalada en el sistema.
+    const style = vector.textStyle;
+    const font = style ? [`font=${quoted(style.fontFamily)}`, style.fontWeight === 700 ? 'weight=BOLD' : style.fontWeight === 600 ? 'weight=SEMIBOLD' : null,
+      style.italic ? 'slant=ITALIC' : null].filter(Boolean) : [];
+    return `Text(${[quoted(vector.text?.trim() ? vector.text : ' '), ...font].join(', ')})`;
+  }
+  if (isPathTool(vector.tool) || vector.tool === 'arc') return 'VMobject()';
   const dx = object.bw <= 1 ? 0 : (vector.reverseX ? -w : w) / 2;
   const dy = object.bh <= 1 ? 0 : (vector.reverseY ? h : -h) / 2;
   return `Line(${point(-dx, -dy)}, ${point(dx, dy)})`;
@@ -113,6 +123,20 @@ function glyphCommands(object: Obj2D, info: TexInfo) {
     if (ref) commands.push(`${object.id}_${term.id} = ${ref}  # término ${quoted(term.name.replace(/[\r\n]+/g, ' '))}`);
   }
   return commands;
+}
+
+/** Trazados Bézier (pluma / curva) y arcos: puntos de control cúbicos y polígonos de las puntas (coordenadas Manim). */
+function pathCode(object: Obj2D, unit: number, strokeWidth: number) {
+  const vector = object.vector!;
+  const geometry = vector.tool === 'arc' ? arcAsPath(vector, object.bw, object.bh) : vector;
+  const { segments, start, end } = pathBody(geometry, strokeWidth > 0 ? strokeWidth : 1);
+  const local = (x: number, y: number) => `[${n((x - object.bw / 2) * unit)}, ${n((object.bh / 2 - y) * unit)}, 0.0]`;
+  const points = segments.flatMap((segment) => segment.map(({ x, y }) => local(x, y)));
+  const tip = (polygon: string | null) => polygon
+    ? polygon.trim().split(/\s+/).map((pair) => pair.split(',').map(Number)).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y))
+      .map(([x, y]) => `np.array(${local(x, y)})`)
+    : null;
+  return { points: points.length ? `np.array([${points.join(', ')}])` : null, tips: [tip(start), tip(end)].filter((list): list is string[] => !!list && list.length >= 3) };
 }
 
 /** Plano cartesiano → `NumberPlane` de Manim (cuadrícula, subcuadrícula, ejes con punta Stealth, coordenadas). */
@@ -203,7 +227,11 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
 
   const commands = [`${name} = ${constructor}`];
   const vector = object.vector;
-  const linear = vector?.tool === 'line' || vector?.tool === 'arrow';
+  /** Líneas, flechas, arcos y trazados abiertos: su pintura principal es el trazo. */
+  const strokeOnly = isLinearVector(vector);
+  const path = vector && (isPathTool(vector.tool) || vector.tool === 'arc')
+    ? pathCode(object, unit, style.strokeWidth ?? VECTOR_STROKE_WIDTH) : null;
+  if (path?.points) commands.push(`${name}.set_points(${path.points})`);
   if (vector?.tool === 'text' || !vector) {
     commands.push(`if ${name}.width > 0: ${name}.scale_to_fit_width(${n(object.bw * unit)})`);
     if (vector?.tool === 'text') commands.push(`if ${name}.height > 0: ${name}.stretch_to_fit_height(${n(object.bh * unit)})`);
@@ -211,19 +239,29 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
 
   const defaultFormulaColor = object.kind === 'formula'
     ? object.markup.match(/style="[^"]*\bcolor:(#[\da-f]{6})/i)?.[1] : undefined;
-  const fill = cssColor(style.fill) ?? (vector && !linear ? VECTOR_FILL : defaultFormulaColor);
-  const stroke = cssColor(style.stroke) ?? (linear ? VECTOR_STROKE : undefined);
-  const hiddenFill = style.fill === 'none' || style.fill === 'transparent';
+  const fill = strokeOnly ? undefined : cssColor(style.fill) ?? (vector ? VECTOR_FILL : defaultFormulaColor);
+  const stroke = cssColor(style.stroke) ?? (strokeOnly ? VECTOR_STROKE : undefined);
+  // Arcos y trazados abiertos no tienen relleno (las líneas y flechas de Manim tampoco lo muestran).
+  const hiddenFill = !!path && strokeOnly ? true : style.fill === 'none' || style.fill === 'transparent';
   const hiddenStroke = style.stroke === 'none' || style.stroke === 'transparent';
   const opacity = style.opacity ?? 1;
   if (fill || hiddenFill) {
     commands.push(`${name}.set_fill(${fill ? `color=${quoted(fill)}, ` : ''}opacity=${hiddenFill ? 0 : 1})`);
   }
-  const strokeWidth = style.strokeWidth ?? (linear ? VECTOR_STROKE_WIDTH : vector ? 0 : undefined);
+  const strokeWidth = style.strokeWidth ?? (strokeOnly ? VECTOR_STROKE_WIDTH : vector ? 0 : undefined);
   if (stroke || hiddenStroke || strokeWidth !== undefined) {
     const args = [stroke && `color=${quoted(stroke)}`, strokeWidth !== undefined && `width=${n(strokeWidth)}`,
       `opacity=${hiddenStroke ? 0 : 1}`].filter(Boolean);
     commands.push(`${name}.set_stroke(${args.join(', ')})`);
+  }
+  // Degradado (lineal o radial): Manim lo aproxima con un degradado lineal en la dirección del ángulo.
+  const gradient = style.fillGradient && style.fillGradient.mode !== 'solid' ? style.fillGradient : undefined;
+  const stops = gradient ? [...gradient.stops].sort((a, b) => a.offset - b.offset).map((stop) => cssColor(stop.color)).filter((c): c is string => !!c) : [];
+  if (gradient && stops.length >= 2) {
+    const colors = `[${stops.map(quoted).join(', ')}]`;
+    commands.push(strokeOnly ? `${name}.set_stroke(color=${colors})` : `${name}.set_fill(color=${colors}, opacity=1)`);
+    const angle = gradient.mode === 'linear' ? (gradient.angle * Math.PI) / 180 : Math.PI / 4;
+    commands.push(`${name}.set_sheen_direction(${point(Math.cos(angle), -Math.sin(angle))})`);
   }
   if (vector?.tool === 'arrow' && vector.tip !== 'none') {
     const tip = vector.tip === 'open' ? 'ArrowTriangleTip' : 'ArrowTriangleFilledTip';
@@ -236,14 +274,21 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
     const outline = `DashedVMobject(${name}.copy().set_fill(opacity=0), num_dashes=${count}, dashed_ratio=0.18)`;
     if (vector?.tool === 'arrow' && vector.tip !== 'none') {
       commands.push(`${name} = VGroup(${outline}, *${name}.get_tips())`);
-    } else if (!linear) {
+    } else if (!strokeOnly) {
       commands.push(`${name} = VGroup(${name}.copy().set_stroke(width=0), ${outline})`);
     } else {
       commands.push(`${name} = ${outline}`);
     }
   }
+  if (path?.tips.length) {
+    // Puntas de los trazados abiertos y arcos: los mismos polígonos del editor, del color del trazo.
+    const tipColor = (strokeOnly && stops.length ? stops[stops.length - 1] : undefined) ?? stroke ?? VECTOR_STROKE;
+    const tips = path.tips.map((pts) => `Polygon(${pts.join(', ')}, stroke_width=0, fill_color=${quoted(tipColor)}, fill_opacity=${hiddenStroke ? 0 : 1})`);
+    commands.push(`${name} = VGroup(${name}, ${tips.join(', ')})`);
+  }
   if (opacity !== 1) commands.push(`${name}.fade(${n(1 - opacity)})`);
-  const pivot = vector?.tool === 'polygon' ? ', about_point=ORIGIN' : '';
+  // Polígonos, trazados y arcos: geometría relativa al centro de su caja (se escalan y giran sobre ese punto).
+  const pivot = vector?.tool === 'polygon' || path ? ', about_point=ORIGIN' : '';
   if (object.scale !== 1) commands.push(`${name}.scale(${n(object.scale)}${pivot})`);
   if (object.rotation) commands.push(`${name}.rotate(${n(-object.rotation)} * DEGREES, axis=OUT${pivot})`);
   commands.push(`${name}.${pivot ? 'shift' : 'move_to'}(${stagePoint(object, width, height)})`);
@@ -252,14 +297,15 @@ function objectCode(object: SceneObject, style: NodeStyle, width: number, height
 }
 
 /** `Cambiar Color` → `mob.animate(run_time=…).set_fill(...).set_stroke(...)` (cambio permanente). */
-function colorChangeCode(clip: Clip, variable: string): string | null {
+function colorChangeCode(clip: Clip, variable: string, defaultStrokeWidth?: number): string | null {
   const params = clip.parameters;
   const fill = params.fillEnabled === false ? null : cssColor(typeof params.targetFillColor === 'string' ? params.targetFillColor : undefined);
   const stroke = params.strokeEnabled === false ? null : cssColor(typeof params.targetStrokeColor === 'string' ? params.targetStrokeColor : undefined);
   const opacity = params.fillEnabled !== false && typeof params.targetFillOpacity === 'number' ? Math.min(1, Math.max(0, params.targetFillOpacity)) : null;
   const calls: string[] = [];
   if (fill || opacity !== null) calls.push(`.set_fill(${[fill ? quoted(fill) : null, opacity !== null ? `opacity=${n(opacity)}` : null].filter(Boolean).join(', ')})`);
-  if (stroke) calls.push(`.set_stroke(color=${quoted(stroke)})`);
+  const width = typeof params.targetStrokeWidth === 'number' ? Math.min(20, Math.max(0, params.targetStrokeWidth)) : defaultStrokeWidth;
+  if (stroke) calls.push(`.set_stroke(color=${quoted(stroke)}${width !== undefined ? `, width=${n(width)}` : ''})`);
   if (!calls.length) return null;
   if (params.revertOnEnd === true) {
     // Ida y vuelta: 25 % hacia el color nuevo, espera del 50 % y regreso al estado previo. `variable.copy()` se
@@ -285,6 +331,7 @@ function planeSubAnimation(clip: Clip, plane: NonNullable<Obj2D['plane']>, varia
     if (clip.type === 'appear') return `FadeIn(${variable}, ${duration})`;
     if (clip.type === 'indicate') return `Indicate(${variable}, scale_factor=${n(typeof clip.parameters.scale === 'number' ? clip.parameters.scale : 1.3)}, color=${quoted(cssColor(String(clip.parameters.color)) ?? '#ffff00')}, ${duration})`;
     if (clip.type === 'colorChange') return colorChangeCode(clip, variable);
+    if (clip.type === 'disappear') return disappearCode(clip, variable);
     return null;
   }
   const point = geometry.points?.find((entry) => entry.id === id);
@@ -295,7 +342,13 @@ function planeSubAnimation(clip: Clip, plane: NonNullable<Obj2D['plane']>, varia
   if (clip.type === 'appear') return `FadeIn(${variable}, ${duration})`;
   if (clip.type === 'indicate') return `Indicate(${variable}, scale_factor=${n(typeof clip.parameters.scale === 'number' ? clip.parameters.scale : 1.3)}, color=${quoted(cssColor(String(clip.parameters.color)) ?? '#ffff00')}, ${duration})`;
   if (clip.type === 'colorChange') return colorChangeCode(clip, variable);
+  if (clip.type === 'disappear') return disappearCode(clip, variable);
   return null;
+}
+
+/** Desaparecer → `FadeOut(obj)` o `ShrinkToCenter(obj)`. */
+function disappearCode(clip: Clip, variable: string) {
+  return `${disappearModeOf(clip.parameters) === 'shrink' ? 'ShrinkToCenter' : 'FadeOut'}(${variable}, run_time=${n(clip.duration)})`;
 }
 
 function animation(clip: Clip, object: SceneObject, width: number, height: number, scoped?: string) {
@@ -311,6 +364,7 @@ function animation(clip: Clip, object: SceneObject, width: number, height: numbe
       return `${write ? 'Write' : 'Create'}(${id}${lag}, ${duration})`;
     }
     case 'appear': {
+      if (params.mode === 'pop') return `GrowFromCenter(${id}, ${duration})`;
       const direction: Record<string, string> = { left: 'RIGHT', right: 'LEFT', up: 'DOWN', down: 'UP' };
       const offset = direction[String(params.direction)];
       const distance = typeof params.distance === 'number' ? params.distance : 120;
@@ -323,6 +377,8 @@ function animation(clip: Clip, object: SceneObject, width: number, height: numbe
         ? `, about_point=${stagePoint(object, width, height)}` : '';
       return `Rotate(${id}, angle=${n(-degrees)} * DEGREES, axis=OUT${pivot}, ${duration})`;
     }
+    case 'disappear':
+      return disappearCode(clip, id);
     case 'glow':
     case 'radar':
       return `Indicate(${id}, color=${quoted(cssColor(String(params.color)) ?? '#fde047')}, ${duration})`;
@@ -362,7 +418,7 @@ function equationAnimation(
     case 'indicate':
       return { key, overlay: false, reveal: [], code: `Indicate(${selection}, scale_factor=${n(typeof params.scale === 'number' ? params.scale : 1.3)}, color=${quoted(color)}, ${duration})` };
     case 'colorChange': {
-      const code = colorChangeCode(clip, selection);
+      const code = colorChangeCode(clip, selection, own.count ? 2 : undefined);
       return code ? { key, overlay: false, reveal: [], code } : null;
     }
     case 'circumscribe':
@@ -412,6 +468,27 @@ function equationAnimation(
   }
 }
 
+/** Plantilla de fondo con retícula (cuadrícula o isométrica): líneas y nodos detrás de todos los objetos. */
+function backgroundCode(bg: ReturnType<typeof resolveSceneBackground>, width: number, height: number): string[] {
+  if (bg.type === 'solid') return [];
+  const unit = FRAME_HEIGHT / height;
+  const { lines, dots } = sceneBackgroundGeometry(bg, width / 2, height / 2, 0, 0, width, height);
+  const c = (v: number) => Number(v.toFixed(4)).toString();
+  const xy = (x: number, y: number) => `${c((x - width / 2) * unit)}, ${c((height / 2 - y) * unit)}`;
+  const color = quoted(cssColor(bg.lineColor) ?? '#7c878e');
+  const out = ['# Plantilla de fondo de la escena', 'scene_grid = VGroup()'];
+  if (lines.length) {
+    out.push(`for x1, y1, x2, y2 in [${lines.map(([x1, y1, x2, y2]) => `(${xy(x1, y1)}, ${xy(x2, y2)})`).join(', ')}]:`,
+      `    scene_grid.add(Line(np.array([x1, y1, 0.0]), np.array([x2, y2, 0.0]), stroke_color=${color}, stroke_width=${n(SCENE_GRID_LINE_WIDTH)}, stroke_opacity=${n(bg.opacity)}))`);
+  }
+  if (dots.length && bg.dotRadius > 0) {
+    out.push(`for x, y in [${dots.map(([x, y]) => `(${xy(x, y)})`).join(', ')}]:`,
+      `    scene_grid.add(Dot(np.array([x, y, 0.0]), radius=${n(bg.dotRadius * unit)}, color=${color}, fill_opacity=${n(bg.opacity)}, stroke_width=0))`);
+  }
+  out.push('scene_grid.set_z_index(-1000)', 'self.add(scene_grid)', '');
+  return out;
+}
+
 const SVG_HELPER = `def embedded_svg(markup):
     with TemporaryDirectory() as folder:
         path = Path(folder) / "shape.svg"
@@ -422,6 +499,7 @@ const SVG_HELPER = `def embedded_svg(markup):
 const TIMELINE_HELPER = `def play_timeline(scene, objects, events, duration):
     # Los eventos de distintos objetos avanzan en paralelo.
     hidden = {}
+    exits = {}
     seen = set()
     for start, length, mob, entrance, build, opts in events:
         if mob not in seen and entrance:
@@ -458,6 +536,11 @@ const TIMELINE_HELPER = `def play_timeline(scene, objects, events, duration):
             finish_until(start)
             if mob in hidden:
                 mob.become(hidden.pop(mob))
+            if opts.get("exit"):
+                # Salida (FadeOut / ShrinkToCenter): se guarda el estado previo para una re-entrada posterior.
+                exits[mob] = mob.copy()
+            elif entrance and mob in exits:
+                mob.become(exits.pop(mob))
             for other in opts.get("reveal", []):
                 if other in hidden:
                     other.become(hidden.pop(other))
@@ -485,7 +568,7 @@ export function generateManim(project: Project): { script: string; notes: string
   const notes = new Set<string>();
   const byId = new Map(project.objects.map((object) => [object.id, object]));
   const ends = new Map<string, number>();
-  const events: { start: number; time: number; id: string; code: string; entrance: boolean; overlay: boolean; keep?: boolean; reveal: string[] }[] = [];
+  const events: { start: number; time: number; id: string; code: string; entrance: boolean; overlay: boolean; keep?: boolean; exit?: boolean; reveal: string[] }[] = [];
   const infos = new Map<string, TexInfo>();
   const infoOf = (object: Obj2D) => {
     let info = infos.get(object.id);
@@ -496,7 +579,7 @@ export function generateManim(project: Project): { script: string; notes: string
   const directed = directedGlyphClips(project.clips);
   const directedOf = new Map(directed.map((entry) => [entry.clip, entry]));
   const targeted = directedTargets(directed);
-  const isEntrance = (clip: Clip) => clip.type === 'draw' || clip.type === 'appear';
+  const isEntrance = isEntranceClip;
   for (const clip of [...project.clips].sort((a, b) => a.start - b.start)) {
     const object = byId.get(clip.targetId.split('.')[0]);
     if (!object) continue;
@@ -512,7 +595,7 @@ export function generateManim(project: Project): { script: string; notes: string
       const start = Math.max(clip.start, ends.get(target) ?? 0);
       if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
       ends.set(target, start + clip.duration);
-      events.push({ start, time: clip.duration, id: target, code, entrance: clip.type === 'draw' || clip.type === 'appear', overlay: false, reveal: [] });
+      events.push({ start, time: clip.duration, id: target, code, entrance: isEntrance(clip), overlay: false, exit: clip.type === 'disappear', reveal: [] });
       continue;
     }
     if (clip.type === 'groupTransform') {
@@ -562,11 +645,14 @@ export function generateManim(project: Project): { script: string; notes: string
       continue;
     }
     if (EQUATION_CLIPS.has(clip.type)) {
-      const built = clip.targetId === object.id ? equationAnimation(clip, object, project, infoOf, notes, FRAME_HEIGHT / h) : null;
+      // Énfasis (Indicate, Cambiar Color, Circumscribe, FocusOn) sobre un nodo SVG: se aplica al objeto completo.
+      const wholeObject = clip.targetId === object.id || (clip.type !== 'transform' && clip.type !== 'transformMatch');
+      const built = wholeObject ? equationAnimation(clip, object, project, infoOf, notes, FRAME_HEIGHT / h) : null;
       if (!built) {
         notes.add('Se omitieron clips de ecuaciones sin objeto de destino válido.');
         continue;
       }
+      if (clip.targetId !== object.id) notes.add('Los clips de nodos SVG se aplican al objeto completo.');
       const start = Math.max(clip.start, ends.get(built.key) ?? 0);
       if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
       ends.set(built.key, start + clip.duration);
@@ -575,10 +661,10 @@ export function generateManim(project: Project): { script: string; notes: string
     }
     let target = object.id;
     let scoped: string | undefined;
-    if (isEntrance(clip) && object.kind === 'formula' && !object.vector && object.tex && clip.targetId === object.id) {
-      // Write / FadeIn sobre glifos concretos (o sobre los que no llegan desde otro objeto).
+    if ((isEntrance(clip) || clip.type === 'disappear') && object.kind === 'formula' && !object.vector && object.tex && clip.targetId === object.id) {
+      // Write / FadeIn / FadeOut sobre glifos concretos (o, en las entradas, sobre los que no llegan desde otro objeto).
       const info = infoOf(object);
-      const scope = entranceScope(object, clip.parameters, targeted.get(object.id), info.count);
+      const scope = clip.type === 'disappear' ? clipGlyphs(object, clip.parameters) : entranceScope(object, clip.parameters, targeted.get(object.id), info.count);
       if (scope) {
         const ref = glyphGroup(object.id, info, scope);
         if (!ref) continue;
@@ -592,7 +678,11 @@ export function generateManim(project: Project): { script: string; notes: string
     const start = Math.max(clip.start, ends.get(target) ?? 0);
     if (start > clip.start + 1e-9) notes.add('Los clips superpuestos de un mismo objeto se ejecutan en secuencia.');
     ends.set(target, start + clip.duration);
-    events.push({ start, time: clip.duration, id: target, code: code!, entrance: clip.type === 'draw' || clip.type === 'appear', overlay: false, reveal: [] });
+    if (!code) {
+      notes.add(`Se omitieron clips sin equivalente en Manim (${clip.type}).`);
+      continue;
+    }
+    events.push({ start, time: clip.duration, id: target, code, entrance: isEntrance(clip), overlay: false, exit: clip.type === 'disappear', reveal: [] });
   }
   // Glifos de una ecuación destino que no llegan de otro objeto ni tienen clip de entrada: aparecen al llegar el último.
   for (const [objectId, set] of targeted) {
@@ -614,16 +704,27 @@ export function generateManim(project: Project): { script: string; notes: string
   if (project.objects.some((object) => object.plane)) notes.add('Planos cartesianos: se exportan como NumberPlane; el tamaño de los números y los grosores se aproximan a las unidades de Manim.');
   if (svg) notes.add('Los SVG se incrustan. Manim interpreta sus estilos y filtros según su compatibilidad.');
   if (project.voice || project.clips.some((clip) => clip.sound)) notes.add('El audio queda fuera del script.');
-  if (project.background === 'grid') notes.add('La cuadrícula se exporta como fondo liso.');
+  const background = resolveSceneBackground(project);
+  if (project.background === 'grid' && !project.sceneBackground) notes.add('La cuadrícula clásica se exporta como fondo liso (usa una plantilla de fondo para exportar la retícula).');
   if (Object.entries(project.styles).some(([id, style]) => id.includes('.') && Object.keys(style).some((key) => key !== 'vertices'))) notes.add('Los estilos del inspector aplicados a nodos SVG no se trasladan a Manim.');
 
-  const body = project.objects.flatMap((object, index) =>
-    [...objectCode(object, project.styles[object.id] ?? {}, w, h, project.styles), `${object.id}.set_z_index(${index})`, '']);
+  const body = [
+    ...backgroundCode(background, w, h),
+    ...project.objects.flatMap((object, index) =>
+      [...objectCode(object, project.styles[object.id] ?? {}, w, h, project.styles), `${object.id}.set_z_index(${index})`, '']),
+  ];
+  // Grupos guardados con etiqueta → VGroup con nombre (solo agrupan; no cambian el orden ni las animaciones).
+  for (const group of project.savedGroups ?? []) {
+    const members = group.objectIds.filter((id) => byId.has(id));
+    if (/^g[1-9]\d*$/.test(group.id) && members.length) body.push(`group_${group.id} = VGroup(${members.join(', ')})  # ${quoted(group.name.replace(/[\r\n]+/g, ' '))}`);
+  }
+  if (project.savedGroups?.length) body.push('');
   const ids = project.objects.map((object) => object.id);
   const length = [...ends.values()].reduce((max, end) => Math.max(max, end), sceneDuration(project));
   if (events.length) {
     const options = (event: (typeof events)[number]) => {
-      const entries = [event.overlay && '"overlay": True', event.keep && '"keep": True', event.reveal.length && `"reveal": [${event.reveal.join(', ')}]`].filter(Boolean);
+      const entries = [event.overlay && '"overlay": True', event.keep && '"keep": True', event.exit && '"exit": True',
+        event.reveal.length && `"reveal": [${event.reveal.join(', ')}]`].filter(Boolean);
       return `{${entries.join(', ')}}`;
     };
     body.push('events = [', ...events.map((event) => `    (${n(event.start)}, ${n(event.time)}, ${event.id}, ${event.entrance ? 'True' : 'False'}, lambda: ${event.code}, ${options(event)}),`),
@@ -642,7 +743,7 @@ export function generateManim(project: Project): { script: string; notes: string
       '',
       `config.pixel_width = ${w}`, `config.pixel_height = ${h}`,
       `config.frame_width = ${n(FRAME_HEIGHT * w / h)}`, `config.frame_height = ${FRAME_HEIGHT}`,
-      `config.background_color = ${quoted(BACKGROUND_COLOR[project.background])}`, '',
+      `config.background_color = ${quoted(cssColor(background.bgColor) ?? '#141414')}`, '',
       ...(svg ? [SVG_HELPER] : []), ...(events.length ? [TIMELINE_HELPER] : []),
       `class EscenaMathMotion(Scene):`,
       '    def construct(self):', ...body.map((line) => line ? '        ' + line : ''), '',

@@ -93,11 +93,11 @@ try {
   });
   assert.ok(Math.abs(centered[0] - 960) < 0.001);
   assert.ok(Math.abs(centered[1] - 540) < 0.001);
-  await button('Escribir / Dibujar').click();
+  await button('Create / Write').click();
   console.log('PASS creación, gestos, Deshacer/Rehacer, duplicación, Suprimir y alineación');
 
   await draw('Círculo / Elipse', 0.62, 0.12, 0.84, 0.34);
-  await button('Aparecer / Deslizar').click();
+  await button('FadeIn').click();
   await draw('Línea', 0.66, 0.65, 0.9, 0.65);
   await draw('Flecha vectorial', 0.28, 0.72, 0.12, 0.48);
   await page.getByLabel('Punta de flecha').selectOption('both');
@@ -110,11 +110,11 @@ try {
   await button('Texto libre').click();
   await page.getByLabel('Texto para dibujar').fill('Texto «libre»: <x> y "comillas"');
   await draw('Texto libre', 0.52, 0.74, 0.85, 0.84);
-  await button('Escribir / Dibujar').click();
+  await button('Create / Write').click();
   assert.equal(await object('o6').locator('text').textContent(), 'Texto «libre»: <x> y "comillas"');
   await page.getByRole('textbox', { name: 'Fórmula LaTeX' }).fill('x^2+1');
   await button('Insertar fórmula').click();
-  await button('Escribir / Dibujar').click();
+  await button('Create / Write').click();
   await button('Ejemplo').click();
   await page.getByLabel('Grosor', { exact: true }).fill('5');
   await page.getByLabel('Estilo de línea').selectOption('dotted');

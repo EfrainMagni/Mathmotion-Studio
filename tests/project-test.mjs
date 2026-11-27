@@ -97,7 +97,7 @@ try {
   await input.fill(formula);
   await button('Insertar fórmula').click();
   await page.getByRole('treeitem', { name: /Fórmula 1/ }).waitFor();
-  await button('Escribir / Dibujar').click();
+  await button('Create / Write').click();
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 30"><style>.shape{fill:#123456}</style><g id="group"><path id="line" class="shape" d="M0 0 L40 0 L40 30Z"/></g></svg>';
   await page.locator('input[accept=".svg,image/svg+xml"]').setInputFiles({
     name: 'figura.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(svg),

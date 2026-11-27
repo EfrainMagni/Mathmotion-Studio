@@ -128,11 +128,12 @@ const project = z.object({
   clips: z.array(z.object({
     id: clipId, targetId, type: z.enum([
       'draw', 'radar', 'glow', 'appear', 'rotate', 'orbit', // 'orbit' es legado 3D: se descarta al abrir
-      'indicate', 'circumscribe', 'focus', 'transform', 'transformMatch', 'colorChange', 'groupTransform',
+      'indicate', 'circumscribe', 'focus', 'transform', 'transformMatch', 'colorChange', 'groupTransform', 'disappear',
     ]),
     start: nonnegative, duration: positive, sound: z.enum(['chalk', 'pop', 'radar', 'sparkle']).nullable(),
     parameters,
-  })),
+  }).refine((clip) => clip.type !== 'disappear' || clip.parameters.mode === undefined || clip.parameters.mode === 'fade' || clip.parameters.mode === 'shrink',
+    { message: 'Modo de salida no válido.' })),
   // Grupos guardados con etiqueta (opcional: los archivos antiguos no los tienen).
   savedGroups: z.array(z.object({
     id: z.string().regex(/^g[1-9]\d*$/),
