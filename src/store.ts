@@ -5,6 +5,8 @@ import { normalizePlane, planeSvg } from './engine/cartesianPlane';
 import { useSyncExternalStore } from 'react';
 import {
   STAGE_SIZES,
+  groupTransformParams,
+  pruneGroupClips,
   type Clip,
   type ClipParams,
   type ClipType,
@@ -67,6 +69,11 @@ export interface UIState {
   glyphSel: number[];
   /** Nodo activo del trazado Bézier seleccionado (Selección Directa), o `null`. */
   pathNode: number | null;
+  /**
+   * Grupo origen fijado para una «Transformación de Grupo» (paso 1), a la espera de que el usuario seleccione el
+   * grupo destino (paso 2). Estado temporal de la interfaz: no forma parte del proyecto ni del historial.
+   */
+  pendingTransformSourceIds: string[] | null;
 }
 
 export interface State {
@@ -108,6 +115,7 @@ function defaultUI(): UIState {
     termEdit: null,
     glyphSel: [],
     pathNode: null,
+    pendingTransformSourceIds: null,
   };
 }
 
@@ -122,6 +130,13 @@ let history = new History<Project>();
 const NO_MULTI: string[] = [];
 function keepMulti(ids: string[]): string[] {
   return ids.length > 1 ? ids : NO_MULTI;
+}
+
+/** Conserva solo los ids del grupo origen pendiente que siguen existiendo (o `null` si no queda ninguno). */
+function keepPending(ids: string[] | null, exists: (id: string) => boolean): string[] | null {
+  if (!ids) return null;
+  const kept = ids.filter(exists);
+  return kept.length ? kept : null;
 }
 
 /** Ids de los objetos raíz seleccionados (uno o varios). */
@@ -145,6 +160,7 @@ function restoreHistory(direction: 'undo' | 'redo') {
       selectedClip: project.clips.some((clip) => clip.id === selectedClip) ? selectedClip : null,
       termEdit: editing ? termEdit : null,
       glyphSel: editing ? state.ui.glyphSel : [],
+      pendingTransformSourceIds: keepPending(state.ui.pendingTransformSourceIds, (id) => project.objects.some((object) => object.id === id)),
     },
   };
   listeners.forEach((listener) => listener());
@@ -196,7 +212,7 @@ export const store = {
       ui: {
         ...state.ui, selection: null, multiSelection: NO_MULTI, selectedClip: null, time: 0,
         playing: false, vectorTool: null, pointerTool: 'select', polygonRequest: null, notice: null,
-        termEdit: null, glyphSel: [], pathNode: null,
+        termEdit: null, glyphSel: [], pathNode: null, pendingTransformSourceIds: null,
       },
     };
     listeners.forEach((l) => l());
@@ -239,6 +255,8 @@ export function defaultClipParams(type: ClipType): ClipParams {
       return { color: '#888888', opacity: 0.2 };
     case 'colorChange':
       return { fillEnabled: true, targetFillColor: '#ffff00', strokeEnabled: true, targetStrokeColor: '#ffff00' };
+    case 'groupTransform':
+      return { keepSource: false };
     default:
       return {};
   }
@@ -312,7 +330,8 @@ export const actions = {
       ...p,
       objects: p.objects.filter((o) => o.id !== id),
       styles: stripNodeKeys(p.styles, id),
-      clips: p.clips.filter((c) => c.targetId !== id && !c.targetId.startsWith(id + '.') && c.parameters.to !== id),
+      clips: pruneGroupClips(p.clips, new Set([id]))
+        .filter((c) => c.targetId !== id && !c.targetId.startsWith(id + '.') && c.parameters.to !== id),
     }));
     const ui = store.getState().ui;
     const affected = (s: string | null) => s !== null && (s === id || s.startsWith(id + '.'));
@@ -321,6 +340,7 @@ export const actions = {
       selection: affected(ui.selection) ? null : ui.selection,
       multiSelection: keepMulti(ui.multiSelection.filter((entry) => entry !== id)),
       selectedClip: clipStill ? ui.selectedClip : null,
+      pendingTransformSourceIds: keepPending(ui.pendingTransformSourceIds, (entry) => entry !== id),
       ...(ui.termEdit === id ? { termEdit: null, glyphSel: [] } : {}),
     });
   },
@@ -435,6 +455,8 @@ export const actions = {
           if (target === id || target.startsWith(id + '.')) styles[nextId + target.slice(id.length)] = style;
         }
         for (const entry of project.clips) {
+          // Las transformaciones de grupo enlazan varios objetos: no se copian al duplicar uno de ellos.
+          if (entry.type === 'groupTransform') continue;
           if (entry.targetId === id || entry.targetId.startsWith(id + '.')) {
             clips.push({ ...entry, id: `c${++clip}`, targetId: nextId + entry.targetId.slice(id.length) });
           }
@@ -457,7 +479,8 @@ export const actions = {
       ...p,
       objects: p.objects.filter((o) => !set.has(o.id)),
       styles: Object.fromEntries(Object.entries(p.styles).filter(([key]) => !owned(key))),
-      clips: p.clips.filter((c) => !owned(c.targetId) && !(typeof c.parameters.to === 'string' && set.has(c.parameters.to))),
+      clips: pruneGroupClips(p.clips, set)
+        .filter((c) => !owned(c.targetId) && !(typeof c.parameters.to === 'string' && set.has(c.parameters.to))),
     }));
     const ui = store.getState().ui;
     const clipStill = store.getState().project.clips.some((c) => c.id === ui.selectedClip);
@@ -465,6 +488,7 @@ export const actions = {
       selection: ui.selection && owned(ui.selection) ? null : ui.selection,
       multiSelection: keepMulti(ui.multiSelection.filter((entry) => !set.has(entry))),
       selectedClip: clipStill ? ui.selectedClip : null,
+      pendingTransformSourceIds: keepPending(ui.pendingTransformSourceIds, (entry) => !set.has(entry)),
       ...(ui.termEdit && set.has(ui.termEdit) ? { termEdit: null, glyphSel: [] } : {}),
     });
   },
@@ -533,6 +557,32 @@ export const actions = {
         return next;
       }),
     }), group);
+  },
+
+  /** Paso 1 de la «Transformación de Grupo»: fija los objetos indicados como grupo origen (o lo cancela con `null`). */
+  setPendingTransformSource(ids: string[] | null) {
+    const existing = ids?.filter((id, i) => ids.indexOf(id) === i && state.project.objects.some((object) => object.id === id)) ?? [];
+    store.setUi({ pendingTransformSourceIds: existing.length ? existing : null });
+  },
+
+  /**
+   * Paso 2: crea el clip `groupTransform` del grupo origen pendiente hacia `targetIds` (una sola acción reversible).
+   * Los objetos que estén en ambos grupos se quitan del destino. Devuelve el id del clip, o `null` si no es válido.
+   */
+  addGroupTransform(targetIds: string[], options: { start: number; duration?: number; keepSource?: boolean }): string | null {
+    const sources = state.ui.pendingTransformSourceIds?.filter((id) => state.project.objects.some((object) => object.id === id)) ?? [];
+    const targets = targetIds.filter((id, i) => targetIds.indexOf(id) === i && !sources.includes(id)
+      && state.project.objects.some((object) => object.id === id));
+    if (!sources.length || !targets.length) return null;
+    const id = actions.addClip({
+      targetId: sources[0],
+      type: 'groupTransform',
+      start: options.start,
+      duration: options.duration ?? 2,
+      parameters: groupTransformParams({ sourceObjectIds: sources, targetObjectIds: targets, keepSource: options.keepSource === true }),
+    });
+    store.setUi({ pendingTransformSourceIds: null });
+    return id;
   },
 
   removeClip(id: string) {

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FONT_IDS, SCENE_BG_LIMITS, type Obj2D, type Project } from '../types';
+import { FONT_IDS, SCENE_BG_LIMITS, parseObjectIds, pruneGroupClips, type Obj2D, type Project } from '../types';
 import { prepareSvg } from './svgImport';
 import { normalizePlane, planeSvg } from './cartesianPlane';
 
@@ -86,6 +86,7 @@ const style = z.object({
   vertices: z.array(vertex).min(2).max(2048).optional(),
   scale: positive.optional(), tx: number.optional(), ty: number.optional(),
 });
+const objectIdList = z.string().max(20000).regex(/^o[1-9]\d*(,o[1-9]\d*)*$/);
 const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()])).superRefine((input, ctx) => {
   if (
     (input.color !== undefined && !paint.safeParse(input.color).success) ||
@@ -99,7 +100,11 @@ const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()
     (input.term !== undefined && !/^t[1-9]\d*$/.test(String(input.term))) ||
     (input.toTerm !== undefined && !/^t[1-9]\d*$/.test(String(input.toTerm))) ||
     (input.glyphs !== undefined && !/^[\d,\s-]*$/.test(String(input.glyphs))) ||
-    (input.subElementId !== undefined && !/^(plot|point):[a-z]{1,3}\d{1,6}$/.test(String(input.subElementId)))
+    (input.subElementId !== undefined && !/^(plot|point):[a-z]{1,3}\d{1,6}$/.test(String(input.subElementId))) ||
+    // Transformación de grupo: listas de ids de objeto raíz separadas por comas.
+    (input.sourceObjectIds !== undefined && !objectIdList.safeParse(input.sourceObjectIds).success) ||
+    (input.targetObjectIds !== undefined && !objectIdList.safeParse(input.targetObjectIds).success) ||
+    (input.keepSource !== undefined && typeof input.keepSource !== 'boolean')
   ) ctx.addIssue({ code: 'custom', message: 'Parámetros de animación no válidos.' });
 });
 const voice = z.object({
@@ -123,7 +128,7 @@ const project = z.object({
   clips: z.array(z.object({
     id: clipId, targetId, type: z.enum([
       'draw', 'radar', 'glow', 'appear', 'rotate', 'orbit', // 'orbit' es legado 3D: se descarta al abrir
-      'indicate', 'circumscribe', 'focus', 'transform', 'transformMatch', 'colorChange',
+      'indicate', 'circumscribe', 'focus', 'transform', 'transformMatch', 'colorChange', 'groupTransform',
     ]),
     start: nonnegative, duration: positive, sound: z.enum(['chalk', 'pop', 'radar', 'sparkle']).nullable(),
     parameters,
@@ -166,7 +171,8 @@ export function parseProject(text: string): Project {
     ...data,
     styles: Object.fromEntries(Object.entries(data.styles).filter(([id]) => !dropped.has(owner(id)))),
     clips: data.clips.filter((clip) =>
-      clip.type !== 'orbit' && !dropped.has(owner(clip.targetId)) && !dropped.has(String(clip.parameters.to ?? ''))),
+      clip.type !== 'orbit' && (clip.type === 'groupTransform' || !dropped.has(owner(clip.targetId)))
+      && !dropped.has(String(clip.parameters.to ?? ''))),
   };
   const objects = data.objects.flatMap((object): Obj2D[] => {
     if (object.kind === 'shape3d') return [];
@@ -181,6 +187,14 @@ export function parseProject(text: string): Project {
     return [{ ...object, plane: undefined, markup }];
   });
   const targets = new Set(objects.map((object) => object.id));
+  // Transformaciones de grupo: ambas listas deben existir y referirse a objetos del archivo; los objetos 3D
+  // descartados se quitan de las listas (y el clip desaparece si un grupo queda vacío).
+  if (p.clips.some((clip) => clip.type === 'groupTransform' && (
+    !parseObjectIds(clip.parameters.sourceObjectIds).length || !parseObjectIds(clip.parameters.targetObjectIds).length ||
+    [...parseObjectIds(clip.parameters.sourceObjectIds), ...parseObjectIds(clip.parameters.targetObjectIds)]
+      .some((id) => !targets.has(id) && !dropped.has(id))
+  ))) throw new Error('El archivo contiene una transformación de grupo con objetos inexistentes.');
+  p.clips = pruneGroupClips(p.clips as Project['clips'], new Set([...dropped].map(String))) as typeof p.clips;
   const clipIds = new Set(p.clips.map((clip) => clip.id));
   if (
     targets.size !== objects.length || clipIds.size !== p.clips.length ||

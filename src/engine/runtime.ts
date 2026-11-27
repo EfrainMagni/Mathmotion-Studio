@@ -1,4 +1,4 @@
-import { STAGE_SIZES, isPathTool, type Box, type Clip, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
+import { STAGE_SIZES, groupTransformOf, isPathTool, type Box, type Clip, type GroupTransformSpec, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
 import { arcAsPath, arcCircle, arcEndAngle, arcPoint, gradientId, gradientMarkup, isLinearVector, lineTips, pathLayout, tipLayout } from './vector';
 import { planeSubElementOf } from '../types';
@@ -166,6 +166,103 @@ interface Ring {
   max: number | null;
 }
 
+/** Pintura base de una figura (sin animaciones): colores CSS, opacidad de relleno y grosor en px del escenario. */
+interface ShapePaint { fill: string; fillOpacity: number; stroke: string; strokeWidth: number }
+
+/** Deformación de la figura principal de una transformación de grupo, dibujada en una capa propia. */
+interface Morph {
+  key: string;
+  /** Objeto tras cuyo contenedor se inserta la capa (conserva el orden de apilado). */
+  afterId: string;
+  d: string;
+  paint: ShapePaint;
+}
+
+/** Plan (cacheado) de una transformación de grupo: figura principal deformable, pares y sobrantes. */
+interface GroupPlan {
+  morph: { a: Obj2D; b: Obj2D; ptsA: Pt[]; ptsB: Pt[]; closed: boolean; paintA: ShapePaint; paintB: ShapePaint } | null;
+  pairs: [Obj2D, Obj2D][];
+  extraA: Obj2D[];
+  extraB: Obj2D[];
+}
+
+type Pt = { x: number; y: number };
+type GroupKind = 'shape' | 'point' | 'text' | 'tex' | 'line' | 'svg';
+
+const GROUP_SHAPE_TOOLS = new Set(['polygon', 'rectangle', 'ellipse', 'pen', 'curve', 'arc']);
+/** Muestras del contorno para figuras curvas (elipse, trazados). */
+const OUTLINE_SAMPLES = 64;
+const objSize = (o: Obj2D) => Math.sqrt(Math.max(1, o.bw * o.bh)) * Math.abs(o.scale || 1);
+
+/** Inserta vértices sobre las aristas más largas hasta tener `n` (los vértices originales se conservan). */
+function resampleOutline(pts: Pt[], n: number, closed: boolean): Pt[] {
+  if (pts.length >= n || pts.length < 2) return pts.slice();
+  const segs = closed ? pts.length : pts.length - 1;
+  const lens = Array.from({ length: segs }, (_, i) => Math.hypot(pts[(i + 1) % pts.length].x - pts[i].x, pts[(i + 1) % pts.length].y - pts[i].y));
+  const total = lens.reduce((a, b) => a + b, 0) || 1;
+  const extra = n - pts.length;
+  const share = lens.map((l) => (l / total) * extra);
+  const count = share.map(Math.floor);
+  let left = extra - count.reduce((a, b) => a + b, 0);
+  for (const i of share.map((v, i) => i).sort((a, b) => (share[b] - count[b]) - (share[a] - count[a]))) {
+    if (left <= 0) break;
+    count[i]++;
+    left--;
+  }
+  const out: Pt[] = [];
+  pts.forEach((a, i) => {
+    out.push(a);
+    if (i >= segs) return;
+    const b = pts[(i + 1) % pts.length];
+    for (let j = 1; j <= count[i]; j++) {
+      const t = j / (count[i] + 1);
+      out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    }
+  });
+  return out;
+}
+
+/** Reordena `b` (giro cíclico y sentido) para que cada vértice viaje lo menos posible hacia su pareja de `a`. */
+function alignOutline(a: Pt[], b: Pt[], closed: boolean): Pt[] {
+  const n = a.length;
+  const centroid = (list: Pt[]) => list.reduce((c, q) => ({ x: c.x + q.x / list.length, y: c.y + q.y / list.length }), { x: 0, y: 0 });
+  const ca = centroid(a);
+  const cb = centroid(b);
+  let best = b;
+  let bestCost = Infinity;
+  for (const list of [b, b.slice().reverse()]) {
+    for (let shift = 0; shift < (closed ? n : 1); shift++) {
+      let cost = 0;
+      for (let i = 0; i < n && cost < bestCost; i++) {
+        const q = list[(i + shift) % n];
+        cost += (q.x - cb.x - (a[i].x - ca.x)) ** 2 + (q.y - cb.y - (a[i].y - ca.y)) ** 2;
+      }
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = Array.from({ length: n }, (_, i) => list[(i + shift) % n]);
+      }
+    }
+  }
+  return best;
+}
+
+/** Mezcla dos pinturas; `none` se trata como el color del otro extremo con opacidad 0. */
+function mixPaint(a: ShapePaint, b: ShapePaint, t: number): ShapePaint {
+  const channel = (ca: string, cb: string): [string, number, number] => {
+    const na = ca === 'none' || !ca;
+    const nb = cb === 'none' || !cb;
+    if (na && nb) return ['none', 0, 0];
+    if (na) return [cb, 0, 1];
+    if (nb) return [ca, 1, 0];
+    return [mixColor(ca, cb, t), 1, 1];
+  };
+  const [fill, fa, fb] = channel(a.fill, b.fill);
+  const [stroke, sa, sb] = channel(a.stroke, b.stroke);
+  const fillOpacity = (a.fillOpacity * fa) + (b.fillOpacity * fb - a.fillOpacity * fa) * t;
+  const strokeWidth = a.strokeWidth * sa + (b.strokeWidth * sb - a.strokeWidth * sa) * t;
+  return { fill, fillOpacity, stroke, strokeWidth };
+}
+
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 export const easeInOut = (p: number) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
 /** `smooth` de Manim (sigmoide con inflexión 10). */
@@ -198,6 +295,10 @@ export class SceneRuntime {
   private ownedSubs = new Map<string, Set<string>>();
   private ringsDrawn = false;
   private matches = new Map<string, [number, number][]>();
+  /** Planes de las transformaciones de grupo (emparejamiento y contornos), por firma de los objetos implicados. */
+  private groupPlans = new Map<string, GroupPlan>();
+  /** Capas de deformación de figuras (transformación de grupo en curso), por clip. */
+  private morphEls = new Map<string, { wrapper: HTMLDivElement; svg: SVGSVGElement; path: SVGPathElement }>();
 
   constructor(
     private els: RuntimeEls,
@@ -1016,7 +1117,7 @@ export class SceneRuntime {
       this.geomCache = new WeakMap();
     }
 
-    const { states, rings, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds } = this.computeStates(this.resolveSubClips(p.clips), t);
+    const { states, rings, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds, morphs } = this.computeStates(this.resolveSubClips(p.clips), t);
 
     // Pivotes: se miden con el DOM en estado base para que el resultado no dependa del historial.
     const childIds = new Set<string>();
@@ -1320,6 +1421,9 @@ export class SceneRuntime {
 
     this.commit(next);
 
+    // 4b) Deformación de la figura principal de las transformaciones de grupo en curso
+    this.syncMorphs(morphs);
+
     // 5) Radar (capa de efectos del escenario)
     this.drawRings(rings, frames);
 
@@ -1419,6 +1523,7 @@ export class SceneRuntime {
     const ghostStates = new Map<string, NState>();
     const ghostGlyphs = new Map<string, Map<number, GState>>();
     const hiddenIds = new Set<string>();
+    const morphs: Morph[] = [];
     const glyphState = (objId: string, index: number, ghost = false): GState => {
       const store = ghost ? ghostGlyphs : glyphStates;
       let list = store.get(objId);
@@ -1479,6 +1584,17 @@ export class SceneRuntime {
       if (typeof to !== 'string' || to === c.targetId || revealAt.has(to)) continue;
       const entrance = sorted.some((k) => k.targetId === to && (k.type === 'draw' || k.type === 'appear') && k.start < c.start);
       if (!entrance) revealAt.set(to, c.start);
+    }
+    // Transformación de grupo: cada objeto del grupo destino sin animación previa permanece oculto hasta el inicio.
+    for (const c of sorted) {
+      const group = groupTransformOf(c);
+      if (!group) continue;
+      for (const id of group.targetObjectIds) {
+        if (revealAt.has(id)) continue;
+        const earlier = sorted.some((k) => k !== c && k.start < c.start && (
+          k.targetId === id || k.parameters.to === id || (groupTransformOf(k)?.targetObjectIds.includes(id) ?? false)));
+        if (!earlier) revealAt.set(id, c.start);
+      }
     }
     for (const [id, start] of revealAt) {
       if (t >= start || !this.nodes.has(id)) continue;
@@ -1795,6 +1911,11 @@ export class SceneRuntime {
           }
           break;
         }
+        case 'groupTransform': {
+          const group = groupTransformOf(c);
+          if (group) this.applyGroupTransform(c, group, raw, get, morphs, hiddenIds);
+          break;
+        }
         case 'transformMatch': {
           const A = this.formulaOf(c.targetId);
           const B = typeof par.to === 'string' && par.to !== c.targetId ? this.formulaOf(par.to) : undefined;
@@ -1871,7 +1992,252 @@ export class SceneRuntime {
     for (const [objId, moving] of ghostMoving) {
       for (const g of this.objs.get(objId)?.glyphs ?? []) if (!moving.has(g.index)) glyphState(objId, g.index, true).opacity *= 0;
     }
-    return { states, rings, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds };
+    return { states, rings, glyphStates, frames, ghostStates, ghostGlyphs, hiddenIds, morphs };
+  }
+
+  // ------------------------------------------------------------------ transformación de grupo
+
+  /** Categoría de emparejamiento de un objeto dentro de una transformación de grupo. */
+  private groupKind(o: Obj2D, largest: number): GroupKind {
+    const tool = o.vector?.tool;
+    if (tool === 'text') return 'text';
+    if (tool === 'line' || tool === 'arrow') return 'line';
+    if (o.kind === 'formula' && !o.vector) return 'tex';
+    if (tool === 'ellipse' && (objSize(o) <= 60 || objSize(o) <= 0.25 * largest)) return 'point';
+    if (tool && GROUP_SHAPE_TOOLS.has(tool)) return 'shape';
+    return 'svg';
+  }
+
+  /** Contorno de la figura principal en coordenadas del escenario (pose base del objeto). */
+  private outlineOf(o: Obj2D): { pts: Pt[]; closed: boolean; el: SVGGeometryElement; k: number } | null {
+    const rec = this.objs.get(o.id);
+    const el = rec?.svg.querySelector('polygon,polyline,rect,ellipse,circle,path') as SVGGeometryElement | null;
+    if (!rec || !el) return null;
+    const tag = el.localName;
+    const local: Pt[] = [];
+    try {
+      const list = (tag === 'polygon' || tag === 'polyline') ? (el as unknown as SVGPolygonElement).points : null;
+      if (list && list.numberOfItems >= 2) {
+        for (let i = 0; i < list.numberOfItems; i++) {
+          const q = list.getItem(i);
+          local.push({ x: q.x, y: q.y });
+        }
+      } else if (tag === 'rect') {
+        const b = el.getBBox();
+        local.push({ x: b.x, y: b.y }, { x: b.x + b.width, y: b.y }, { x: b.x + b.width, y: b.y + b.height }, { x: b.x, y: b.y + b.height });
+      } else {
+        const len = el.getTotalLength();
+        if (!(len > 0)) return null;
+        for (let i = 0; i < OUTLINE_SAMPLES; i++) {
+          const q = el.getPointAtLength((len * i) / OUTLINE_SAMPLES);
+          local.push({ x: q.x, y: q.y });
+        }
+      }
+    } catch {
+      return null;
+    }
+    const ctm = el.getCTM();
+    if (local.length < 2 || !ctm) return null;
+    const m = DOMMatrix.fromMatrix(ctm);
+    const th = (o.rotation * Math.PI) / 180;
+    const cos = Math.cos(th);
+    const sin = Math.sin(th);
+    const pts = local.map((pt) => {
+      const q = m.transformPoint(new DOMPoint(pt.x, pt.y));
+      const vx = (q.x - o.bw / 2) * o.scale;
+      const vy = (q.y - o.bh / 2) * o.scale;
+      return { x: o.x + vx * cos - vy * sin, y: o.y + vx * sin + vy * cos };
+    });
+    const closed = tag === 'polygon' || tag === 'rect' || tag === 'ellipse' || tag === 'circle'
+      || (tag === 'path' && /z\s*$/i.test(el.getAttribute('d') ?? ''));
+    return { pts, closed, el, k: Math.hypot(m.a, m.b) * Math.abs(o.scale) };
+  }
+
+  /** Pintura base de la figura: overrides del inspector, si no atributos del SVG, si no estilo calculado. */
+  private basePaint(o: Obj2D, el: Element, k: number): ShapePaint {
+    const styles = this.project?.styles ?? {};
+    const childId = el.getAttribute('data-mm-id');
+    const st: NodeStyle = { ...(styles[o.id] ?? {}), ...(childId && childId !== o.id ? styles[childId] ?? {} : {}) };
+    const cs = getComputedStyle(el);
+    const solid = (value: string | null | undefined) => (value && !value.startsWith('url(') ? value : null);
+    const gradientColor = st.fillGradient && st.fillGradient.mode !== 'solid' ? st.fillGradient.stops[0]?.color : undefined;
+    const fill = gradientColor ?? solid(st.fill) ?? solid(el.getAttribute('fill')) ?? solid(cs.fill) ?? 'none';
+    const stroke = solid(st.stroke) ?? solid(el.getAttribute('stroke')) ?? solid(cs.stroke) ?? 'none';
+    const sw = st.strokeWidth ?? (Number(el.getAttribute('stroke-width')) || parseFloat(cs.strokeWidth) || 0);
+    const fo = st.fillOpacity ?? (el.getAttribute('fill-opacity') !== null ? Number(el.getAttribute('fill-opacity')) : 1);
+    return { fill, fillOpacity: Number.isFinite(fo) ? fo : 1, stroke, strokeWidth: sw * k };
+  }
+
+  /**
+   * Emparejamiento de una transformación de grupo. La figura principal (la de mayor tamaño) de cada grupo se
+   * deforma en la otra; el resto se empareja por categoría y cercanía de centros (relativos al centro de cada grupo).
+   */
+  private groupPlan(spec: GroupTransformSpec): GroupPlan {
+    const A = spec.sourceObjectIds.map((id) => this.obj2d(id)).filter((o): o is Obj2D => !!o && this.objs.has(o.id));
+    const B = spec.targetObjectIds.map((id) => this.obj2d(id)).filter((o): o is Obj2D => !!o && this.objs.has(o.id));
+    const sig = (o: Obj2D) => `${o.id}:${o.x},${o.y},${o.scale},${o.rotation},${o.bw},${o.bh},${o.markup.length}`;
+    const key = `${this.measureKey}#${A.map(sig).join('|')}#${B.map(sig).join('|')}`;
+    const hit = this.groupPlans.get(key);
+    if (hit) return hit;
+
+    const largest = (list: Obj2D[]) => list.reduce((m, o) => Math.max(m, objSize(o)), 0);
+    const kinds = new Map<Obj2D, GroupKind>();
+    const la = largest(A);
+    const lb = largest(B);
+    for (const o of A) kinds.set(o, this.groupKind(o, la));
+    for (const o of B) kinds.set(o, this.groupKind(o, lb));
+    const mainOf = (list: Obj2D[]) => list.filter((o) => kinds.get(o) === 'shape').sort((x, y) => objSize(y) - objSize(x))[0];
+    const mainA = mainOf(A);
+    const mainB = mainOf(B);
+    let morph: GroupPlan['morph'] = null;
+    if (mainA && mainB) {
+      const oa = this.outlineOf(mainA);
+      const ob = this.outlineOf(mainB);
+      if (oa && ob) {
+        const closed = oa.closed && ob.closed;
+        const n = Math.max(oa.pts.length, ob.pts.length);
+        const ptsA = resampleOutline(oa.pts, n, oa.closed);
+        const ptsB = alignOutline(ptsA, resampleOutline(ob.pts, n, ob.closed), closed);
+        morph = { a: mainA, b: mainB, ptsA, ptsB, closed, paintA: this.basePaint(mainA, oa.el, oa.k), paintB: this.basePaint(mainB, ob.el, ob.k) };
+      }
+    }
+    const restA = A.filter((o) => o !== morph?.a);
+    const restB = B.filter((o) => o !== morph?.b);
+    const center = (list: Obj2D[]) => list.length
+      ? list.reduce((c, o) => ({ x: c.x + o.x / list.length, y: c.y + o.y / list.length }), { x: 0, y: 0 })
+      : { x: 0, y: 0 };
+    const ca = center(A);
+    const cb = center(B);
+    const candidates: { a: Obj2D; b: Obj2D; d: number }[] = [];
+    for (const a of restA) for (const b of restB) {
+      if (kinds.get(a) !== kinds.get(b)) continue;
+      candidates.push({ a, b, d: Math.hypot(b.x - cb.x - (a.x - ca.x), b.y - cb.y - (a.y - ca.y)) });
+    }
+    candidates.sort((x, y) => x.d - y.d);
+    const usedA = new Set<Obj2D>();
+    const usedB = new Set<Obj2D>();
+    const pairs: [Obj2D, Obj2D][] = [];
+    for (const { a, b } of candidates) {
+      if (usedA.has(a) || usedB.has(b)) continue;
+      usedA.add(a);
+      usedB.add(b);
+      pairs.push([a, b]);
+    }
+    // Sin figura deformable en ambos lados, las figuras principales se emparejan como un par más.
+    const plan: GroupPlan = { morph, pairs, extraA: restA.filter((o) => !usedA.has(o)), extraB: restB.filter((o) => !usedB.has(o)) };
+    if (this.groupPlans.size > 32) this.groupPlans.clear();
+    this.groupPlans.set(key, plan);
+    return plan;
+  }
+
+  /**
+   * Estado de una transformación de grupo en el instante dado (`raw` = progreso sin recortar). Antes del inicio
+   * el grupo destino ya está oculto (ver `revealAt`); al terminar, el origen se oculta salvo con `keepSource`.
+   */
+  private applyGroupTransform(
+    c: Clip, spec: GroupTransformSpec, raw: number, get: (id: string, ghost?: boolean) => NState, morphs: Morph[], hiddenIds: Set<string>,
+  ) {
+    if (raw < 0) return;
+    const keep = spec.keepSource;
+    if (raw >= 1) {
+      if (!keep) {
+        for (const id of spec.sourceObjectIds) {
+          if (!this.nodes.has(id)) continue;
+          get(id).opacity *= 0;
+          hiddenIds.add(id);
+        }
+      }
+      return;
+    }
+    const plan = this.groupPlan(spec);
+    const p = clamp01(raw);
+    const e = smooth(p);
+    if (plan.morph) {
+      const { a, b, ptsA, ptsB, closed, paintA, paintB } = plan.morph;
+      // Durante la deformación solo se ve la capa interpolada (el origen permanece si se mantiene).
+      if (!keep) get(a.id).opacity *= 0;
+      get(b.id).opacity *= 0;
+      const pts = ptsA.map((q, i) => ({ x: q.x + (ptsB[i].x - q.x) * e, y: q.y + (ptsB[i].y - q.y) * e }));
+      const d = 'M' + pts.map((q) => `${q.x.toFixed(2)} ${q.y.toFixed(2)}`).join('L') + (closed ? 'Z' : '');
+      morphs.push({ key: c.id, afterId: a.id, d, paint: mixPaint(paintA, paintB, e) });
+    }
+    for (const [a, b] of plan.pairs) {
+      // Cada par viaja junto: el origen se desvanece mientras el destino aparece en la misma pose interpolada.
+      const ratio = objSize(b) / objSize(a);
+      const k = Number.isFinite(ratio) && ratio > 0 ? ratio : 1;
+      const sa = get(a.id, keep);
+      sa.dx += (b.x - a.x) * e;
+      sa.dy += (b.y - a.y) * e;
+      sa.rot += (b.rotation - a.rotation) * e;
+      sa.scale *= 1 + (k - 1) * e;
+      sa.opacity *= 1 - e;
+      const sb = get(b.id);
+      sb.dx += (a.x - b.x) * (1 - e);
+      sb.dy += (a.y - b.y) * (1 - e);
+      sb.rot += (a.rotation - b.rotation) * (1 - e);
+      sb.scale *= 1 + (1 / k - 1) * (1 - e);
+      sb.opacity *= e;
+    }
+    // Sobrantes del destino: brotan desde su centro en el tramo 0.4 → 1.
+    const grow = smooth(clamp01((p - 0.4) / 0.6));
+    for (const b of plan.extraB) {
+      const s = get(b.id);
+      s.scale *= Math.max(1e-3, grow);
+      s.opacity *= grow;
+    }
+    // Sobrantes del origen: se contraen en la primera mitad (con «Mantener grupo origen» permanecen).
+    if (!keep) {
+      const shrink = smooth(clamp01(p / 0.5));
+      for (const a of plan.extraA) {
+        const s = get(a.id);
+        s.scale *= Math.max(1e-3, 1 - shrink);
+        s.opacity *= 1 - shrink;
+      }
+    }
+  }
+
+  /** Crea, actualiza o retira las capas de deformación (una por transformación de grupo en curso). */
+  private syncMorphs(morphs: Morph[]) {
+    const live = new Set<string>();
+    const NS = 'http://www.w3.org/2000/svg';
+    const { w, h } = STAGE_SIZES[this.project!.format];
+    for (const m of morphs) {
+      const after = this.objs.get(m.afterId)?.wrapper;
+      if (!after) continue;
+      live.add(m.key);
+      let rec = this.morphEls.get(m.key);
+      if (!rec) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'mm-obj';
+        wrapper.dataset.kind = 'morph';
+        wrapper.style.pointerEvents = 'none';
+        wrapper.style.transform = 'translate(0px,0px)';
+        const svg = document.createElementNS(NS, 'svg') as SVGSVGElement;
+        svg.setAttribute('overflow', 'visible');
+        const path = document.createElementNS(NS, 'path') as SVGPathElement;
+        path.setAttribute('stroke-linejoin', 'round');
+        path.style.pointerEvents = 'none';
+        svg.appendChild(path);
+        wrapper.appendChild(svg);
+        rec = { wrapper, svg, path };
+        this.morphEls.set(m.key, rec);
+      }
+      rec.wrapper.style.width = `${w}px`;
+      rec.wrapper.style.height = `${h}px`;
+      rec.svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+      if (rec.wrapper.previousElementSibling !== after) after.after(rec.wrapper);
+      const { paint } = m;
+      rec.path.setAttribute('d', m.d);
+      rec.path.setAttribute('fill', paint.fill);
+      rec.path.setAttribute('fill-opacity', paint.fillOpacity.toFixed(3));
+      rec.path.setAttribute('stroke', paint.stroke);
+      rec.path.setAttribute('stroke-width', paint.strokeWidth.toFixed(2));
+    }
+    for (const [key, rec] of this.morphEls) {
+      if (live.has(key)) continue;
+      rec.wrapper.remove();
+      this.morphEls.delete(key);
+    }
   }
 
   private drawRings(rings: Ring[], frames: Frame[] = []) {
@@ -1950,6 +2316,8 @@ export class SceneRuntime {
     for (const rec of this.objs.values()) rec.wrapper.remove();
     for (const ghost of this.ghosts.values()) ghost.wrapper.remove();
     this.ghosts.clear();
+    for (const morph of this.morphEls.values()) morph.wrapper.remove();
+    this.morphEls.clear();
     this.objs.clear();
     this.nodes.clear();
   }
