@@ -17,7 +17,7 @@ import {
   Triangle,
   Volume2,
 } from 'lucide-react';
-import { actions, store, useStore } from '../store';
+import { actions, selectedObjectIds, store, useStore } from '../store';
 import { SOUND_IDS, SOUND_LABEL, STAGE_SIZES, type SoundId, type VectorTool } from '../types';
 import { audio, engine } from '../engine';
 import { SAMPLE_SVG, prepareSvg } from '../engine/svgImport';
@@ -112,6 +112,7 @@ function ObjectsSection() {
 
   return (
     <>
+      <SavedGroupChips />
       {objects.length === 0 && <p className="text-xs text-slate-500">Importa un SVG o inserta una fórmula.</p>}
       <div ref={boxRef} role="tree" className="scroll-thin max-h-72 overflow-auto rounded border border-bezel bg-ink-900 p-1">
         {objects.map((o) => {
@@ -163,6 +164,39 @@ function ObjectsSection() {
         Clic en el lienzo = elemento hijo · Mayús+clic o Mayús+arrastrar = objeto completo.
       </p>
     </>
+  );
+}
+
+/**
+ * Grupos guardados con etiqueta como chips: un clic selecciona todos sus objetos, aunque estén superpuestos con los
+ * de otro grupo (p. ej. «Triángulo» y «Pentágono» en el mismo sitio). Se crean y editan desde el Inspector.
+ */
+function SavedGroupChips() {
+  const groups = useStore((s) => s.project.savedGroups) ?? [];
+  const objects = useStore((s) => s.project.objects);
+  const selection = useStore((s) => s.ui.selection);
+  const multi = useStore((s) => s.ui.multiSelection);
+  if (!groups.length) return null;
+  const selected = selectedObjectIds({ selection, multiSelection: multi });
+  const exists = (id: string) => objects.some((object) => object.id === id);
+  return (
+    <div className="space-y-1" aria-label="Grupos guardados">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Grupos guardados</div>
+      <div className="flex flex-wrap gap-1">
+        {groups.map((group) => {
+          const members = group.objectIds.filter(exists);
+          const active = members.length > 0 && members.length === selected.length && members.every((id) => selected.includes(id));
+          return (
+            <button key={group.id} type="button"
+              className={`max-w-full truncate rounded border px-1.5 py-0.5 text-[11px] ${active ? 'border-accent bg-accent-soft text-accent-light' : 'border-bezel bg-ink-700 text-slate-200 hover:bg-ink-600'}`}
+              title={`Seleccionar ${members.length} objeto(s): ${members.map((id) => objects.find((object) => object.id === id)?.name ?? id).join(', ')}`}
+              onClick={() => actions.selectSavedGroup(group.id)}>
+              {group.name} ({members.length})
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

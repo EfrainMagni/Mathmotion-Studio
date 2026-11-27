@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
-import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2, Shapes, X } from 'lucide-react';
+import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Trash2, Shapes, X, Bookmark, Pencil } from 'lucide-react';
 import { actions, defaultClipParams, selectedObjectIds, store, useStore } from '../store';
 import { ColorChangeFields, patchParams } from './Timeline';
 import {
   ARC_LIMITS, DEFAULT_ARC, DEFAULT_TEXT_STYLE, FONT_CATALOG, isPathTool, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
-  glyphTransformParams,
+  SAVED_GROUP_NAME_MAX, glyphTransformParams,
   type ClipParams, type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SceneBackground, type SceneBackgroundType, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
@@ -1436,8 +1436,8 @@ function SceneBackgroundPanel() {
 }
 
 /**
- * «Transformación de Grupo» en dos pasos: (1) fijar la selección múltiple actual como grupo origen y (2) con otra
- * selección, crear el clip `groupTransform` (ReplacementTransform de grupos o, manteniendo el origen, TransformFromCopy).
+ * «Transformación de Grupo»: (a) dos pasos con la selección (fijar origen → transformar aquí), (b) grupos guardados con
+ * etiqueta para seleccionar de un clic conjuntos superpuestos y (c) transformación directa «Origen → Destino» por etiqueta.
  */
 function GroupTransformPanel() {
   const multi = useStore((s) => s.ui.multiSelection);
@@ -1445,24 +1445,63 @@ function GroupTransformPanel() {
   const pending = useStore((s) => s.ui.pendingTransformSourceIds);
   const time = useStore((s) => s.ui.time);
   const objects = useStore((s) => s.project.objects);
+  const groups = useStore((s) => s.project.savedGroups) ?? [];
   const [duration, setDuration] = useState(2);
   const [keepSource, setKeepSource] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
+  const [fromId, setFromId] = useState('');
+  const [toId, setToId] = useState('');
   const selected = selectedObjectIds({ selection, multiSelection: multi });
-  if (!pending && selected.length < 2) return null;
+  if (!pending && !selected.length && !groups.length) return null;
 
+  const exists = (id: string) => objects.some((object) => object.id === id);
   const nameOf = (id: string) => objects.find((object) => object.id === id)?.name ?? id;
+  const membersOf = (groupId: string) => groups.find((group) => group.id === groupId)?.objectIds.filter(exists) ?? [];
   const targets = pending ? selected.filter((id) => !pending.includes(id)) : [];
   const sameAsSource = !!pending && selected.length === pending.length && selected.every((id) => pending.includes(id));
   const start = Math.round(time * 100) / 100;
+  const stepTwo = !!pending && targets.length > 0 && !sameAsSource;
+
+  // Selectores Origen / Destino: valores válidos por defecto (los dos primeros grupos).
+  const source = groups.find((group) => group.id === fromId) ?? groups[0];
+  const target = groups.find((group) => group.id === toId && group.id !== source?.id) ?? groups.find((group) => group.id !== source?.id);
+  const byLabel = groups.length >= 2 && !!source && !!target;
+
+  const save = () => {
+    if (!selected.length) return;
+    if (actions.saveSelectionAsGroup(newName)) setNewName('');
+  };
+  const commitRename = () => {
+    if (editing) actions.renameSavedGroup(editing.id, editing.name);
+    setEditing(null);
+  };
+  const isActive = (groupId: string) => {
+    const members = membersOf(groupId);
+    return members.length > 0 && members.length === selected.length && members.every((id) => selected.includes(id));
+  };
+  const options = (
+    <>
+      <Field label="Duración (s)">
+        <NumberInput className={`${input} w-20`} value={duration} min={0.1} step={0.1} onChange={setDuration} />
+      </Field>
+      <label className="flex items-center gap-1.5 text-[11px] text-slate-300">
+        <input type="checkbox" checked={keepSource} onChange={(event) => setKeepSource(event.target.checked)} />
+        Mantener grupo origen
+      </label>
+    </>
+  );
 
   return (
     <Section title="Transformación de Grupo">
-      {!pending ? (
+      {/* Paso 1 / paso 2 con la selección del lienzo */}
+      {!pending && selected.length >= 2 && (
         <button className={`${btn} w-full justify-start`} onClick={() => actions.setPendingTransformSource(selected)}
           title={selected.map(nameOf).join(', ')}>
           <Shapes size={14} /> 1. Fijar como Grupo Origen ({selected.length} objetos)
         </button>
-      ) : (
+      )}
+      {pending && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between gap-2 rounded border border-accent bg-accent-soft px-2 py-1 text-[11px] text-accent-light"
             role="status" title={pending.map(nameOf).join(', ')}>
@@ -1472,17 +1511,13 @@ function GroupTransformPanel() {
               <X size={12} />
             </button>
           </div>
-          {targets.length > 0 && !sameAsSource ? (
+          {stepTwo ? (
             <>
-              <Field label="Duración (s)">
-                <NumberInput className={`${input} w-20`} value={duration} min={0.1} step={0.1} onChange={setDuration} />
-              </Field>
-              <label className="flex items-center gap-1.5 text-[11px] text-slate-300">
-                <input type="checkbox" checked={keepSource} onChange={(event) => setKeepSource(event.target.checked)} />
-                Mantener grupo origen
-              </label>
+              {options}
               <button className={`${btnPrimary} w-full justify-start`} title={targets.map(nameOf).join(', ')}
-                onClick={() => actions.addGroupTransform(targets, { start, duration, keepSource })}>
+                onClick={() => {
+                  if (actions.addGroupTransform(pending, targets, { start, duration, keepSource })) actions.setPendingTransformSource(null);
+                }}>
                 <MoveRight size={14} /> 2. Transformar Grupo Origen → aquí ({targets.length} objetos)
               </button>
               <p className="text-[10px] leading-snug text-slate-500">
@@ -1492,6 +1527,87 @@ function GroupTransformPanel() {
           ) : (
             <p className="text-[11px] leading-snug text-slate-500">Selecciona ahora en el lienzo los objetos del grupo destino.</p>
           )}
+        </div>
+      )}
+
+      {/* Guardar la selección con etiqueta */}
+      {selected.length > 0 && (
+        <div className="flex gap-1" aria-label="Guardar selección con etiqueta">
+          <input className={`${input} min-w-0 flex-1`} value={newName} maxLength={SAVED_GROUP_NAME_MAX} placeholder="Nombre (ej. Triángulo)"
+            aria-label="Nombre del grupo" onChange={(event) => setNewName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                save();
+              }
+              event.stopPropagation();
+            }} />
+          <button className={`${btn} shrink-0`} onClick={save} title={`Guardar ${selected.length} objeto(s) con esta etiqueta (Enter)`}>
+            <Bookmark size={13} /> Guardar grupo
+          </button>
+        </div>
+      )}
+
+      {/* Grupos guardados: clic = seleccionar todos sus objetos */}
+      {groups.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Grupos guardados</div>
+          <div className="flex flex-wrap gap-1" role="list">
+            {groups.map((group) => {
+              const count = membersOf(group.id).length;
+              if (editing?.id === group.id) {
+                return (
+                  <input key={group.id} autoFocus className={`${input} h-6 w-28`} value={editing.name} maxLength={SAVED_GROUP_NAME_MAX}
+                    aria-label={`Renombrar ${group.name}`} onChange={(event) => setEditing({ id: group.id, name: event.target.value })}
+                    onBlur={commitRename}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') commitRename();
+                      if (event.key === 'Escape') setEditing(null);
+                      event.stopPropagation();
+                    }} />
+                );
+              }
+              return (
+                <span key={group.id} role="listitem"
+                  className={`inline-flex max-w-full items-center rounded border text-[11px] ${isActive(group.id) ? 'border-accent bg-accent-soft text-accent-light' : 'border-bezel bg-ink-700 text-slate-200'}`}>
+                  <button type="button" className="min-w-0 truncate px-1.5 py-0.5 hover:bg-white/10" title={`Seleccionar: ${membersOf(group.id).map(nameOf).join(', ')}`}
+                    onClick={() => actions.selectSavedGroup(group.id)}>
+                    {group.name} ({count})
+                  </button>
+                  <button type="button" className="px-0.5 py-0.5 text-slate-400 hover:text-slate-100" aria-label={`Renombrar ${group.name}`} title="Renombrar"
+                    onClick={() => setEditing({ id: group.id, name: group.name })}>
+                    <Pencil size={10} />
+                  </button>
+                  <button type="button" className="px-0.5 py-0.5 text-slate-400 hover:text-rose-300" aria-label={`Quitar etiqueta ${group.name}`}
+                    title="Quitar etiqueta (los objetos se conservan)" onClick={() => actions.deleteSavedGroup(group.id)}>
+                    <X size={11} />
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Transformación directa por etiqueta */}
+      {byLabel && (
+        <div className="space-y-1.5 rounded border border-bezel p-1.5" aria-label="Transformar por etiqueta">
+          <div className="grid grid-cols-[auto_1fr] items-center gap-x-1.5 gap-y-1 text-[11px] text-slate-400">
+            <span>Origen:</span>
+            <select className={input} value={source.id} aria-label="Grupo origen" onChange={(event) => setFromId(event.target.value)}>
+              {groups.map((group) => <option key={group.id} value={group.id}>{group.name} ({membersOf(group.id).length})</option>)}
+            </select>
+            <span>Destino:</span>
+            <select className={input} value={target.id} aria-label="Grupo destino" onChange={(event) => setToId(event.target.value)}>
+              {groups.filter((group) => group.id !== source.id).map((group) => <option key={group.id} value={group.id}>{group.name} ({membersOf(group.id).length})</option>)}
+            </select>
+          </div>
+          {!stepTwo && options}
+          <button className={`${btnPrimary} w-full justify-start`} disabled={!membersOf(source.id).length || !membersOf(target.id).length}
+            title={`${source.name} → ${target.name} en el cabezal (${start.toFixed(2)} s)`}
+            onClick={() => actions.addGroupTransform(membersOf(source.id), membersOf(target.id), { start, duration, keepSource })}>
+            <MoveRight size={14} /> → Transformar Grupo
+          </button>
         </div>
       )}
     </Section>

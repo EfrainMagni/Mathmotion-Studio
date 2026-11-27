@@ -5,8 +5,11 @@ import { normalizePlane, planeSvg } from './engine/cartesianPlane';
 import { useSyncExternalStore } from 'react';
 import {
   STAGE_SIZES,
+  SAVED_GROUP_NAME_MAX,
   groupTransformParams,
   pruneGroupClips,
+  pruneSavedGroups,
+  type SavedGroup,
   type Clip,
   type ClipParams,
   type ClipType,
@@ -332,6 +335,7 @@ export const actions = {
       styles: stripNodeKeys(p.styles, id),
       clips: pruneGroupClips(p.clips, new Set([id]))
         .filter((c) => c.targetId !== id && !c.targetId.startsWith(id + '.') && c.parameters.to !== id),
+      savedGroups: pruneSavedGroups(p.savedGroups, (entry) => entry !== id),
     }));
     const ui = store.getState().ui;
     const affected = (s: string | null) => s !== null && (s === id || s.startsWith(id + '.'));
@@ -481,6 +485,7 @@ export const actions = {
       styles: Object.fromEntries(Object.entries(p.styles).filter(([key]) => !owned(key))),
       clips: pruneGroupClips(p.clips, set)
         .filter((c) => !owned(c.targetId) && !(typeof c.parameters.to === 'string' && set.has(c.parameters.to))),
+      savedGroups: pruneSavedGroups(p.savedGroups, (entry) => !set.has(entry)),
     }));
     const ui = store.getState().ui;
     const clipStill = store.getState().project.clips.some((c) => c.id === ui.selectedClip);
@@ -566,11 +571,14 @@ export const actions = {
   },
 
   /**
-   * Paso 2: crea el clip `groupTransform` del grupo origen pendiente hacia `targetIds` (una sola acción reversible).
-   * Los objetos que estén en ambos grupos se quitan del destino. Devuelve el id del clip, o `null` si no es válido.
+   * Crea el clip `groupTransform` de `sourceIds` hacia `targetIds` (una sola acción reversible): desde el grupo
+   * origen pendiente (paso 2) o directamente desde dos grupos guardados. Los objetos que estén en ambos grupos se
+   * quitan del destino. Devuelve el id del clip, o `null` si no es válido.
    */
-  addGroupTransform(targetIds: string[], options: { start: number; duration?: number; keepSource?: boolean }): string | null {
-    const sources = state.ui.pendingTransformSourceIds?.filter((id) => state.project.objects.some((object) => object.id === id)) ?? [];
+  addGroupTransform(
+    sourceIds: string[], targetIds: string[], options: { start: number; duration?: number; keepSource?: boolean },
+  ): string | null {
+    const sources = sourceIds.filter((id, i) => sourceIds.indexOf(id) === i && state.project.objects.some((object) => object.id === id));
     const targets = targetIds.filter((id, i) => targetIds.indexOf(id) === i && !sources.includes(id)
       && state.project.objects.some((object) => object.id === id));
     if (!sources.length || !targets.length) return null;
@@ -581,8 +589,56 @@ export const actions = {
       duration: options.duration ?? 2,
       parameters: groupTransformParams({ sourceObjectIds: sources, targetObjectIds: targets, keepSource: options.keepSource === true }),
     });
-    store.setUi({ pendingTransformSourceIds: null });
     return id;
+  },
+
+  // ---------------------------------------------------------------- grupos guardados con etiqueta
+
+  /**
+   * Guarda los objetos seleccionados bajo una etiqueta (una sola acción reversible). Si ya existe un grupo con
+   * ese nombre (sin distinguir mayúsculas), se actualizan sus miembros. Devuelve el id del grupo, o `null`.
+   */
+  saveSelectionAsGroup(name: string): string | null {
+    const ids = selectedObjectIds(state.ui).filter((id) => state.project.objects.some((object) => object.id === id));
+    if (!ids.length) return null;
+    const groups = state.project.savedGroups ?? [];
+    const label = name.trim().slice(0, SAVED_GROUP_NAME_MAX) || `Grupo ${groups.length + 1}`;
+    const existing = groups.find((group) => group.name.toLocaleLowerCase() === label.toLocaleLowerCase());
+    const id = existing?.id ?? `g${groups.reduce((max, group) => Math.max(max, Number(group.id.slice(1)) || 0), 0) + 1}`;
+    const next: SavedGroup = { id, name: label, objectIds: ids };
+    store.setProject((p) => ({
+      ...p,
+      savedGroups: existing
+        ? (p.savedGroups ?? []).map((group) => (group.id === id ? next : group))
+        : [...(p.savedGroups ?? []), next],
+    }));
+    return id;
+  },
+
+  /** Selecciona en el lienzo todos los objetos vigentes del grupo guardado (no modifica el proyecto). */
+  selectSavedGroup(groupId: string) {
+    const group = state.project.savedGroups?.find((entry) => entry.id === groupId);
+    if (!group) return;
+    actions.selectMany(group.objectIds.filter((id) => state.project.objects.some((object) => object.id === id)));
+  },
+
+  renameSavedGroup(groupId: string, name: string) {
+    const label = name.trim().slice(0, SAVED_GROUP_NAME_MAX);
+    if (!label) return;
+    store.setProject((p) => {
+      const group = p.savedGroups?.find((entry) => entry.id === groupId);
+      if (!group || group.name === label) return p;
+      return { ...p, savedGroups: p.savedGroups!.map((entry) => (entry.id === groupId ? { ...entry, name: label } : entry)) };
+    });
+  },
+
+  /** Elimina solo la etiqueta: los objetos del lienzo se conservan. */
+  deleteSavedGroup(groupId: string) {
+    store.setProject((p) => {
+      if (!p.savedGroups?.some((entry) => entry.id === groupId)) return p;
+      const savedGroups = p.savedGroups.filter((entry) => entry.id !== groupId);
+      return { ...p, savedGroups: savedGroups.length ? savedGroups : undefined };
+    });
   },
 
   removeClip(id: string) {

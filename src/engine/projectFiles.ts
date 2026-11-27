@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FONT_IDS, SCENE_BG_LIMITS, parseObjectIds, pruneGroupClips, type Obj2D, type Project } from '../types';
+import { FONT_IDS, SAVED_GROUP_NAME_MAX, SCENE_BG_LIMITS, parseObjectIds, pruneGroupClips, pruneSavedGroups, type Obj2D, type Project } from '../types';
 import { prepareSvg } from './svgImport';
 import { normalizePlane, planeSvg } from './cartesianPlane';
 
@@ -133,6 +133,12 @@ const project = z.object({
     start: nonnegative, duration: positive, sound: z.enum(['chalk', 'pop', 'radar', 'sparkle']).nullable(),
     parameters,
   })),
+  // Grupos guardados con etiqueta (opcional: los archivos antiguos no los tienen).
+  savedGroups: z.array(z.object({
+    id: z.string().regex(/^g[1-9]\d*$/),
+    name: z.string().trim().min(1).max(SAVED_GROUP_NAME_MAX),
+    objectIds: z.array(objectId).max(5000),
+  })).max(500).optional(),
   // `camera` (3D) de archivos antiguos se ignora: zod descarta las claves desconocidas.
   counters: z.object({ obj: z.int().nonnegative(), clip: z.int().nonnegative() }),
 });
@@ -194,6 +200,12 @@ export function parseProject(text: string): Project {
     [...parseObjectIds(clip.parameters.sourceObjectIds), ...parseObjectIds(clip.parameters.targetObjectIds)]
       .some((id) => !targets.has(id) && !dropped.has(id))
   ))) throw new Error('El archivo contiene una transformación de grupo con objetos inexistentes.');
+  // Grupos guardados: ids únicos; se quitan los miembros inexistentes (o 3D descartados) y los grupos vacíos.
+  if (p.savedGroups && new Set(p.savedGroups.map((group) => group.id)).size !== p.savedGroups.length) {
+    throw new Error('El archivo contiene grupos guardados con identificadores repetidos.');
+  }
+  const savedGroups = pruneSavedGroups(p.savedGroups, (id) => targets.has(id));
+  p.savedGroups = savedGroups?.length ? savedGroups : undefined;
   p.clips = pruneGroupClips(p.clips as Project['clips'], new Set([...dropped].map(String))) as typeof p.clips;
   const clipIds = new Set(p.clips.map((clip) => clip.id));
   if (
