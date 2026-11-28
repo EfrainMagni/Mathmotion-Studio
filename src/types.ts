@@ -145,14 +145,94 @@ export const SCALE_MIN = 0.005;
 export const SCALE_MAX = 20;
 export const SCALE_STEP = 0.005;
 
-export type SoundId = 'chalk' | 'pop' | 'radar' | 'sparkle';
-export const SOUND_LABEL: Record<SoundId, string> = {
-  chalk: 'Trazo de tiza',
-  pop: 'Pop suave',
-  radar: 'Radar ping',
-  sparkle: 'Brillo de acierto',
+/**
+ * Efectos de sonido sintetizados (Web Audio API, ver `engine/audio.ts`). Los cuatro primeros son los originales y se
+ * conservan con su id para que los proyectos guardados sigan abriendo y sonando igual.
+ */
+export const SOUND_IDS = [
+  'chalk', 'pop', 'radar', 'sparkle',
+  'robot-type', 'tech-blip',
+  'dot-pop', 'tick-click',
+  'appear-chime', 'whoosh-morph', 'spotlight-hum',
+  'disappear-whoosh', 'shrink-zip', 'success-bell',
+] as const;
+export type SoundId = typeof SOUND_IDS[number];
+
+export type SoundCategory = 'typing' | 'points' | 'appear' | 'exit';
+export const SOUND_CATEGORIES: { id: SoundCategory; label: string }[] = [
+  { id: 'typing', label: 'Escritura & Robot' },
+  { id: 'points', label: 'Puntos & Clics' },
+  { id: 'appear', label: 'Aparición & Transformación' },
+  { id: 'exit', label: 'Salida & Cierre' },
+];
+
+export interface SoundMeta {
+  label: string;
+  category: SoundCategory;
+  /** Uso sugerido (tooltip del panel de audio). */
+  hint: string;
+  /** Duración natural (o por defecto, si es ajustable) en segundos. */
+  duration: number;
+  /** Rango de duración si el efecto se estira con su clip (escritura, barridos, zumbidos). */
+  resizable?: { min: number; max: number };
+}
+
+export const SOUND_META: Record<SoundId, SoundMeta> = {
+  chalk: { label: 'Trazo de tiza', category: 'typing', hint: 'Create / Write a mano alzada', duration: 0.8, resizable: { min: 0.2, max: 4 } },
+  pop: { label: 'Pop suave', category: 'points', hint: 'Pop / GrowFromCenter', duration: 0.21 },
+  radar: { label: 'Radar ping', category: 'appear', hint: 'Radar / Indicate', duration: 1.35 },
+  sparkle: { label: 'Brillo de acierto', category: 'exit', hint: 'Resaltar un acierto', duration: 0.66 },
+  'robot-type': {
+    label: 'Escritura robótica', category: 'typing', hint: 'Write / Create: terminal o robot escribiendo datos',
+    duration: 0.8, resizable: { min: 0.15, max: 6 },
+  },
+  'tech-blip': { label: 'Pitido de interfaz', category: 'typing', hint: 'Dato en pantalla, consola científica', duration: 0.2 },
+  'dot-pop': { label: 'Pop de punto', category: 'points', hint: 'Brota un punto (x, y) o un vértice', duration: 0.2 },
+  'tick-click': { label: 'Click de precisión', category: 'points', hint: 'Ticks, ejes o pasos rápidos', duration: 0.06 },
+  'appear-chime': { label: 'Destello de aparición', category: 'appear', hint: 'FadeIn de una ecuación o resultado', duration: 1.3 },
+  'whoosh-morph': {
+    label: 'Whoosh de transformación', category: 'appear', hint: 'Transform / desplazamientos de grupo',
+    duration: 0.7, resizable: { min: 0.3, max: 3 },
+  },
+  'spotlight-hum': {
+    label: 'Zumbido de enfoque', category: 'appear', hint: 'Focus / Spotlight: oscurecer la escena',
+    duration: 1.2, resizable: { min: 0.4, max: 4 },
+  },
+  'disappear-whoosh': { label: 'Desvanecer', category: 'exit', hint: 'FadeOut: salida suave', duration: 0.75 },
+  'shrink-zip': { label: 'Contraer', category: 'exit', hint: 'ShrinkToCenter: cierre rápido', duration: 0.36 },
+  'success-bell': { label: 'Campana de resultado', category: 'exit', hint: 'Cerrar la demostración o la respuesta final', duration: 1.9 },
 };
-export const SOUND_IDS = Object.keys(SOUND_LABEL) as SoundId[];
+
+export const SOUND_LABEL = Object.fromEntries(SOUND_IDS.map((id) => [id, SOUND_META[id].label])) as Record<SoundId, string>;
+
+/** Duración efectiva de un efecto: la pedida (acotada) si es ajustable; si no, la natural. */
+export function soundDuration(id: SoundId, requested?: number): number {
+  const meta = SOUND_META[id];
+  if (!meta.resizable || requested === undefined || !Number.isFinite(requested)) return meta.duration;
+  return Math.min(meta.resizable.max, Math.max(meta.resizable.min, requested));
+}
+
+/** Efecto de sonido suelto en la línea de tiempo (pista «Efectos»), independiente de los clips de animación. */
+export interface SfxClip {
+  /** `s<n>` */
+  id: string;
+  sound: SoundId;
+  /** Tiempo absoluto desde el inicio de la escena (s). */
+  start: number;
+  /** Solo cuenta en efectos ajustables (`SOUND_META[id].resizable`); en el resto se usa la duración natural. */
+  duration: number;
+  /** 0–1.5, como la pista de voz. */
+  volume: number;
+}
+
+export const SFX_VOLUME_MAX = 1.5;
+
+/** Siguiente id libre `s<n>` para un efecto suelto. */
+export function nextSfxId(list: readonly SfxClip[] | undefined): string {
+  let max = 0;
+  for (const s of list ?? []) max = Math.max(max, Number(s.id.slice(1)) || 0);
+  return `s${max + 1}`;
+}
 
 export type ClipType =
   | 'draw' | 'radar' | 'glow' | 'appear' | 'rotate'
@@ -828,6 +908,8 @@ export interface Project {
    */
   savedGroups?: SavedGroup[];
   voice: VoiceMeta | null;
+  /** Efectos de sonido sueltos (opcional: los proyectos antiguos no los tienen). */
+  sfx?: SfxClip[];
   counters: { obj: number; clip: number };
 }
 
@@ -862,6 +944,7 @@ export function sceneDuration(p: Project): number {
   let end = 0;
   for (const c of p.clips) end = Math.max(end, c.start + c.duration);
   if (p.voice) end = Math.max(end, p.voice.start + p.voice.duration);
+  for (const s of p.sfx ?? []) end = Math.max(end, s.start + soundDuration(s.sound, s.duration));
   return Math.max(end, 0.5);
 }
 

@@ -355,7 +355,7 @@ type Playback = NonNullable<typeof engine.playback>;
 async function run(runtime: Runtime, playback: Playback, mime: string | null, quality: RecordQuality) {
   const project = store.getState().project;
   const { w: W, h: H } = STAGE_SIZES[project.format];
-  const withAudio = !!project.voice || project.clips.some((clip) => clip.sound);
+  const withAudio = !!project.voice || project.clips.some((clip) => clip.sound) || !!project.sfx?.length;
   let cancelled = false;
   active = { stop: () => { cancelled = true; } };
   setRec({ phase: 'preparing', message: 'Preparando la grabación…', captureSize: { w: W, h: H } });
@@ -485,7 +485,7 @@ async function runDeterministic(
     }
     setRec({ phase: 'finishing', message: 'Codificando MP4…' });
     const videoSeconds = rendered / fps;
-    if (project.voice || project.clips.some((c) => c.sound)) {
+    if (project.voice || project.clips.some((c) => c.sound) || project.sfx?.length) {
       setRec({ message: 'Mezclando audio…' });
       const mix = await renderAudioMix(project, videoSeconds);
       await sink.encodeAudio(mix, videoSeconds);

@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Minus, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
+import { Magnet, Minus, Music2, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { DEFAULT_FOCUS, DEFAULT_INDICATE_STROKE_WIDTH, DISAPPEAR_MODES, FOCUS_LIMITS, FPS, SOUND_IDS, SOUND_LABEL, clipLabel, disappearModeOf, focusSpecOf, glyphTransformOf, groupTransformOf, indicateSpecOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type FocusParams, type Project, type SoundId } from '../types';
+import { DEFAULT_FOCUS, DEFAULT_INDICATE_STROKE_WIDTH, DISAPPEAR_MODES, FOCUS_LIMITS, FPS, SFX_VOLUME_MAX, SOUND_CATEGORIES, SOUND_IDS, SOUND_LABEL, SOUND_META, clipLabel, disappearModeOf, focusSpecOf, glyphTransformOf, groupTransformOf, indicateSpecOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, soundDuration, type Clip, type ClipParams, type FocusParams, type Project, type SfxClip, type SoundId } from '../types';
 import { formatGlyphList } from '../engine/glyphs';
-import { engine } from '../engine';
+import { audio, engine } from '../engine';
+
+// El motor de audio necesita los efectos sueltos para la reproducción en vivo y para la mezcla offline del `.mp4`.
+audio.setTimelineSfx(store.getState().project.sfx);
+store.subscribe(() => audio.setTimelineSfx(store.getState().project.sfx));
 import { NumberInput, btn, input } from './ui';
 
 /**
@@ -414,6 +418,101 @@ function ClipEditor() {
   );
 }
 
+// ------------------------------------------------------------------ efectos de sonido sueltos
+
+/** Píxeles de atracción del imán al arrastrar un efecto (Alt lo desactiva). */
+const SNAP_PX = 8;
+const SFX_ROW_H = 22;
+
+const updateSfx = (id: string, patch: Partial<Omit<SfxClip, 'id'>>, group?: symbol) => {
+  store.setProject((p) => {
+    if (!p.sfx?.some((s) => s.id === id)) return p;
+    return {
+      ...p,
+      sfx: p.sfx.map((s) => {
+        if (s.id !== id) return s;
+        const next = { ...s, ...patch };
+        next.start = Math.max(0, Math.round(next.start * 100) / 100);
+        next.duration = Math.round(soundDuration(next.sound, next.duration) * 100) / 100;
+        next.volume = Math.min(SFX_VOLUME_MAX, Math.max(0, next.volume));
+        return next;
+      }),
+    };
+  }, group);
+};
+
+const removeSfx = (id: string) => {
+  store.setProject((p) => {
+    if (!p.sfx?.some((s) => s.id === id)) return p;
+    const sfx = p.sfx.filter((s) => s.id !== id);
+    return { ...p, sfx: sfx.length ? sfx : undefined };
+  });
+};
+
+/** Reparte los efectos en filas para que no se tapen (greedy por orden de inicio). */
+function packSfxRows(list: readonly SfxClip[], pps: number): { rows: Map<string, number>; count: number } {
+  const rows = new Map<string, number>();
+  const ends: number[] = [];
+  for (const s of [...list].sort((a, b) => a.start - b.start)) {
+    const w = Math.max(56 / pps, soundDuration(s.sound, s.duration));
+    let row = ends.findIndex((e) => e <= s.start + 1e-6);
+    if (row < 0) row = ends.length;
+    ends[row] = s.start + w;
+    rows.set(s.id, row);
+  }
+  return { rows, count: Math.max(1, ends.length) };
+}
+
+function SfxEditor({ sfx }: { sfx: SfxClip }) {
+  const meta = SOUND_META[sfx.sound];
+  // Un arrastre del deslizador de volumen = una sola entrada de historial (Ctrl+Z).
+  const dragGroup = useRef<symbol>(Symbol('sfx-volume'));
+  const startGroup = () => { dragGroup.current = Symbol('sfx-volume'); };
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <Music2 size={13} className="shrink-0 text-sky-300" />
+      <select className={`${input} w-44`} value={sfx.sound} aria-label="Efecto de sonido"
+        onChange={(e) => {
+          const sound = e.target.value as SoundId;
+          updateSfx(sfx.id, { sound, duration: SOUND_META[sound].duration });
+        }}>
+        {SOUND_CATEGORIES.map((cat) => (
+          <optgroup key={cat.id} label={cat.label}>
+            {SOUND_IDS.filter((id) => SOUND_META[id].category === cat.id).map((id) => (
+              <option key={id} value={id}>{SOUND_LABEL[id]}</option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+      <button className={btn} onClick={() => audio.playEffect(sfx.sound, undefined, sfx.duration, sfx.volume)} title="▶ Probar sonido" aria-label="Probar sonido">
+        <Play size={12} />
+      </button>
+      <label className="flex items-center gap-1">
+        Inicio
+        <NumberInput className={`${input} w-16`} value={sfx.start} min={0} step={0.05} onChange={(v) => updateSfx(sfx.id, { start: v })} ariaLabel="Inicio del efecto (s)" />
+        s
+      </label>
+      {meta.resizable && (
+        <label className="flex items-center gap-1" title={`Duración ajustable (${meta.resizable.min}–${meta.resizable.max} s)`}>
+          Duración
+          <NumberInput className={`${input} w-16`} value={sfx.duration} min={meta.resizable.min} max={meta.resizable.max} step={0.05}
+            onChange={(v) => updateSfx(sfx.id, { duration: v })} ariaLabel="Duración del efecto (s)" />
+          s
+        </label>
+      )}
+      <label className="flex items-center gap-1" title="Volumen individual de este efecto">
+        Vol.
+        <input type="range" className="w-16 accent-accent" min={0} max={SFX_VOLUME_MAX} step={0.05} value={sfx.volume} aria-label="Volumen del efecto"
+          onPointerDown={startGroup} onKeyDown={startGroup} onChange={(e) => updateSfx(sfx.id, { volume: parseFloat(e.target.value) }, dragGroup.current)} />
+        <span className="w-9 tabular-nums text-slate-400">{Math.round(sfx.volume * 100)}%</span>
+      </label>
+      <button className={btn} onClick={() => removeSfx(sfx.id)} title="Eliminar efecto (Supr)">
+        <Trash2 size={13} /> Eliminar
+      </button>
+    </div>
+  );
+}
+
 export function Timeline() {
   const clips = useStore((s) => s.project.clips);
   const voice = useStore((s) => s.project.voice);
@@ -426,10 +525,39 @@ export function Timeline() {
   const [pps, setPps] = useState(90);
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ id: string | 'voice'; sx: number; start: number; group: symbol; mode: 'move' | 'resize' } | null>(null);
+  const sfxList = project.sfx ?? [];
+  const [selectedSfx, setSelectedSfx] = useState<string | null>(null);
+  const sfxSel = sfxList.find((s) => s.id === selectedSfx) ?? null;
+  const sfxDragRef = useRef<{ id: string; sx: number; start: number; duration: number; group: symbol; mode: 'move' | 'resize'; targets: number[] } | null>(null);
+  /** Instante al que se ha imantado el efecto que se arrastra (guía vertical). */
+  const [snapAt, setSnapAt] = useState<number | null>(null);
 
   const total = sceneDuration(project);
   const span = Math.max(total + 3, 10);
   const width = span * pps;
+
+  const sfxRows = useMemo(() => packSfxRows(sfxList, pps), [sfxList, pps]);
+  const sfxLaneH = Math.max(LANE_H, sfxRows.count * SFX_ROW_H + 6);
+
+  // Seleccionar un clip de animación (aquí o desde otro panel) suelta la selección del efecto.
+  useEffect(() => {
+    if (selectedClip) setSelectedSfx(null);
+  }, [selectedClip]);
+
+  // Supr / Retroceso borra el efecto seleccionado (fuera de campos de texto).
+  useEffect(() => {
+    if (!selectedSfx) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      const t = e.target instanceof HTMLElement ? e.target : null;
+      if (t?.closest('input,textarea,select,[contenteditable]') || document.querySelector('dialog[open]')) return;
+      e.preventDefault();
+      removeSfx(selectedSfx);
+      setSelectedSfx(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedSfx]);
 
   const lanes = useMemo(() => {
     const ids: string[] = [];
@@ -471,6 +599,7 @@ export function Timeline() {
     e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragRef.current = { id, sx: e.clientX, start, group: Symbol(), mode };
+    setSelectedSfx(null);
     if (id !== 'voice') store.setUi({ selectedClip: id, selection: null });
   };
   const moveBlockDrag = (e: React.PointerEvent) => {
@@ -488,6 +617,56 @@ export function Timeline() {
     dragRef.current = null;
   };
 
+  /**
+   * Arrastre de un efecto suelto. `move` desplaza su inicio con imán hacia el inicio (y el final) de cualquier
+   * animación, la voz, el cabezal y los demás efectos; Alt lo desactiva. `resize` (asa derecha) estira los ajustables.
+   */
+  const startSfxDrag = (e: React.PointerEvent, sfx: SfxClip, mode: 'move' | 'resize' = 'move') => {
+    if (busy) return;
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const s = store.getState();
+    const p = s.project;
+    const targets = [
+      ...p.clips.map((c) => c.start), // prioridad: inicio de cada animación
+      ...p.clips.map((c) => c.start + c.duration),
+      ...(p.voice ? [p.voice.start] : []),
+      s.ui.time,
+      ...(p.sfx ?? []).filter((o) => o.id !== sfx.id).map((o) => o.start),
+    ];
+    sfxDragRef.current = { id: sfx.id, sx: e.clientX, start: sfx.start, duration: sfx.duration, group: Symbol('sfx-drag'), mode, targets };
+    setSelectedSfx(sfx.id);
+    store.setUi({ selectedClip: null, selection: null });
+  };
+  const moveSfxDrag = (e: React.PointerEvent) => {
+    const d = sfxDragRef.current;
+    if (!d) return;
+    const delta = (e.clientX - d.sx) / pps;
+    if (d.mode === 'resize') {
+      updateSfx(d.id, { duration: d.duration + delta }, d.group);
+      return;
+    }
+    let next = Math.max(0, d.start + delta);
+    let snapped: number | null = null;
+    if (!e.altKey) {
+      let best = SNAP_PX / pps;
+      for (const target of d.targets) {
+        const dist = Math.abs(target - next);
+        if (dist < best - 1e-9) {
+          best = dist;
+          snapped = target;
+        }
+      }
+      if (snapped !== null) next = snapped;
+    }
+    setSnapAt(snapped);
+    updateSfx(d.id, { start: snapped !== null ? next : Math.round(next * 100) / 100 }, d.group);
+  };
+  const endSfxDrag = () => {
+    sfxDragRef.current = null;
+    setSnapAt(null);
+  };
+
   const ticks: number[] = [];
   for (let s = 0; s <= span; s += 0.5) ticks.push(s);
 
@@ -495,7 +674,7 @@ export function Timeline() {
     <div className="flex h-[184px] shrink-0 flex-col border-t border-bezel bg-ink-800">
       <div className="flex items-center justify-between gap-2 border-b border-bezel bg-ink-700 px-2 py-1">
         <Transport />
-        <ClipEditor />
+        {sfxSel ? <SfxEditor sfx={sfxSel} /> : <ClipEditor />}
         <div className="flex items-center gap-1">
           <button className={btn} onClick={() => setPps((p) => Math.max(30, p / 1.25))} aria-label="Alejar"><Minus size={12} /></button>
           <button className={btn} onClick={() => setPps((p) => Math.min(300, p * 1.25))} aria-label="Acercar"><Plus size={12} /></button>
@@ -533,6 +712,43 @@ export function Timeline() {
             <Lane key={id} id={id} label={id === FOCUS_LANE ? '✦ Enfoque / Spotlight' : engine.runtime?.nameOf(id) ?? id} clips={clips.filter((c) => laneOf(c) === id)} objects={objects} pps={pps} width={width}
               selectedClip={selectedClip} onDown={startBlockDrag} onMove={moveBlockDrag} onUp={endBlockDrag} />
           ))}
+          <div className="flex" style={{ height: sfxLaneH }} data-lane="__sfx__">
+            <div className="sticky left-0 z-10 flex shrink-0 items-center gap-1 border-b border-r border-bezel bg-ink-800 px-2 text-xs text-slate-300" style={{ width: LABEL_W }}
+              title="Efectos de sonido sueltos: arrástralos para cuadrarlos con el inicio de una animación (imán; Alt lo desactiva)">
+              <Music2 size={12} /> Efectos <Magnet size={10} className="ml-auto text-slate-500" />
+            </div>
+            <div className="relative border-b border-bezel" style={{ width }}>
+              {sfxList.length === 0 && (
+                <span className="px-2 text-[11px] leading-[30px] text-slate-600">Sin efectos · usa «+ Añadir» en Audio y voz</span>
+              )}
+              {sfxList.map((sfx) => {
+                const meta = SOUND_META[sfx.sound];
+                const dur = soundDuration(sfx.sound, sfx.duration);
+                const selected = selectedSfx === sfx.id;
+                return (
+                  <div
+                    key={sfx.id}
+                    data-sfx={sfx.id}
+                    className={`absolute flex cursor-grab items-center gap-1 overflow-hidden rounded border px-1.5 text-[10px] leading-tight ${selected ? 'border-accent bg-accent-soft' : 'border-sky-400/50 bg-sky-900/40'}`}
+                    style={{ left: sfx.start * pps, width: Math.max(56, dur * pps), top: 3 + (sfxRows.rows.get(sfx.id) ?? 0) * SFX_ROW_H, height: SFX_ROW_H - 4 }}
+                    onPointerDown={(e) => startSfxDrag(e, sfx)}
+                    onPointerMove={moveSfxDrag}
+                    onPointerUp={endSfxDrag}
+                    onPointerCancel={endSfxDrag}
+                    onDoubleClick={() => audio.playEffect(sfx.sound, undefined, sfx.duration, sfx.volume)}
+                    title={`♪ ${meta.label} · ${meta.hint} · inicio ${fmt(sfx.start)} s · ${fmt(dur)} s · vol. ${Math.round(sfx.volume * 100)}% (doble clic: escuchar)`}
+                  >
+                    <span className="truncate font-semibold">♪ {meta.label}</span>
+                    <span className="ml-auto shrink-0 font-mono text-[9px] opacity-80">{fmt(sfx.start)}s</span>
+                    {meta.resizable && (
+                      <div className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize bg-sky-300/30 hover:bg-sky-300/70" title="Arrastra para cambiar la duración"
+                        onPointerDown={(e) => startSfxDrag(e, sfx, 'resize')} onPointerMove={moveSfxDrag} onPointerUp={endSfxDrag} onPointerCancel={endSfxDrag} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
           <div className="flex" style={{ height: LANE_H }}>
             <div className="sticky left-0 z-10 flex shrink-0 items-center gap-1 border-b border-r border-bezel bg-ink-800 px-2 text-xs text-slate-300" style={{ width: LABEL_W }}>
               <Volume2 size={12} /> Voz
@@ -555,10 +771,17 @@ export function Timeline() {
               )}
             </div>
           </div>
-          {lanes.length === 0 && !voice && (
+          {lanes.length === 0 && !voice && sfxList.length === 0 && (
             <p className="px-3 py-3 text-xs text-slate-500" style={{ marginLeft: LABEL_W }}>
               Selecciona un objeto y usa los botones de Animaciones para crear clips en el cabezal.
             </p>
+          )}
+
+          {/* Guía del imán al cuadrar un efecto */}
+          {snapAt !== null && (
+            <div className="pointer-events-none absolute top-0 z-30 border-l border-dashed border-amber-300" style={{ left: LABEL_W + snapAt * pps, height: '100%' }}>
+              <span className="absolute left-1 top-0 rounded bg-amber-300 px-1 font-mono text-[9px] text-ink-900">{fmt(snapAt)}s</span>
+            </div>
           )}
 
           {/* Cabezal */}
