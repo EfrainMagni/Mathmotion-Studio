@@ -11,6 +11,7 @@ import {
   Mic,
   AudioLines,
   Play,
+  Plus,
   Sigma,
   Square,
   Trash2,
@@ -18,7 +19,9 @@ import {
   Volume2,
 } from 'lucide-react';
 import { actions, selectedObjectIds, store, useStore } from '../store';
-import { SOUND_IDS, SOUND_LABEL, STAGE_SIZES, type SoundId, type VectorTool } from '../types';
+import {
+  SFX_VOLUME_MAX, SOUND_CATEGORIES, SOUND_IDS, SOUND_LABEL, SOUND_META, STAGE_SIZES, nextSfxId, type SoundId, type VectorTool,
+} from '../types';
 import { audio, engine } from '../engine';
 import { SAMPLE_SVG, prepareSvg } from '../engine/svgImport';
 import { formulaToPrepared, loadMathJax, texToSvg } from '../engine/mathjax';
@@ -394,9 +397,23 @@ function AudioSection() {
   const voice = useStore((s) => s.project.voice);
   const selectedClip = useStore((s) => s.ui.selectedClip);
   const clipSound = useStore((s) => s.project.clips.find((c) => c.id === s.ui.selectedClip)?.sound ?? null);
+  const playhead = useStore((s) => s.ui.time);
+  const busy = useStore((s) => s.ui.recording.phase !== 'idle');
+  /** Volumen individual de cada efecto (escucha previa e inserción); el clip insertado guarda el suyo. */
+  const [volumes, setVolumes] = useState<Partial<Record<SoundId, number>>>({});
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [micOn, setMicOn] = useState(false);
+
+  /** Inserta un efecto suelto en el tiempo actual del cabezal. */
+  const addSfx = (id: SoundId, volume: number) => {
+    const start = Math.max(0, Math.round(store.getState().ui.time * 100) / 100);
+    store.setProject((p) => ({
+      ...p,
+      sfx: [...(p.sfx ?? []), { id: nextSfxId(p.sfx), sound: id, start, duration: SOUND_META[id].duration, volume }],
+    }));
+    actions.notify('info', `«${SOUND_LABEL[id]}» añadido en ${start.toFixed(2)} s.`);
+  };
   const [elapsed, setElapsed] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -458,24 +475,48 @@ function AudioSection() {
 
   return (
     <>
-      <div className="space-y-1">
-        <p className="text-[11px] uppercase tracking-wide text-slate-500">Efectos</p>
-        {SOUND_IDS.map((id: SoundId) => (
-          <div key={id} className="flex items-center gap-1.5 text-xs">
-            <button className={btn} onClick={() => audio.playEffect(id)} aria-label={`Escuchar ${SOUND_LABEL[id]}`} title="Escuchar">
-              <Play size={12} />
-            </button>
-            <span className={`flex-1 truncate ${clipSound === id ? 'text-accent-light' : ''}`}>{SOUND_LABEL[id]}</span>
-            <button
-              className={btn}
-              disabled={!selectedClip}
-              title={selectedClip ? 'Asociar al clip seleccionado' : 'Selecciona un clip en la línea de tiempo'}
-              onClick={() => selectedClip && actions.updateClip(selectedClip, { sound: clipSound === id ? null : id })}
-            >
-              {clipSound === id ? 'Quitar' : 'Asociar'}
-            </button>
+      <div className="space-y-2">
+        <div className="flex items-baseline justify-between">
+          <p className="text-[11px] uppercase tracking-wide text-slate-500">Efectos de sonido</p>
+          <span className="font-mono text-[10px] text-slate-500" title="Los efectos se insertan en el cabezal">⏱ {playhead.toFixed(2)} s</span>
+        </div>
+        {SOUND_CATEGORIES.map((cat) => (
+          <div key={cat.id} className="space-y-0.5">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-accent-light/80">{cat.label}</p>
+            {SOUND_IDS.filter((id) => SOUND_META[id].category === cat.id).map((id: SoundId) => {
+              const meta = SOUND_META[id];
+              const vol = volumes[id] ?? 1;
+              return (
+                <div key={id} className="flex items-center gap-1 text-xs" title={`${meta.label} · ${meta.hint}`}>
+                  <button className={btn} onClick={() => audio.playEffect(id, undefined, undefined, vol)}
+                    aria-label={`Probar sonido ${SOUND_LABEL[id]}`} title="▶ Probar sonido">
+                    <Play size={12} />
+                  </button>
+                  <span className={`min-w-0 flex-1 truncate ${clipSound === id ? 'text-accent-light' : ''}`}>{meta.label}</span>
+                  <input type="range" min={0} max={SFX_VOLUME_MAX} step={0.05} value={vol} className="w-12 shrink-0 accent-accent"
+                    aria-label={`Volumen de ${meta.label}`} title={`Volumen ${Math.round(vol * 100)}%`}
+                    onChange={(e) => setVolumes((v) => ({ ...v, [id]: parseFloat(e.target.value) }))} />
+                  <button
+                    className={`${btn} px-1`}
+                    disabled={!selectedClip}
+                    title={selectedClip ? (clipSound === id ? 'Quitar del clip seleccionado' : 'Asociar al clip seleccionado') : 'Selecciona un clip en la línea de tiempo para asociarlo'}
+                    aria-label={clipSound === id ? `Quitar ${meta.label} del clip` : `Asociar ${meta.label} al clip`}
+                    onClick={() => selectedClip && actions.updateClip(selectedClip, { sound: clipSound === id ? null : id })}
+                  >
+                    ♪
+                  </button>
+                  <button className={`${btn} shrink-0`} onClick={() => addSfx(id, vol)} disabled={busy}
+                    title={`Añadir en el cabezal (${playhead.toFixed(2)} s) a la pista «Efectos»`} aria-label={`Añadir ${meta.label} en el cabezal`}>
+                    <Plus size={11} /> Añadir
+                  </button>
+                </div>
+              );
+            })}
           </div>
         ))}
+        <p className="text-[10px] leading-snug text-slate-500">
+          ▶ escucha · <b>+ Añadir</b> lo coloca en el cabezal (pista «Efectos», arrástralo para cuadrarlo) · ♪ lo asocia al clip seleccionado.
+        </p>
       </div>
 
       <div className="space-y-1.5 border-t border-bezel pt-2">

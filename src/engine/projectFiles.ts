@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import {
-  FOCUS_LIMITS, FOCUS_TARGETS_RE, FONT_IDS, INDICATE_STROKE_LIMITS, SAVED_GROUP_NAME_MAX, SCENE_BG_LIMITS, parseFocusTargets, parseObjectIds, pruneFocusClips, pruneGroupClips,
+  FOCUS_LIMITS, FOCUS_TARGETS_RE, FONT_IDS, INDICATE_STROKE_LIMITS, SAVED_GROUP_NAME_MAX, SCENE_BG_LIMITS, SFX_VOLUME_MAX, SOUND_IDS, parseFocusTargets, parseObjectIds, pruneFocusClips, pruneGroupClips,
   pruneSavedGroups, type Obj2D, type Project,
 } from '../types';
 import { prepareSvg } from './svgImport';
@@ -128,6 +128,12 @@ const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()
       input.strokeWidth < INDICATE_STROKE_LIMITS.min || input.strokeWidth > INDICATE_STROKE_LIMITS.max))
   ) ctx.addIssue({ code: 'custom', message: 'Parámetros de animación no válidos.' });
 });
+// Catálogo completo de efectos (los 4 originales siguen siendo válidos: los proyectos antiguos abren igual).
+const sound = z.enum(SOUND_IDS);
+const sfxClip = z.object({
+  id: z.string().regex(/^s[1-9]\d*$/), sound, start: nonnegative, duration: positive.max(60),
+  volume: number.min(0).max(SFX_VOLUME_MAX),
+});
 const voice = z.object({
   name: z.string(), start: nonnegative, duration: positive, volume: number.min(0).max(1.5),
 });
@@ -151,7 +157,7 @@ const project = z.object({
       'draw', 'radar', 'glow', 'appear', 'rotate', 'orbit', // 'orbit' es legado 3D: se descarta al abrir
       'indicate', 'circumscribe', 'focus', 'transform', 'transformMatch', 'colorChange', 'groupTransform', 'disappear',
     ]),
-    start: nonnegative, duration: positive, sound: z.enum(['chalk', 'pop', 'radar', 'sparkle']).nullable(),
+    start: nonnegative, duration: positive, sound: sound.nullable(),
     parameters,
   }).refine((clip) => clip.parameters.targets === undefined || clip.type === 'focus', { message: 'Objetivos de enfoque en un clip que no es Focus.' })
     .refine((clip) => clip.type !== 'disappear' || clip.parameters.mode === undefined || clip.parameters.mode === 'fade' || clip.parameters.mode === 'shrink',
@@ -162,6 +168,8 @@ const project = z.object({
     name: z.string().trim().min(1).max(SAVED_GROUP_NAME_MAX),
     objectIds: z.array(objectId).max(5000),
   })).max(500).optional(),
+  // Efectos de sonido sueltos de la pista «Efectos» (opcional: los archivos antiguos no los tienen).
+  sfx: z.array(sfxClip).max(2000).optional(),
   // `camera` (3D) de archivos antiguos se ignora: zod descarta las claves desconocidas.
   counters: z.object({ obj: z.int().nonnegative(), clip: z.int().nonnegative() }),
 });
@@ -245,6 +253,11 @@ export function parseProject(text: string): Project {
     [...Object.keys(p.styles), ...p.clips.map((clip) => clip.targetId)]
       .some((id) => !targets.has(id.split('.')[0]))
   ) throw new Error('El archivo contiene identificadores de escena inconsistentes.');
+
+  if (p.sfx && new Set(p.sfx.map((s) => s.id)).size !== p.sfx.length) {
+    throw new Error('El archivo contiene efectos de sonido con identificadores repetidos.');
+  }
+  p.sfx = p.sfx?.length ? p.sfx : undefined;
 
   let track: Project['voice'] = null;
   if (p.voice) {
