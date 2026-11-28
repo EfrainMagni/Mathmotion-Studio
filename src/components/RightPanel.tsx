@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Minimize2, EyeOff, Trash2, Shapes, X, Bookmark, Pencil, Plus } from 'lucide-react';
-import { actions, defaultClipParams, selectedObjectIds, store, useStore, type AlignMode } from '../store';
+import { GROUP_STAGGER_MAX, actions, defaultClipParams, selectedObjectIds, store, useStore, type AlignMode, type GroupAnimKind } from '../store';
 import { ColorChangeFields, FocusStrokeFields, IndicateFields, patchParams } from './Timeline';
 import {
   ARC_LIMITS, DEFAULT_ARC, DEFAULT_TEXT_STYLE, FONT_CATALOG, isPathTool, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
@@ -1094,6 +1094,128 @@ function Animations() {
   );
 }
 
+/** Retardo por elemento que propone la casilla «Cascada (LaggedStart)» al activarse. */
+const DEFAULT_STAGGER = 0.08;
+
+/**
+ * Animaciones del Grupo / Selección: con 2 o más objetos seleccionados (marquesina, Mayús+clic o el chip de un
+ * Grupo Guardado) aplica las animaciones estándar de objeto a todos a la vez, en una sola acción reversible.
+ */
+function GroupAnimations() {
+  const multi = useStore((s) => s.ui.multiSelection);
+  const time = useStore((s) => s.ui.time);
+  const objects = useStore((s) => s.project.objects);
+  const groups = useStore((s) => s.project.savedGroups);
+  const [duration, setDuration] = useState(1.5);
+  const [cascade, setCascade] = useState(false);
+  const [stagger, setStagger] = useState(DEFAULT_STAGGER);
+  const [dir, setDir] = useState('none');
+  const [dist, setDist] = useState(150);
+  const [factor, setFactor] = useState(1.3);
+  const [indicateParams, setIndicateParams] = useState<ClipParams>({ color: '#ffff00' });
+  const [colorParams, setColorParams] = useState<ClipParams>(() => defaultClipParams('colorChange'));
+
+  const ids = multi.filter((id) => objects.some((object) => object.id === id));
+  if (ids.length < 2) return null;
+
+  // Si la selección coincide exactamente con un Grupo Guardado, se usa su orden (y su nombre en la cabecera).
+  const group = groups?.find((entry) => {
+    const members = entry.objectIds.filter((id) => ids.includes(id));
+    return members.length === ids.length && entry.objectIds.every((id) => ids.includes(id) || !objects.some((object) => object.id === id));
+  });
+  const nameOf = (id: string) => objects.find((object) => object.id === id)?.name ?? id;
+  const start = Math.round(time * 100) / 100;
+  const staggerSec = cascade ? stagger : 0;
+  const lastStart = Math.round((start + (ids.length - 1) * staggerSec) * 100) / 100;
+
+  const add = (kind: GroupAnimKind, parameters: ClipParams = {}) => {
+    const options = { start, duration, parameters, staggerSec };
+    if (group) actions.addClipToGroup(group.id, kind, options);
+    else actions.addClipToSelection(ids, kind, options);
+  };
+  const button = `${btn} w-full justify-start`;
+
+  return (
+    <Section title={`Animaciones del Grupo (${ids.length} objetos)`}>
+      <p className="text-[11px] leading-snug text-slate-500" title={ids.map(nameOf).join(', ')}>
+        {group ? <>Grupo «{group.name}». </> : null}
+        Cada botón crea un clip por objeto en el cabezal ({start.toFixed(2)} s); Ctrl+Z los deshace juntos.
+      </p>
+      <Field label="Duración (s)">
+        <NumberInput className={`${input} w-20`} value={duration} min={0.1} step={0.1} onChange={setDuration} />
+      </Field>
+      <div className="flex items-center gap-1.5">
+        <label className="flex flex-1 items-center gap-1.5 text-[11px] text-slate-300"
+          title="Activo: cada elemento entra con un retardo respecto al anterior (Manim LaggedStart). Inactivo: todos a la vez.">
+          <input type="checkbox" checked={cascade} onChange={(event) => setCascade(event.target.checked)} />
+          Cascada (LaggedStart)
+        </label>
+        <NumberInput className={`${input} w-16`} value={stagger} min={0.01} max={GROUP_STAGGER_MAX} step={0.01} onChange={setStagger}
+          ariaLabel="Retardo por elemento (s)" disabled={!cascade} />
+      </div>
+      <p className="text-[10px] leading-snug text-slate-500">
+        {cascade
+          ? `Efecto dominó: ${stagger.toFixed(2)} s por elemento (el último empieza en ${lastStart.toFixed(2)} s), en el orden ${group ? 'del grupo' : 'de selección'}.`
+          : 'Simultáneo: todos empiezan a la vez.'}
+      </p>
+
+      <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Entrada del grupo">
+        <div className={GROUP_HEADING}>Entrada</div>
+        <button className={button} title="Create / Write en cada objeto: dibuja el contorno (o escribe el texto) y rellena al final"
+          onClick={() => add('write')}>
+          <PenTool size={14} /> Create / Write
+        </button>
+        <button className={button} title="FadeIn en cada objeto; elige una dirección para que además se deslice"
+          onClick={() => add('fadeIn', { direction: dir, distance: dist })}>
+          <Sparkles size={14} /> {dir === 'none' ? 'FadeIn' : 'FadeIn + deslizar'}
+        </button>
+        <div className="flex gap-1.5">
+          <select className={input} value={dir} onChange={(e) => setDir(e.target.value)} aria-label="Dirección de entrada del grupo">
+            {DIRS.map((d) => (
+              <option key={d.id} value={d.id}>{d.label}</option>
+            ))}
+          </select>
+          <NumberInput className={`${input} w-16`} value={dist} min={0} step={10} onChange={setDist} ariaLabel="Distancia (px)" disabled={dir === 'none'} />
+        </div>
+        <button className={button} title="Brotar (GrowFromCenter) en cada objeto: crece desde su centro (0 → 1.2 → 1) con fundido"
+          onClick={() => add('pop')}>
+          <Maximize size={14} /> Brotar (Pop)
+        </button>
+      </div>
+
+      <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Énfasis y color del grupo">
+        <div className={GROUP_HEADING}>Énfasis y Color</div>
+        <div className="flex items-center gap-1.5">
+          <button className={`${btn} flex-1 justify-start`} title="Indicate en cada objeto: pulso de escala, relleno y/o contorno que vuelve al estado original"
+            onClick={() => add('indicate', { ...indicateParams, scale: factor })}>
+            <Sparkles size={14} /> Indicate
+          </button>
+          <NumberInput className={`${input} w-14`} value={factor} min={0.1} max={10} step={0.1} onChange={setFactor} ariaLabel="Escala de Indicate del grupo" />
+        </div>
+        <IndicateFields compact value={indicateParams} onChange={(patch) => setIndicateParams((current) => patchParams(current, patch))} />
+        <button className={button}
+          title={colorParams.revertOnEnd === true ? 'Cambia el color de cada objeto y regresa al original al terminar' : 'Cambia el color de cada objeto de forma permanente'}
+          onClick={() => add('colorChange', colorParams)}>
+          <Palette size={14} /> Cambiar Color
+        </button>
+        <ColorChangeFields compact value={colorParams} onChange={(patch) => setColorParams((current) => patchParams(current, patch))} />
+      </div>
+
+      <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Salida del grupo">
+        <div className={GROUP_HEADING}>Salida / Desaparecer</div>
+        <button className={button} title="FadeOut en cada objeto: la opacidad baja de 1 a 0 y queda oculto hasta una nueva entrada"
+          onClick={() => add('disappear', { mode: 'fade' })}>
+          <EyeOff size={14} /> Desvanecer (FadeOut)
+        </button>
+        <button className={button} title="ShrinkToCenter en cada objeto: se contrae hacia su centro mientras se desvanece"
+          onClick={() => add('disappear', { mode: 'shrink' })}>
+          <Minimize2 size={14} /> Contraer (ShrinkToCenter)
+        </button>
+      </div>
+    </Section>
+  );
+}
+
 /** Fórmula seleccionada (objeto raíz) o null. */
 function useFormula() {
   const selection = useStore((s) => s.ui.selection);
@@ -1889,6 +2011,7 @@ export function RightPanel() {
     <aside className="scroll-thin w-[248px] shrink-0 overflow-y-auto border-l border-bezel bg-ink-800">
       <Inspector />
       <GroupTransformPanel />
+      <GroupAnimations />
       <FocusPanel />
       {!hasSelection && <SceneBackgroundPanel />}
       <PlaneInspector />
