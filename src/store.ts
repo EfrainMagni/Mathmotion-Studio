@@ -6,13 +6,20 @@ import { useSyncExternalStore } from 'react';
 import {
   STAGE_SIZES,
   SAVED_GROUP_NAME_MAX,
+  DEFAULT_FOCUS,
+  focusParams,
+  focusSpecOf,
   groupTransformParams,
+  mergeFocusTargets,
+  pruneFocusClips,
   pruneGroupClips,
   pruneSavedGroups,
   type SavedGroup,
   type Clip,
   type ClipParams,
   type ClipType,
+  type FocusParams,
+  type FocusTarget,
   type GlyphStyle,
   type NodeStyle,
   type Obj2D,
@@ -81,6 +88,11 @@ export interface UIState {
    * grupo destino (paso 2). Estado temporal de la interfaz: no forma parte del proyecto ni del historial.
    */
   pendingTransformSourceIds: string[] | null;
+  /**
+   * Objetivos acumulados para un clip Enfoque / Spotlight (glifos de distintas ecuaciones y/u objetos completos),
+   * a la espera de «Crear Animación Focus». Estado temporal de la interfaz: no forma parte del proyecto ni del historial.
+   */
+  focusSelection: FocusTarget[];
 }
 
 export interface State {
@@ -123,6 +135,7 @@ function defaultUI(): UIState {
     glyphSel: [],
     pathNode: null,
     pendingTransformSourceIds: null,
+    focusSelection: [],
   };
 }
 
@@ -144,6 +157,12 @@ function keepPending(ids: string[] | null, exists: (id: string) => boolean): str
   if (!ids) return null;
   const kept = ids.filter(exists);
   return kept.length ? kept : null;
+}
+
+/** Conserva solo los objetivos de enfoque cuyos objetos siguen existiendo (misma lista si no cambia nada). */
+function keepFocus(list: FocusTarget[], exists: (id: string) => boolean): FocusTarget[] {
+  const kept = list.filter((entry) => exists(entry.objectId));
+  return kept.length === list.length ? list : kept;
 }
 
 /** Ids de los objetos raíz seleccionados (uno o varios). */
@@ -168,6 +187,7 @@ function restoreHistory(direction: 'undo' | 'redo') {
       termEdit: editing ? termEdit : null,
       glyphSel: editing ? state.ui.glyphSel : [],
       pendingTransformSourceIds: keepPending(state.ui.pendingTransformSourceIds, (id) => project.objects.some((object) => object.id === id)),
+      focusSelection: keepFocus(state.ui.focusSelection, (id) => project.objects.some((object) => object.id === id)),
     },
   };
   listeners.forEach((listener) => listener());
@@ -219,7 +239,7 @@ export const store = {
       ui: {
         ...state.ui, selection: null, multiSelection: NO_MULTI, selectedClip: null, time: 0,
         playing: false, vectorTool: null, pointerTool: 'select', polygonRequest: null, notice: null,
-        termEdit: null, glyphSel: [], pathNode: null, pendingTransformSourceIds: null,
+        termEdit: null, glyphSel: [], pathNode: null, pendingTransformSourceIds: null, focusSelection: [],
       },
     };
     listeners.forEach((l) => l());
@@ -339,7 +359,7 @@ export const actions = {
       ...p,
       objects: p.objects.filter((o) => o.id !== id),
       styles: stripNodeKeys(p.styles, id),
-      clips: pruneGroupClips(p.clips, new Set([id]))
+      clips: pruneFocusClips(pruneGroupClips(p.clips, new Set([id])), new Set([id]))
         .filter((c) => c.targetId !== id && !c.targetId.startsWith(id + '.') && c.parameters.to !== id),
       savedGroups: pruneSavedGroups(p.savedGroups, (entry) => entry !== id),
     }));
@@ -351,6 +371,7 @@ export const actions = {
       multiSelection: keepMulti(ui.multiSelection.filter((entry) => entry !== id)),
       selectedClip: clipStill ? ui.selectedClip : null,
       pendingTransformSourceIds: keepPending(ui.pendingTransformSourceIds, (entry) => entry !== id),
+      focusSelection: keepFocus(ui.focusSelection, (entry) => entry !== id),
       ...(ui.termEdit === id ? { termEdit: null, glyphSel: [] } : {}),
     });
   },
@@ -465,8 +486,8 @@ export const actions = {
           if (target === id || target.startsWith(id + '.')) styles[nextId + target.slice(id.length)] = style;
         }
         for (const entry of project.clips) {
-          // Las transformaciones de grupo enlazan varios objetos: no se copian al duplicar uno de ellos.
-          if (entry.type === 'groupTransform') continue;
+          // Las transformaciones de grupo y los enfoques enlazan varios objetos: no se copian al duplicar uno de ellos.
+          if (entry.type === 'groupTransform' || focusSpecOf(entry)) continue;
           if (entry.targetId === id || entry.targetId.startsWith(id + '.')) {
             // Glifo → glifo: los ids de glifo origen llevan el prefijo del objeto (`o1.g0`); sin reescribirlos, la copia
             // dejaría de ser una transformación dirigida y se reproduciría como un Transform de objeto completo.
@@ -495,7 +516,7 @@ export const actions = {
       ...p,
       objects: p.objects.filter((o) => !set.has(o.id)),
       styles: Object.fromEntries(Object.entries(p.styles).filter(([key]) => !owned(key))),
-      clips: pruneGroupClips(p.clips, set)
+      clips: pruneFocusClips(pruneGroupClips(p.clips, set), set)
         .filter((c) => !owned(c.targetId) && !(typeof c.parameters.to === 'string' && set.has(c.parameters.to))),
       savedGroups: pruneSavedGroups(p.savedGroups, (entry) => !set.has(entry)),
     }));
@@ -506,6 +527,7 @@ export const actions = {
       multiSelection: keepMulti(ui.multiSelection.filter((entry) => !set.has(entry))),
       selectedClip: clipStill ? ui.selectedClip : null,
       pendingTransformSourceIds: keepPending(ui.pendingTransformSourceIds, (entry) => !set.has(entry)),
+      focusSelection: keepFocus(ui.focusSelection, (entry) => !set.has(entry)),
       ...(ui.termEdit && set.has(ui.termEdit) ? { termEdit: null, glyphSel: [] } : {}),
     });
   },
@@ -554,7 +576,10 @@ export const actions = {
         type: args.type,
         start: Math.max(0, r2(args.start)),
         duration: Math.max(0.05, r2(args.duration)),
-        parameters: { ...defaultClipParams(args.type), ...(args.parameters ?? {}) },
+        // Enfoque / Spotlight (`targets`) no hereda los parámetros por defecto del FocusOn clásico.
+        parameters: args.type === 'focus' && args.parameters?.targets !== undefined
+          ? { ...args.parameters }
+          : { ...defaultClipParams(args.type), ...(args.parameters ?? {}) },
         sound: args.sound ?? null,
       };
       return { ...p, clips: [...p.clips, clip], counters: { ...p.counters, clip: p.counters.clip + 1 } };
@@ -601,6 +626,62 @@ export const actions = {
       duration: options.duration ?? 2,
       parameters: groupTransformParams({ sourceObjectIds: sources, targetObjectIds: targets, keepSource: options.keepSource === true }),
     });
+    return id;
+  },
+
+  // ---------------------------------------------------------------- enfoque / spotlight
+
+  /** Objetivos que aporta la selección actual: los glifos marcados en Modo Edición de Términos o los objetos raíz. */
+  currentFocusTargets(): FocusTarget[] {
+    const { termEdit, glyphSel } = state.ui;
+    if (termEdit && glyphSel.length && state.project.objects.some((object) => object.id === termEdit)) {
+      return [{ objectId: termEdit, glyphIndices: [...glyphSel] }];
+    }
+    return selectedObjectIds(state.ui)
+      .filter((id) => state.project.objects.some((object) => object.id === id))
+      .map((objectId) => ({ objectId }));
+  },
+
+  /** Suma la selección actual (glifos de una ecuación u objetos completos) al acumulador del enfoque. */
+  addCurrentToFocusSelection() {
+    const next = actions.currentFocusTargets();
+    if (!next.length) return;
+    store.setUi({ focusSelection: mergeFocusTargets([...state.ui.focusSelection, ...next]) });
+  },
+
+  /** Quita un objetivo del acumulador (chip `×`). */
+  removeFromFocusSelection(index: number) {
+    const list = state.ui.focusSelection;
+    if (index < 0 || index >= list.length) return;
+    store.setUi({ focusSelection: list.filter((_, i) => i !== index) });
+  },
+
+  clearFocusSelection() {
+    if (state.ui.focusSelection.length) store.setUi({ focusSelection: [] });
+  },
+
+  /**
+   * Crea el clip Enfoque / Spotlight con los objetivos acumulados (una sola acción reversible con Ctrl+Z) y vacía
+   * el acumulador. Devuelve el id del clip, o `null` si no hay objetivos válidos.
+   */
+  createFocusClip(options: { start: number; duration?: number } & Partial<Omit<FocusParams, 'targets'>>): string | null {
+    const targets = mergeFocusTargets(state.ui.focusSelection)
+      .filter((entry) => state.project.objects.some((object) => object.id === entry.objectId));
+    if (!targets.length) return null;
+    const id = actions.addClip({
+      targetId: targets[0].objectId,
+      type: 'focus',
+      start: options.start,
+      duration: options.duration ?? 3,
+      parameters: focusParams({
+        targets,
+        dimOpacity: options.dimOpacity ?? DEFAULT_FOCUS.dimOpacity,
+        highlightColor: options.highlightColor ?? DEFAULT_FOCUS.highlightColor,
+        useHighlightColor: options.useHighlightColor ?? DEFAULT_FOCUS.useHighlightColor,
+        pulseScale: options.pulseScale ?? DEFAULT_FOCUS.pulseScale,
+      }),
+    });
+    store.setUi({ focusSelection: [] });
     return id;
   },
 

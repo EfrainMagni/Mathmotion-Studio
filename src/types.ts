@@ -342,8 +342,140 @@ export function pruneGroupClips(clips: Clip[], removed: Set<string>): Clip[] {
   return out;
 }
 
+/**
+ * Enfoque / Spotlight (clip `focus` con `parameters.targets`): los objetivos (glifos de una o varias ecuaciones y/o
+ * objetos completos) brillan en primer plano mientras todo lo demás se atenúa hasta `dimOpacity`.
+ * Curva: 0–20 % entra (`smooth`), 20–80 % se mantiene, 80–100 % todo regresa a su estado normal.
+ * Sin `targets`, el clip `focus` conserva el comportamiento clásico de `FocusOn` (compatibilidad con archivos antiguos).
+ */
+export interface FocusTarget {
+  objectId: string;
+  /** Índices de glifo dentro de una ecuación; sin ellos se enfoca el objeto completo. */
+  glyphIndices?: number[];
+}
+
+export interface FocusParams {
+  targets: FocusTarget[];
+  /** Opacidad de todo lo que NO está enfocado (0.05–0.7). */
+  dimOpacity: number;
+  highlightColor: string;
+  /** `false`: los objetivos conservan su color y solo brillan. */
+  useHighlightColor: boolean;
+  /** Realce de escala de los objetivos (1–1.5). */
+  pulseScale: number;
+}
+
+export const FOCUS_LIMITS = {
+  dimOpacity: { min: 0.05, max: 0.7 },
+  pulseScale: { min: 1, max: 1.5 },
+} as const;
+
+export const DEFAULT_FOCUS: Omit<FocusParams, 'targets'> = {
+  dimOpacity: 0.2, highlightColor: '#FFFF00', useHighlightColor: true, pulseScale: 1.12,
+};
+
+/** Fracciones del clip: entrada (0–20 %) y salida (80–100 %). */
+export const FOCUS_EDGE = 0.2;
+
+/** Formato serializado de `targets` (`ClipParams` solo admite escalares): `"o1:3,4;o2:3,4;o3"`. */
+export const FOCUS_TARGETS_RE = /^o[1-9]\d*(:\d+(,\d+)*)?(;o[1-9]\d*(:\d+(,\d+)*)?)*$/;
+
+/**
+ * Normaliza una lista de objetivos: un objeto aparece una sola vez (sus glifos se unen, ordenados y sin duplicados)
+ * y un objetivo de objeto completo absorbe cualquier selección de glifos del mismo objeto. Conserva el orden.
+ */
+export function mergeFocusTargets(list: FocusTarget[]): FocusTarget[] {
+  const out: FocusTarget[] = [];
+  for (const entry of list) {
+    if (!OBJECT_ID_RE.test(entry.objectId)) continue;
+    const glyphs = entry.glyphIndices?.filter((i) => Number.isInteger(i) && i >= 0);
+    const whole = !glyphs || !glyphs.length;
+    const found = out.find((item) => item.objectId === entry.objectId);
+    if (!found) {
+      out.push(whole ? { objectId: entry.objectId } : { objectId: entry.objectId, glyphIndices: [...new Set(glyphs)].sort((a, b) => a - b) });
+    } else if (whole) {
+      delete found.glyphIndices;
+    } else if (found.glyphIndices) {
+      found.glyphIndices = [...new Set([...found.glyphIndices, ...glyphs])].sort((a, b) => a - b);
+    }
+  }
+  return out;
+}
+
+export function serializeFocusTargets(targets: FocusTarget[]): string {
+  return mergeFocusTargets(targets)
+    .map((entry) => (entry.glyphIndices?.length ? `${entry.objectId}:${entry.glyphIndices.join(',')}` : entry.objectId))
+    .join(';');
+}
+
+export function parseFocusTargets(text: unknown): FocusTarget[] {
+  if (typeof text !== 'string' || !FOCUS_TARGETS_RE.test(text)) return [];
+  return mergeFocusTargets(text.split(';').map((part) => {
+    const [objectId, glyphs] = part.split(':');
+    return glyphs ? { objectId, glyphIndices: glyphs.split(',').map(Number) } : { objectId };
+  }));
+}
+
+const clampFocus = (v: unknown, range: { min: number; max: number }, fallback: number) =>
+  typeof v === 'number' && Number.isFinite(v) ? Math.min(range.max, Math.max(range.min, v)) : fallback;
+
+export function focusParams(spec: FocusParams): ClipParams {
+  return {
+    targets: serializeFocusTargets(spec.targets),
+    dimOpacity: clampFocus(spec.dimOpacity, FOCUS_LIMITS.dimOpacity, DEFAULT_FOCUS.dimOpacity),
+    highlightColor: spec.highlightColor || DEFAULT_FOCUS.highlightColor,
+    useHighlightColor: spec.useHighlightColor,
+    pulseScale: clampFocus(spec.pulseScale, FOCUS_LIMITS.pulseScale, DEFAULT_FOCUS.pulseScale),
+  };
+}
+
+/** Especificación de un clip Enfoque / Spotlight, o `null` (otro tipo, `FocusOn` clásico o sin objetivos válidos). */
+export function focusSpecOf(clip: Pick<Clip, 'type' | 'parameters'>): FocusParams | null {
+  if (clip.type !== 'focus' || typeof clip.parameters.targets !== 'string') return null;
+  const targets = parseFocusTargets(clip.parameters.targets);
+  if (!targets.length) return null;
+  const p = clip.parameters;
+  return {
+    targets,
+    dimOpacity: clampFocus(p.dimOpacity, FOCUS_LIMITS.dimOpacity, DEFAULT_FOCUS.dimOpacity),
+    highlightColor: typeof p.highlightColor === 'string' && p.highlightColor ? p.highlightColor : DEFAULT_FOCUS.highlightColor,
+    useHighlightColor: p.useHighlightColor !== false,
+    pulseScale: clampFocus(p.pulseScale, FOCUS_LIMITS.pulseScale, DEFAULT_FOCUS.pulseScale),
+  };
+}
+
+/** Intensidad del enfoque (0–1) en el progreso `raw` del clip: entrada, sostenido y salida con curva `smooth`. */
+export function focusEnvelope(raw: number): number {
+  if (!(raw > 0) || raw >= 1) return 0;
+  const smoothStep = (x: number) => x * x * (3 - 2 * x);
+  if (raw < FOCUS_EDGE) return smoothStep(raw / FOCUS_EDGE);
+  if (raw > 1 - FOCUS_EDGE) return smoothStep((1 - raw) / FOCUS_EDGE);
+  return 1;
+}
+
+/**
+ * Quita de los clips de enfoque los objetos eliminados; si no queda ningún objetivo el clip desaparece y, si se
+ * elimina el objeto que hacía de `targetId`, el clip pasa al siguiente objetivo. Los demás clips no se tocan.
+ */
+export function pruneFocusClips(clips: Clip[], removed: Set<string>): Clip[] {
+  const out: Clip[] = [];
+  for (const clip of clips) {
+    const spec = focusSpecOf(clip);
+    if (!spec) {
+      out.push(clip);
+      continue;
+    }
+    const targets = spec.targets.filter((entry) => !removed.has(entry.objectId));
+    if (!targets.length) continue;
+    out.push({ ...clip, targetId: targets[0].objectId, parameters: { ...clip.parameters, targets: serializeFocusTargets(targets) } });
+  }
+  return out;
+}
+
 /** Etiqueta del clip (distingue la transformación dirigida de glifos de un Transform normal). */
 export function clipLabel(clip: Pick<Clip, 'type' | 'targetId' | 'parameters'>): string {
+  const focus = focusSpecOf(clip);
+  if (focus) return `Focus (${focus.targets.length} ${focus.targets.length === 1 ? 'objetivo' : 'objetivos'})`;
   if (clip.type === 'appear' && clip.parameters.mode === 'pop') return 'GrowFromCenter (Pop)';
   if (clip.type === 'appear' && clip.parameters.direction === 'none') return 'FadeIn';
   if (clip.type === 'disappear') return DISAPPEAR_MODES.find((m) => m.id === disappearModeOf(clip.parameters))!.label;
