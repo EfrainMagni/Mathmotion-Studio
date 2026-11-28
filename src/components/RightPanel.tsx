@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Minimize2, EyeOff, Trash2, Shapes, X, Bookmark, Pencil, Plus } from 'lucide-react';
 import { actions, defaultClipParams, selectedObjectIds, store, useStore, type AlignMode } from '../store';
-import { ColorChangeFields, patchParams } from './Timeline';
+import { ColorChangeFields, FocusStrokeFields, IndicateFields, patchParams } from './Timeline';
 import {
   ARC_LIMITS, DEFAULT_ARC, DEFAULT_TEXT_STYLE, FONT_CATALOG, isPathTool, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
-  SAVED_GROUP_NAME_MAX, glyphTransformParams, DEFAULT_FOCUS, FOCUS_LIMITS,
+  SAVED_GROUP_NAME_MAX, glyphTransformParams, DEFAULT_FOCUS, FOCUS_LIMITS, focusParams, mergeFocusTargets,
   type Box, type FocusTarget, type ClipParams, type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SceneBackground, type SceneBackgroundType, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
@@ -977,7 +977,8 @@ function Animations() {
   const [angle, setAngle] = useState(360);
   const [speed, setSpeed] = useState(90);
   const [factor, setFactor] = useState(1.3);
-  const [emphasis, setEmphasis] = useState('#ffff00');
+  // Indicate: color de relleno (`color`), relleno activable (`useFill`) y contorno propio (`strokeColor`, `strokeWidth`).
+  const [indicateParams, setIndicateParams] = useState<ClipParams>({ color: '#ffff00' });
   const [colorParams, setColorParams] = useState<ClipParams>(() => defaultClipParams('colorChange'));
 
   const info = selection ? engine.runtime?.getNodeInfo(selection) ?? null : null;
@@ -1034,14 +1035,13 @@ function Animations() {
       <div className="space-y-1.5 rounded border border-bezel p-2" role="group" aria-label="Énfasis y color">
         <div className={GROUP_HEADING}>Énfasis y Color</div>
         <div className="flex items-center gap-1.5">
-          <button className={`${btn} flex-1 justify-start`} disabled={!enabled} title={reason ?? 'Indicate: pulso de escala y color que vuelve al estado original'}
-            onClick={() => add('indicate', { scale: factor, color: emphasis })}>
+          <button className={`${btn} flex-1 justify-start`} disabled={!enabled} title={reason ?? 'Indicate: pulso de escala, relleno y/o contorno que vuelve al estado original'}
+            onClick={() => add('indicate', { ...indicateParams, scale: factor })}>
             <Sparkles size={14} /> Indicate
           </button>
-          <input type="color" className="h-6 w-8 shrink-0 cursor-pointer rounded border border-bezel bg-transparent" value={emphasis}
-            onChange={(e) => setEmphasis(e.target.value)} aria-label="Color de Indicate" title="Color de Indicate" />
           <NumberInput className={`${input} w-14`} value={factor} min={0.1} max={10} step={0.1} onChange={setFactor} ariaLabel="Escala de Indicate" />
         </div>
+        <IndicateFields compact value={indicateParams} onChange={(patch) => setIndicateParams((current) => patchParams(current, patch))} />
         <button className={button} disabled={!enabled}
           title={reason ?? (colorParams.revertOnEnd === true ? 'Cambia el color y regresa al original al terminar' : 'Cambia el color de forma permanente (se mantiene tras el clip)')}
           onClick={() => add('colorChange', colorParams)}>
@@ -1225,6 +1225,8 @@ function EquationAnimations() {
   const [factor, setFactor] = useState(1.3);
   const [color, setColor] = useState('#ffff00');
   const [glyphColor, setGlyphColor] = useState('#58C4DD');
+  // Indicate por glifo: relleno activable y contorno propio (el color de relleno es el `color` compartido).
+  const [glyphIndicate, setGlyphIndicate] = useState<ClipParams>({});
   const [glyphRevert, setGlyphRevert] = useState(false);
   const [glyphStroke, setGlyphStroke] = useState(false);
   const [glyphStrokeColor, setGlyphStrokeColor] = useState('#ffff00');
@@ -1333,9 +1335,14 @@ function EquationAnimations() {
       </div>
 
       <div className="space-y-1.5 rounded border border-bezel p-2">
-        <button className={`${btn} w-full justify-start`} onClick={() => add('indicate', { ...scopeParams(), scale: factor, color })}>
+        <button className={`${btn} w-full justify-start`} onClick={() => add('indicate', { ...scopeParams(), ...glyphIndicate, scale: factor, color })}
+          title="Pulso de escala con relleno y/o contorno exterior de los glifos; vuelve al estado original">
           <Sparkles size={14} /> Indicate por glifo
         </button>
+        <IndicateFields compact value={{ ...glyphIndicate, color }} onChange={({ color: fill, ...rest }) => {
+          if (typeof fill === 'string') setColor(fill);
+          if (Object.keys(rest).length) setGlyphIndicate((current) => patchParams(current, rest));
+        }} />
         <div className="flex items-center gap-1.5">
           <button className={`${btn} flex-1 justify-start`}
             title={glyphRevert ? 'Tiñe los glifos elegidos y regresa a su color al terminar' : 'Cambio de color permanente de los glifos elegidos'}
@@ -1784,6 +1791,11 @@ function FocusPanel() {
   const [useColor, setUseColor] = useState(DEFAULT_FOCUS.useHighlightColor);
   const [color, setColor] = useState(DEFAULT_FOCUS.highlightColor.toLowerCase());
   const [pulse, setPulse] = useState<number>(DEFAULT_FOCUS.pulseScale);
+  const [stroke, setStroke] = useState({
+    useStrokeColor: DEFAULT_FOCUS.useStrokeColor,
+    highlightStrokeColor: DEFAULT_FOCUS.highlightStrokeColor.toLowerCase(),
+    highlightStrokeWidth: DEFAULT_FOCUS.highlightStrokeWidth,
+  });
   // Se recalcula con cada cambio de selección (las suscripciones de arriba fuerzan el render).
   void selection; void multi; void termEdit; void glyphSel;
   const current = actions.currentFocusTargets();
@@ -1797,7 +1809,14 @@ function FocusPanel() {
   const chipTitle = (entry: FocusTarget) =>
     entry.glyphIndices?.length ? `${nameOf(entry.objectId)} · glifos ${formatGlyphList(entry.glyphIndices)}` : `${nameOf(entry.objectId)} (objeto completo)`;
   const create = () => {
-    actions.createFocusClip({ start, duration, dimOpacity: dim, highlightColor: color, useHighlightColor: useColor, pulseScale: pulse });
+    // Igual que `actions.createFocusClip`, pero con el contorno incluido: un solo clip, una sola entrada de historial.
+    const targets = mergeFocusTargets(focusSelection).filter((entry) => objects.some((object) => object.id === entry.objectId));
+    if (!targets.length) return;
+    actions.addClip({
+      targetId: targets[0].objectId, type: 'focus', start, duration, sound: null,
+      parameters: focusParams({ targets, dimOpacity: dim, highlightColor: color, useHighlightColor: useColor, pulseScale: pulse, ...stroke }),
+    });
+    store.setUi({ focusSelection: [] });
   };
 
   return (
@@ -1839,11 +1858,14 @@ function FocusPanel() {
           onChange={(e) => setDim(parseFloat(e.target.value) / 100)} />
         <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-slate-400">{Math.round(dim * 100)}%</span>
       </Field>
-      <Field label="Color de enfoque">
-        <Switch label="Teñir los objetivos con el color de enfoque" checked={useColor} onChange={setUseColor} />
+      <Field label="Brillo / Relleno">
+        <Switch label="Teñir el relleno de los objetivos con el color de enfoque" checked={useColor} onChange={setUseColor} />
         <input type="color" className={colorInput} aria-label="Color de enfoque" value={color} disabled={!useColor}
           onChange={(e) => setColor(e.target.value)} />
       </Field>
+      <div className="space-y-1.5" role="group" aria-label="Contorno de enfoque">
+        <FocusStrokeFields compact value={stroke} onChange={(patch) => setStroke((current) => ({ ...current, ...patch }))} />
+      </div>
       <Field label="Realce de tamaño">
         <input type="range" className="w-full min-w-0 accent-accent" aria-label="Realce de escala de los objetivos (pulseScale)"
           min={FOCUS_LIMITS.pulseScale.min} max={FOCUS_LIMITS.pulseScale.max} step={0.01} value={pulse}

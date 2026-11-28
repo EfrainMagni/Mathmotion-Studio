@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { DISAPPEAR_MODES, FOCUS_LIMITS, FPS, SOUND_IDS, SOUND_LABEL, clipLabel, disappearModeOf, focusSpecOf, glyphTransformOf, groupTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type Project, type SoundId } from '../types';
+import { DEFAULT_FOCUS, DEFAULT_INDICATE_STROKE_WIDTH, DISAPPEAR_MODES, FOCUS_LIMITS, FPS, SOUND_IDS, SOUND_LABEL, clipLabel, disappearModeOf, focusSpecOf, glyphTransformOf, groupTransformOf, indicateSpecOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type FocusParams, type Project, type SoundId } from '../types';
 import { formatGlyphList } from '../engine/glyphs';
 import { engine } from '../engine';
 import { NumberInput, btn, input } from './ui';
@@ -65,6 +65,89 @@ export function ColorChangeFields({ value, onChange, compact }: {
           Regresar al color original
         </span>
       </label>
+    </>
+  );
+}
+
+const hexOr = (v: unknown, fallback: string) => (typeof v === 'string' && /^#[\da-f]{6}$/i.test(v) ? v.toLowerCase() : fallback);
+const clampPx = (v: number) => Math.min(20, Math.max(0.5, v));
+const SWATCH = 'h-6 w-8 shrink-0 cursor-pointer rounded border border-bezel bg-transparent disabled:opacity-30';
+
+/**
+ * Relleno y Contorno de «Indicate», activables por separado (`useFill`, `color`, `strokeColor`, `strokeWidth`).
+ * Lo usan el editor de clips de la línea de tiempo y los paneles Animaciones del Objeto / de Glifos del inspector.
+ * `onPickStart` abre un grupo de historial para que un arrastre del selector de color sea un solo `Ctrl+Z`.
+ */
+export function IndicateFields({ value, onChange, compact, onPickStart }: {
+  value: ClipParams; onChange: (patch: ParamPatch) => void; compact?: boolean; onPickStart?: () => void;
+}) {
+  const spec = indicateSpecOf(value);
+  const strokeOn = spec.strokeColor !== null;
+  const row = compact ? 'flex items-center justify-between gap-1.5 text-[11px] text-slate-300' : 'flex items-center gap-1';
+  return (
+    <>
+      <label className={row} title="Teñir el relleno durante el pulso (useFill). Inactivo: el relleno conserva su color original">
+        <span className="flex items-center gap-1">
+          <input type="checkbox" checked={spec.useFill} onChange={(e) => onChange({ useFill: e.target.checked ? undefined : false })} />
+          Relleno
+        </span>
+        <input type="color" className={SWATCH} aria-label="Color de relleno de Indicate" disabled={!spec.useFill}
+          value={hexOr(value.color, '#ffff00')} onPointerDown={onPickStart} onFocus={onPickStart}
+          onChange={(e) => onChange({ color: e.target.value })} />
+      </label>
+      <label className={row} title="Contorno exterior luminoso que crece hacia fuera durante el pulso (strokeColor)">
+        <span className="flex items-center gap-1">
+          <input type="checkbox" checked={strokeOn}
+            onChange={(e) => onChange(e.target.checked
+              ? { strokeColor: hexOr(value.color, '#ffff00'), strokeWidth: DEFAULT_INDICATE_STROKE_WIDTH }
+              : { strokeColor: undefined, strokeWidth: undefined })} />
+          Contorno
+        </span>
+        <input type="color" className={SWATCH} aria-label="Color de contorno de Indicate" disabled={!strokeOn}
+          value={hexOr(spec.strokeColor, '#ffff00')} onPointerDown={onPickStart} onFocus={onPickStart}
+          onChange={(e) => onChange({ strokeColor: e.target.value })} />
+      </label>
+      {strokeOn && (
+        <label className={row} title="Grosor del contorno en px (strokeWidth, 0.5–20). En glifos crece hacia fuera sin deformar la letra">
+          <span>Grosor (px)</span>
+          <NumberInput className={`${input} w-14`} value={spec.strokeWidth} min={0.5} max={20} step={0.5}
+            ariaLabel="Grosor del contorno de Indicate (px)" onChange={(v) => onChange({ strokeWidth: clampPx(v) })} />
+        </label>
+      )}
+    </>
+  );
+}
+
+/**
+ * Contorno de «Enfoque / Spotlight» (`useStrokeColor`, `highlightStrokeColor`, `highlightStrokeWidth`): los objetivos
+ * brillan por su contorno exterior, por su relleno (`useHighlightColor`) o por ambos.
+ */
+export function FocusStrokeFields({ value, onChange, compact, onPickStart }: {
+  value: Pick<FocusParams, 'useStrokeColor' | 'highlightStrokeColor' | 'highlightStrokeWidth'>;
+  onChange: (patch: Partial<Pick<FocusParams, 'useStrokeColor' | 'highlightStrokeColor' | 'highlightStrokeWidth'>>) => void;
+  compact?: boolean; onPickStart?: () => void;
+}) {
+  const on = value.useStrokeColor === true;
+  const row = compact ? 'flex items-center justify-between gap-1.5 text-[11px] text-slate-300' : 'flex items-center gap-1';
+  return (
+    <>
+      <label className={row} title="Contorno exterior luminoso de los objetivos (useStrokeColor), independiente del relleno">
+        <span className="flex items-center gap-1">
+          <input type="checkbox" checked={on} onChange={(e) => onChange({ useStrokeColor: e.target.checked })} />
+          Contorno
+        </span>
+        <input type="color" className={SWATCH} aria-label="Color de contorno de enfoque" disabled={!on}
+          value={hexOr(value.highlightStrokeColor, DEFAULT_FOCUS.highlightStrokeColor.toLowerCase())}
+          onPointerDown={onPickStart} onFocus={onPickStart}
+          onChange={(e) => onChange({ highlightStrokeColor: e.target.value })} />
+      </label>
+      {on && (
+        <label className={row} title="Grosor del contorno en px (highlightStrokeWidth, 0.5–20)">
+          <span>Grosor (px)</span>
+          <NumberInput className={`${input} w-14`} value={value.highlightStrokeWidth ?? DEFAULT_FOCUS.highlightStrokeWidth} min={0.5} max={20} step={0.5}
+            ariaLabel="Grosor del contorno de enfoque (px)" onChange={(v) => onChange({ highlightStrokeWidth: clampPx(v) })} />
+        </label>
+      )}
     </>
   );
 }
@@ -189,6 +272,11 @@ function ClipEditor() {
   const focus = focusSpecOf(clip);
   const multi = !!groupTransformOf(clip) || !!focus;
   const setFocusParam = (patch: ClipParams) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, ...patch } }, dragGroup.current);
+  // Solo un arrastre de selector de color comparte entrada de historial; interruptores y grosores son pasos propios.
+  const pickGroup = (patch: object) => {
+    const keys = Object.keys(patch);
+    return keys.length === 1 && /color$/i.test(keys[0]) ? dragGroup.current : undefined;
+  };
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="max-w-[200px] truncate font-medium text-slate-200" title={multi ? clipSubject(clip, objects) : runtimeName(clip.targetId)}>
@@ -213,6 +301,13 @@ function ClipEditor() {
             value={/^#[\da-f]{6}$/i.test(focus.highlightColor) ? focus.highlightColor.toLowerCase() : '#ffff00'}
             onPointerDown={startGroup} onFocus={startGroup}
             onChange={(e) => setFocusParam({ highlightColor: e.target.value })} />
+          <FocusStrokeFields value={focus} onPickStart={startGroup}
+            onChange={(patch) => actions.updateClip(clip.id, {
+              // Al activar el contorno se guardan explícitos color y grosor (los valores por defecto si no había).
+              parameters: patchParams(clip.parameters, patch.useStrokeColor
+                ? { highlightStrokeColor: focus.highlightStrokeColor, highlightStrokeWidth: focus.highlightStrokeWidth, ...patch }
+                : patch),
+            }, pickGroup(patch))} />
           <label className="flex items-center gap-1" title="Realce de escala de los objetivos (pulseScale, 1.0× – 1.5×)">
             Realce
             <NumberInput className={`${input} w-14`} value={focus.pulseScale} min={FOCUS_LIMITS.pulseScale.min} max={FOCUS_LIMITS.pulseScale.max} step={0.02}
@@ -261,6 +356,10 @@ function ClipEditor() {
             onChange={(v) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, scale: v } })} ariaLabel="Escala del énfasis" />
         </label>
       )}
+      {clip.type === 'indicate' && (
+        <IndicateFields value={clip.parameters} onPickStart={startGroup}
+          onChange={(patch) => actions.updateClip(clip.id, { parameters: patchParams(clip.parameters, patch) }, pickGroup(patch))} />
+      )}
       {(clip.type === 'transform' || clip.type === 'transformMatch') && typeof clip.parameters.to === 'string' && !glyphTransformOf(clip) && (
         <label className="flex items-center gap-1" title="El origen queda fijo; una copia viaja al destino (origen.copy())">
           <input type="checkbox" checked={clip.parameters.keep === true}
@@ -282,7 +381,7 @@ function ClipEditor() {
         <ColorChangeFields value={clip.parameters}
           onChange={(patch) => actions.updateClip(clip.id, { parameters: patchParams(clip.parameters, patch) })} />
       )}
-      {(clip.type === 'indicate' || clip.type === 'circumscribe' || (clip.type === 'focus' && !focus)) && (
+      {(clip.type === 'circumscribe' || (clip.type === 'focus' && !focus)) && (
         <input type="color" className="h-6 w-8 cursor-pointer rounded border border-bezel bg-transparent" aria-label="Color del énfasis"
           value={/^#[\da-f]{6}$/i.test(String(clip.parameters.color)) ? String(clip.parameters.color) : '#ffff00'}
           onChange={(e) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, color: e.target.value } })} />

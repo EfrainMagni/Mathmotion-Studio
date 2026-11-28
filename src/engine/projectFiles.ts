@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import {
-  FOCUS_LIMITS, FOCUS_TARGETS_RE, FONT_IDS, SAVED_GROUP_NAME_MAX, SCENE_BG_LIMITS, parseFocusTargets, parseObjectIds, pruneFocusClips, pruneGroupClips,
+  FOCUS_LIMITS, FOCUS_TARGETS_RE, FONT_IDS, INDICATE_STROKE_LIMITS, SAVED_GROUP_NAME_MAX, SCENE_BG_LIMITS, parseFocusTargets, parseObjectIds, pruneFocusClips, pruneGroupClips,
   pruneSavedGroups, type Obj2D, type Project,
 } from '../types';
 import { prepareSvg } from './svgImport';
@@ -115,7 +115,17 @@ const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()
     (input.pulseScale !== undefined && (typeof input.pulseScale !== 'number' ||
       input.pulseScale < FOCUS_LIMITS.pulseScale.min || input.pulseScale > FOCUS_LIMITS.pulseScale.max)) ||
     (input.highlightColor !== undefined && !paint.safeParse(input.highlightColor).success) ||
-    (input.useHighlightColor !== undefined && typeof input.useHighlightColor !== 'boolean')
+    (input.useHighlightColor !== undefined && typeof input.useHighlightColor !== 'boolean') ||
+    // Contorno de Enfoque / Spotlight: interruptor, color y grosor (px, 0–20).
+    (input.useStrokeColor !== undefined && typeof input.useStrokeColor !== 'boolean') ||
+    (input.highlightStrokeColor !== undefined && !paint.safeParse(input.highlightStrokeColor).success) ||
+    (input.highlightStrokeWidth !== undefined && (typeof input.highlightStrokeWidth !== 'number' ||
+      input.highlightStrokeWidth < FOCUS_LIMITS.highlightStrokeWidth.min || input.highlightStrokeWidth > FOCUS_LIMITS.highlightStrokeWidth.max)) ||
+    // Indicate: relleno activable y contorno propio (color + grosor en px, 0–20).
+    (input.useFill !== undefined && typeof input.useFill !== 'boolean') ||
+    (input.strokeColor !== undefined && !paint.safeParse(input.strokeColor).success) ||
+    (input.strokeWidth !== undefined && (typeof input.strokeWidth !== 'number' ||
+      input.strokeWidth < INDICATE_STROKE_LIMITS.min || input.strokeWidth > INDICATE_STROKE_LIMITS.max))
   ) ctx.addIssue({ code: 'custom', message: 'Parámetros de animación no válidos.' });
 });
 const voice = z.object({
