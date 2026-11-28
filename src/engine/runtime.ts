@@ -1,4 +1,4 @@
-import { STAGE_SIZES, disappearModeOf, focusEnvelope, focusSpecOf, groupTransformOf, isEntranceClip, isPathTool, planeSubElementOf, type Box, type Clip, type GroupTransformSpec, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
+import { STAGE_SIZES, disappearModeOf, focusEnvelope, focusSpecOf, groupTransformOf, indicateSpecOf, isEntranceClip, isPathTool, planeSubElementOf, type Box, type Clip, type GroupTransformSpec, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
 import { arcAsPath, arcCircle, arcEndAngle, arcPoint, gradientId, gradientMarkup, isLinearVector, lineTips, pathLayout, tipLayout } from './vector';
 import { SELECTABLE_SHAPES } from './svgImport';
@@ -125,11 +125,14 @@ interface NState {
   lag: number | null;
   /** Mezclas de color en orden de clip ([color destino, cantidad 0–1]): Indicate (pulso) y Cambiar Color (permanente). */
   fillMix: [string, number][];
-  /** El tercer valor marca los cambios permanentes (pueden hacer aparecer un contorno que era `none`). */
+  /**
+   * El tercer valor marca los contornos explícitos (Cambiar Color, o el contorno de Indicate / Spotlight): pueden
+   * hacer aparecer un contorno que era `none`.
+   */
   strokeMix: [string, number, boolean][];
   /** Opacidad de relleno destino de Cambiar Color ([valor, cantidad]). */
   fillOpacityTo: [number, number][];
-  /** Grosor de trazo destino de Cambiar Color, en px del escenario ([valor, cantidad]). */
+  /** Grosor de trazo destino (Cambiar Color, contorno de Indicate / Spotlight), en px del escenario ([valor, cantidad]). */
   strokeWidthTo: [number, number][];
 }
 
@@ -141,7 +144,7 @@ interface GState {
   sc: number;
   rot: number;
   mix: [string, number][];
-  /** Trazo de Cambiar Color sobre el glifo: color y grosor (px del escenario) con su cantidad. */
+  /** Contorno exterior del glifo (Cambiar Color, Indicate, Spotlight): color y grosor (px del escenario) con su cantidad. */
   strokeMix: [string, number, boolean][];
   strokeWidthTo: [number, number][];
   glow: number;
@@ -970,8 +973,9 @@ export class SceneRuntime {
     if (paintable) {
       pr.stroke = mixes.reduce((c, [to, a]) => (a > 0 ? mixColor(c, to, a) : c), stroke);
     } else {
-      // Sin contorno previo: solo los cambios permanentes (Cambiar Color) lo hacen aparecer.
-      const permanent = mixes.filter(([, a, keep]) => keep && a > 0);
+      // Sin contorno previo: solo los contornos explícitos (Cambiar Color, contorno de Indicate / Spotlight) lo hacen
+      // aparecer; los temporales nacen con grosor 0 y vuelven a 0 con su envolvente.
+      const permanent = mixes.filter(([, a, reveal]) => reveal && a > 0);
       if (!permanent.length) return;
       pr.stroke = permanent[permanent.length - 1][0];
       if (!widths.length) pr['stroke-opacity'] = String(1 - permanent.reduce((k, [, a]) => k * (1 - a), 1));
@@ -1765,6 +1769,10 @@ export class SceneRuntime {
           if (b <= 0) break;
           const factor = num(par.scale, 1.3);
           const color = str(par.color, '#ffff00');
+          // Relleno y contorno independientes: sin relleno, el color original del glifo/objeto queda intacto; con
+          // contorno, crece hacia fuera (`paint-order: stroke fill`) y vuelve a su estado original con el pulso.
+          const ind = indicateSpecOf(par);
+          const glowColor = ind.useFill || !ind.strokeColor ? color : ind.strokeColor;
           const fo = this.formulaOf(c.targetId);
           const rec = fo && this.objs.get(fo.id);
           const geo = rec ? this.geoOf(rec) : null;
@@ -1773,10 +1781,14 @@ export class SceneRuntime {
             moveGroup(fo, geo, idx, 1 + (factor - 1) * b, 0, { x: 0, y: 0 });
             for (const i of idx) {
               const g = glyphState(fo.id, i);
-              g.mix.push([color, b]);
+              if (ind.useFill) g.mix.push([color, b]);
+              if (ind.strokeColor) {
+                g.strokeMix.push([ind.strokeColor, b, true]);
+                g.strokeWidthTo.push([ind.strokeWidth, b]);
+              }
               if (b > g.glow) {
                 g.glow = b;
-                g.glowColor = color;
+                g.glowColor = glowColor;
               }
             }
           } else {
@@ -1784,11 +1796,16 @@ export class SceneRuntime {
             s.scale *= 1 + (factor - 1) * b;
             if (b > s.glow) {
               s.glow = b;
-              s.glowColor = color;
+              s.glowColor = glowColor;
             }
             // Pulso de color en relleno y trazo (y puntas de flecha); vuelve al color original al terminar.
-            s.fillMix.push([color, b]);
-            s.strokeMix.push([color, b, false]);
+            if (ind.useFill) s.fillMix.push([color, b]);
+            if (ind.strokeColor) {
+              s.strokeMix.push([ind.strokeColor, b, true]);
+              s.strokeWidthTo.push([ind.strokeWidth, b]);
+            } else if (ind.useFill) {
+              s.strokeMix.push([color, b, false]);
+            }
           }
           break;
         }
@@ -1867,7 +1884,10 @@ export class SceneRuntime {
             const dim = 1 - (1 - spot.dimOpacity) * e;
             const lift = 1 + (spot.pulseScale - 1) * e;
             const color = spot.useHighlightColor ? spot.highlightColor : null;
-            const glowColor = withAlpha(color ?? '#ffffff', 0.9 * e);
+            // Contorno exterior independiente del relleno (px del escenario → unidades locales en applyStroke).
+            const outline = spot.useStrokeColor ? spot.highlightStrokeColor : null;
+            const outlineWidth = spot.highlightStrokeWidth ?? 2;
+            const glowColor = withAlpha(color ?? outline ?? '#ffffff', 0.9 * e);
             const glow = 0.45 * e;
             const byId = new Map(spot.targets.map((entry) => [entry.objectId, entry]));
             for (const o of this.project!.objects) {
@@ -1888,6 +1908,10 @@ export class SceneRuntime {
                 for (const i of focused) {
                   const g = glyphState(fo.id, i);
                   if (color) g.mix.push([color, e]);
+                  if (outline) {
+                    g.strokeMix.push([outline, e, true]);
+                    g.strokeWidthTo.push([outlineWidth, e]);
+                  }
                   if (glow > g.glow) {
                     g.glow = glow;
                     g.glowColor = glowColor;
@@ -1902,8 +1926,11 @@ export class SceneRuntime {
               }
               // Objeto completo (figura, trazado, texto, plano…): realce de escala, color y resplandor.
               s.scale *= lift;
-              if (color) {
-                s.fillMix.push([color, e]);
+              if (color) s.fillMix.push([color, e]);
+              if (outline) {
+                s.strokeMix.push([outline, e, true]);
+                s.strokeWidthTo.push([outlineWidth, e]);
+              } else if (color) {
                 s.strokeMix.push([color, e, false]);
               }
               if (glow > s.glow) {

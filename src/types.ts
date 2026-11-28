@@ -209,6 +209,35 @@ export interface ColorChangeParams {
   term?: string;
 }
 
+/**
+ * Parámetros del clip `indicate` (viajan dentro de `ClipParams` junto a `scale` y `color`). Relleno y contorno se
+ * controlan por separado: `useFill === false` conserva el relleno original (solo pulsa escala, brillo y contorno);
+ * con `strokeColor` el pulso añade un contorno exterior de `strokeWidth` px que crece y vuelve a su estado original.
+ */
+export interface IndicateParams {
+  /** Teñir el relleno con `color` durante el pulso (por defecto `true`). */
+  useFill?: boolean;
+  /** Color del contorno exterior; sin él, Indicate no añade contorno propio. */
+  strokeColor?: string;
+  /** Grosor del contorno en px (0–20; 2 por defecto cuando hay `strokeColor`). */
+  strokeWidth?: number;
+}
+
+export const INDICATE_STROKE_LIMITS = { min: 0, max: 20 } as const;
+export const DEFAULT_INDICATE_STROKE_WIDTH = 2;
+
+const clampStrokeWidth = (v: unknown, fallback: number) =>
+  typeof v === 'number' && Number.isFinite(v) ? Math.min(INDICATE_STROKE_LIMITS.max, Math.max(INDICATE_STROKE_LIMITS.min, v)) : fallback;
+
+/** Lectura normalizada de los parámetros de Indicate (`strokeColor: null` = sin contorno propio). */
+export function indicateSpecOf(params: ClipParams): { useFill: boolean; strokeColor: string | null; strokeWidth: number } {
+  return {
+    useFill: params.useFill !== false,
+    strokeColor: typeof params.strokeColor === 'string' && params.strokeColor ? params.strokeColor : null,
+    strokeWidth: clampStrokeWidth(params.strokeWidth, DEFAULT_INDICATE_STROKE_WIDTH),
+  };
+}
+
 /** Un clip de animación. `start` es tiempo absoluto desde el inicio de la escena (s). */
 export interface Clip {
   id: string;
@@ -363,15 +392,23 @@ export interface FocusParams {
   useHighlightColor: boolean;
   /** Realce de escala de los objetivos (1–1.5). */
   pulseScale: number;
+  /** Contorno exterior luminoso de los objetivos (por defecto `false`); independiente del relleno. */
+  useStrokeColor?: boolean;
+  /** Color del contorno exterior (por defecto `#FFFF00`). */
+  highlightStrokeColor?: string;
+  /** Grosor del contorno exterior en px (0–20, por defecto 2). */
+  highlightStrokeWidth?: number;
 }
 
 export const FOCUS_LIMITS = {
   dimOpacity: { min: 0.05, max: 0.7 },
   pulseScale: { min: 1, max: 1.5 },
+  highlightStrokeWidth: { min: 0, max: 20 },
 } as const;
 
-export const DEFAULT_FOCUS: Omit<FocusParams, 'targets'> = {
+export const DEFAULT_FOCUS: Required<Omit<FocusParams, 'targets'>> = {
   dimOpacity: 0.2, highlightColor: '#FFFF00', useHighlightColor: true, pulseScale: 1.12,
+  useStrokeColor: false, highlightStrokeColor: '#FFFF00', highlightStrokeWidth: 2,
 };
 
 /** Fracciones del clip: entrada (0–20 %) y salida (80–100 %). */
@@ -426,6 +463,12 @@ export function focusParams(spec: FocusParams): ClipParams {
     highlightColor: spec.highlightColor || DEFAULT_FOCUS.highlightColor,
     useHighlightColor: spec.useHighlightColor,
     pulseScale: clampFocus(spec.pulseScale, FOCUS_LIMITS.pulseScale, DEFAULT_FOCUS.pulseScale),
+    // Contorno: solo se guarda si está activo (los archivos sin estas claves quedan igual que antes).
+    ...(spec.useStrokeColor ? {
+      useStrokeColor: true,
+      highlightStrokeColor: spec.highlightStrokeColor || DEFAULT_FOCUS.highlightStrokeColor,
+      highlightStrokeWidth: clampFocus(spec.highlightStrokeWidth, FOCUS_LIMITS.highlightStrokeWidth, DEFAULT_FOCUS.highlightStrokeWidth),
+    } : {}),
   };
 }
 
@@ -441,6 +484,9 @@ export function focusSpecOf(clip: Pick<Clip, 'type' | 'parameters'>): FocusParam
     highlightColor: typeof p.highlightColor === 'string' && p.highlightColor ? p.highlightColor : DEFAULT_FOCUS.highlightColor,
     useHighlightColor: p.useHighlightColor !== false,
     pulseScale: clampFocus(p.pulseScale, FOCUS_LIMITS.pulseScale, DEFAULT_FOCUS.pulseScale),
+    useStrokeColor: p.useStrokeColor === true,
+    highlightStrokeColor: typeof p.highlightStrokeColor === 'string' && p.highlightStrokeColor ? p.highlightStrokeColor : DEFAULT_FOCUS.highlightStrokeColor,
+    highlightStrokeWidth: clampFocus(p.highlightStrokeWidth, FOCUS_LIMITS.highlightStrokeWidth, DEFAULT_FOCUS.highlightStrokeWidth),
   };
 }
 
