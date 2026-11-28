@@ -291,6 +291,27 @@ export function defaultClipParams(type: ClipType): ClipParams {
   }
 }
 
+/**
+ * Animaciones estándar de objeto que pueden aplicarse de una vez a un Grupo Guardado o a una selección múltiple.
+ * Cada una se traduce al mismo clip que crea el panel «Animaciones del Objeto», así que el motor (runtime,
+ * grabación y exportación a Manim) las reproduce sin cambios.
+ */
+export type GroupAnimKind = 'write' | 'fadeIn' | 'pop' | 'indicate' | 'colorChange' | 'disappear';
+
+const GROUP_ANIM_CLIP: Record<GroupAnimKind, { type: ClipType; parameters: ClipParams }> = {
+  write: { type: 'draw', parameters: {} },
+  // FadeIn sin deslizamiento salvo que el panel indique una dirección (el `appear` por defecto sube 120 px).
+  fadeIn: { type: 'appear', parameters: { direction: 'none' } },
+  pop: { type: 'appear', parameters: { mode: 'pop' } },
+  indicate: { type: 'indicate', parameters: {} },
+  colorChange: { type: 'colorChange', parameters: {} },
+  // `mode: 'shrink'` en los parámetros convierte la salida en Contraer (ShrinkToCenter).
+  disappear: { type: 'disappear', parameters: { mode: 'fade' } },
+};
+
+/** Retardo máximo (s) entre elementos consecutivos de una cascada (LaggedStart). */
+export const GROUP_STAGGER_MAX = 2;
+
 /** Fracción máxima del lienzo que ocupa una fórmula recién insertada. */
 const FORMULA_MAX_W = 0.75;
 const FORMULA_MAX_H = 0.35;
@@ -599,6 +620,54 @@ export const actions = {
         return next;
       }),
     }), group);
+  },
+
+  /**
+   * Aplica una animación estándar a varios objetos a la vez (selección múltiple o Grupo Guardado) en UNA sola
+   * entrada de historial (Ctrl+Z la deshace entera). Crea un clip por objeto, en el orden de `objectIds`:
+   * con `staggerSec` = 0 todos empiezan en `start`; con `staggerSec` > 0 el i-ésimo empieza en
+   * `start + i · staggerSec` (cascada estilo Manim `LaggedStart`). Devuelve los ids de los clips creados.
+   */
+  addClipToSelection(
+    objectIds: string[],
+    kind: GroupAnimKind,
+    options: { start: number; duration: number; parameters?: ClipParams; staggerSec?: number },
+  ): string[] {
+    const ids = objectIds.filter((id, i) => objectIds.indexOf(id) === i && state.project.objects.some((object) => object.id === id));
+    if (!ids.length) return [];
+    const { type, parameters: base } = GROUP_ANIM_CLIP[kind];
+    const rawStagger = options.staggerSec ?? 0;
+    const stagger = Number.isFinite(rawStagger) ? Math.min(GROUP_STAGGER_MAX, Math.max(0, rawStagger)) : 0;
+    const parameters: ClipParams = { ...defaultClipParams(type), ...base, ...(options.parameters ?? {}) };
+    const created: string[] = [];
+    store.setProject((p) => {
+      let counter = p.counters.clip;
+      const clips = ids.map((targetId, i): Clip => {
+        const id = `c${++counter}`;
+        created.push(id);
+        return {
+          id,
+          targetId,
+          type,
+          start: Math.max(0, r2(options.start + i * stagger)),
+          duration: Math.max(0.05, r2(options.duration)),
+          parameters: { ...parameters },
+          sound: null,
+        };
+      });
+      return { ...p, clips: [...p.clips, ...clips], counters: { ...p.counters, clip: counter } };
+    });
+    return created;
+  },
+
+  /** Igual que `addClipToSelection`, pero con los objetos vigentes de un Grupo Guardado (en su orden guardado). */
+  addClipToGroup(
+    groupId: string,
+    kind: GroupAnimKind,
+    options: { start: number; duration: number; parameters?: ClipParams; staggerSec?: number },
+  ): string[] {
+    const group = state.project.savedGroups?.find((entry) => entry.id === groupId);
+    return group ? actions.addClipToSelection(group.objectIds, kind, options) : [];
   },
 
   /** Paso 1 de la «Transformación de Grupo»: fija los objetos indicados como grupo origen (o lo cancela con `null`). */
