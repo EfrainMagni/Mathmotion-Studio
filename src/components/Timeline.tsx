@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Pause, Play, Plus, RotateCcw, StepBack, StepForward, Trash2, Volume2 } from 'lucide-react';
 import { actions, store, useStore } from '../store';
-import { DISAPPEAR_MODES, FPS, SOUND_IDS, SOUND_LABEL, clipLabel, disappearModeOf, glyphTransformOf, groupTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type Project, type SoundId } from '../types';
+import { DISAPPEAR_MODES, FOCUS_LIMITS, FPS, SOUND_IDS, SOUND_LABEL, clipLabel, disappearModeOf, focusSpecOf, glyphTransformOf, groupTransformOf, parseGlyphIds, planeSubElementOf, planeSubLabel, sceneDuration, type Clip, type ClipParams, type Project, type SoundId } from '../types';
 import { formatGlyphList } from '../engine/glyphs';
 import { engine } from '../engine';
 import { NumberInput, btn, input } from './ui';
@@ -84,6 +84,9 @@ const LANE_H = 30;
 const RULER_H = 20;
 const SPEEDS = [0.5, 1, 1.5] as const;
 const fmt = (n: number) => n.toFixed(2);
+/** Pista propia de los clips Enfoque / Spotlight (afectan a varios objetos y a toda la escena). */
+const FOCUS_LANE = '__focus__';
+const laneOf = (clip: Clip) => (focusSpecOf(clip) ? FOCUS_LANE : clip.targetId);
 
 /** Alcance legible de un clip: término, glifos o destino (para bloques y descripciones). */
 function clipSubject(clip: Clip, objects: Project['objects']): string {
@@ -91,6 +94,14 @@ function clipSubject(clip: Clip, objects: Project['objects']): string {
   // Clip de una gráfica o punto de un plano cartesiano: «Plano · f(x) = x^2» / «Plano · Punto (2, 2)».
   const sub = planeSubElementOf(clip);
   if (sub) return `Plano · ${planeSubLabel(objects.find((o) => o.id === clip.targetId.split('.')[0])?.plane, sub)}`;
+  const focus = focusSpecOf(clip);
+  if (focus) {
+    const list = focus.targets.map((entry) => {
+      const name = objects.find((o) => o.id === entry.objectId)?.name ?? entry.objectId;
+      return entry.glyphIndices?.length ? `${name} #${formatGlyphList(entry.glyphIndices)}` : name;
+    });
+    return `· ${list.length > 2 ? `${list.slice(0, 2).join(', ')}…` : list.join(', ')}`;
+  }
   const group = groupTransformOf(clip);
   if (group) {
     const names = (ids: string[]) => {
@@ -169,14 +180,47 @@ function ClipEditor() {
   const clip = useStore((s) => s.project.clips.find((c) => c.id === s.ui.selectedClip) ?? null);
   const objects = useStore((s) => s.project.objects);
   const runtimeName = (id: string) => engine.runtime?.nameOf(id) ?? id;
+  // Un arrastre de deslizador o de selector de color = una sola entrada de historial (Ctrl+Z).
+  const dragGroup = useRef<symbol>(Symbol('clip-param'));
+  const startGroup = () => { dragGroup.current = Symbol('clip-param'); };
   if (!clip) {
     return <div className="text-xs text-slate-500">Selecciona un bloque para editar inicio, duración y sonido.</div>;
   }
+  const focus = focusSpecOf(clip);
+  const multi = !!groupTransformOf(clip) || !!focus;
+  const setFocusParam = (patch: ClipParams) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, ...patch } }, dragGroup.current);
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="max-w-[200px] truncate font-medium text-slate-200" title={groupTransformOf(clip) ? clipSubject(clip, objects) : runtimeName(clip.targetId)}>
-        {clipLabel(clip)} {groupTransformOf(clip) ? '' : `· ${planeSubElementOf(clip) ? '' : `${runtimeName(clip.targetId)} `}`}{clipSubject(clip, objects)}
+      <span className="max-w-[200px] truncate font-medium text-slate-200" title={multi ? clipSubject(clip, objects) : runtimeName(clip.targetId)}>
+        {clipLabel(clip)} {multi ? '' : `· ${planeSubElementOf(clip) ? '' : `${runtimeName(clip.targetId)} `}`}{clipSubject(clip, objects)}
       </span>
+      {focus && (
+        <>
+          <label className="flex items-center gap-1" title="Opacidad a la que baja todo lo que no está enfocado (dimOpacity)">
+            Resto
+            <input type="range" className="w-16 accent-accent" aria-label="Oscurecer resto de escena (dimOpacity)"
+              min={FOCUS_LIMITS.dimOpacity.min * 100} max={FOCUS_LIMITS.dimOpacity.max * 100} step={1} value={Math.round(focus.dimOpacity * 100)}
+              onPointerDown={startGroup} onKeyDown={startGroup}
+              onChange={(e) => setFocusParam({ dimOpacity: parseFloat(e.target.value) / 100 })} />
+            <span className="w-8 tabular-nums text-slate-400">{Math.round(focus.dimOpacity * 100)}%</span>
+          </label>
+          <label className="flex items-center gap-1" title="Teñir los objetivos con el color de enfoque (si no, conservan su color y solo brillan)">
+            <input type="checkbox" checked={focus.useHighlightColor} onChange={(e) => setFocusParam({ useHighlightColor: e.target.checked })} />
+            Color
+          </label>
+          <input type="color" className="h-6 w-8 cursor-pointer rounded border border-bezel bg-transparent disabled:opacity-30" aria-label="Color de enfoque"
+            disabled={!focus.useHighlightColor}
+            value={/^#[\da-f]{6}$/i.test(focus.highlightColor) ? focus.highlightColor.toLowerCase() : '#ffff00'}
+            onPointerDown={startGroup} onFocus={startGroup}
+            onChange={(e) => setFocusParam({ highlightColor: e.target.value })} />
+          <label className="flex items-center gap-1" title="Realce de escala de los objetivos (pulseScale, 1.0× – 1.5×)">
+            Realce
+            <NumberInput className={`${input} w-14`} value={focus.pulseScale} min={FOCUS_LIMITS.pulseScale.min} max={FOCUS_LIMITS.pulseScale.max} step={0.02}
+              onChange={(v) => setFocusParam({ pulseScale: Math.min(FOCUS_LIMITS.pulseScale.max, Math.max(FOCUS_LIMITS.pulseScale.min, v)) })}
+              ariaLabel="Realce de tamaño (pulseScale)" />
+          </label>
+        </>
+      )}
       {groupTransformOf(clip) && (
         <label className="flex items-center gap-1" title="Activo: el grupo origen permanece y una copia viaja (TransformFromCopy). Inactivo: el origen se reemplaza (ReplacementTransform)">
           <input type="checkbox" checked={clip.parameters.keepSource === true}
@@ -238,7 +282,7 @@ function ClipEditor() {
         <ColorChangeFields value={clip.parameters}
           onChange={(patch) => actions.updateClip(clip.id, { parameters: patchParams(clip.parameters, patch) })} />
       )}
-      {(clip.type === 'indicate' || clip.type === 'circumscribe' || clip.type === 'focus') && (
+      {(clip.type === 'indicate' || clip.type === 'circumscribe' || (clip.type === 'focus' && !focus)) && (
         <input type="color" className="h-6 w-8 cursor-pointer rounded border border-bezel bg-transparent" aria-label="Color del énfasis"
           value={/^#[\da-f]{6}$/i.test(String(clip.parameters.color)) ? String(clip.parameters.color) : '#ffff00'}
           onChange={(e) => actions.updateClip(clip.id, { parameters: { ...clip.parameters, color: e.target.value } })} />
@@ -282,7 +326,7 @@ export function Timeline() {
   const objects = project.objects;
   const [pps, setPps] = useState(90);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ id: string | 'voice'; sx: number; start: number; group: symbol } | null>(null);
+  const dragRef = useRef<{ id: string | 'voice'; sx: number; start: number; group: symbol; mode: 'move' | 'resize' } | null>(null);
 
   const total = sceneDuration(project);
   const span = Math.max(total + 3, 10);
@@ -290,7 +334,7 @@ export function Timeline() {
 
   const lanes = useMemo(() => {
     const ids: string[] = [];
-    for (const c of clips) if (!ids.includes(c.targetId)) ids.push(c.targetId);
+    for (const c of clips) if (!ids.includes(laneOf(c))) ids.push(laneOf(c));
     return ids;
   }, [clips]);
 
@@ -322,16 +366,21 @@ export function Timeline() {
   };
   const scrubbing = useRef(false);
 
-  const startBlockDrag = (e: React.PointerEvent, id: string | 'voice', start: number) => {
+  /** Arrastre de un bloque: `move` desplaza el inicio; `resize` (asa derecha) cambia la duración. */
+  const startBlockDrag = (e: React.PointerEvent, id: string | 'voice', start: number, mode: 'move' | 'resize' = 'move') => {
     if (busy) return;
     e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    dragRef.current = { id, sx: e.clientX, start, group: Symbol() };
+    dragRef.current = { id, sx: e.clientX, start, group: Symbol(), mode };
     if (id !== 'voice') store.setUi({ selectedClip: id, selection: null });
   };
   const moveBlockDrag = (e: React.PointerEvent) => {
     const d = dragRef.current;
     if (!d) return;
+    if (d.mode === 'resize' && d.id !== 'voice') {
+      actions.updateClip(d.id, { duration: Math.max(0.1, Math.round((d.start + (e.clientX - d.sx) / pps) * 100) / 100) }, d.group);
+      return;
+    }
     const ns = Math.max(0, Math.round((d.start + (e.clientX - d.sx) / pps) * 100) / 100);
     if (d.id === 'voice') actions.updateVoice({ start: ns }, d.group);
     else actions.updateClip(d.id, { start: ns }, d.group);
@@ -382,7 +431,7 @@ export function Timeline() {
 
           {/* Pistas */}
           {lanes.map((id) => (
-            <Lane key={id} id={id} label={engine.runtime?.nameOf(id) ?? id} clips={clips.filter((c) => c.targetId === id)} objects={objects} pps={pps} width={width}
+            <Lane key={id} id={id} label={id === FOCUS_LANE ? '✦ Enfoque / Spotlight' : engine.runtime?.nameOf(id) ?? id} clips={clips.filter((c) => laneOf(c) === id)} objects={objects} pps={pps} width={width}
               selectedClip={selectedClip} onDown={startBlockDrag} onMove={moveBlockDrag} onUp={endBlockDrag} />
           ))}
           <div className="flex" style={{ height: LANE_H }}>
@@ -442,7 +491,7 @@ function Lane({
   pps: number;
   width: number;
   selectedClip: string | null;
-  onDown: (e: React.PointerEvent, id: string, start: number) => void;
+  onDown: (e: React.PointerEvent, id: string, start: number, mode?: 'move' | 'resize') => void;
   onMove: (e: React.PointerEvent) => void;
   onUp: () => void;
 }) {
@@ -452,11 +501,13 @@ function Lane({
         <span className="truncate">{label}</span>
       </div>
       <div className="relative border-b border-bezel" style={{ width }}>
-        {clips.map((c) => (
+        {clips.map((c) => {
+          const spotlight = !!focusSpecOf(c);
+          return (
           <div
             key={c.id}
             data-clip={c.id}
-            className={`absolute top-1 flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-[10px] leading-tight ${selectedClip === c.id ? 'border-accent bg-accent-soft' : c.type === 'groupTransform' ? 'border-dashed border-accent/60 bg-ink-600' : c.type === 'disappear' ? 'border-rose-400/60 bg-ink-600' : 'border-bezel bg-ink-600'}`}
+            className={`absolute top-1 flex cursor-grab flex-col justify-center overflow-hidden rounded border px-1.5 text-[10px] leading-tight ${selectedClip === c.id ? 'border-accent bg-accent-soft' : spotlight ? 'border-amber-300/70 bg-ink-600' : c.type === 'groupTransform' ? 'border-dashed border-accent/60 bg-ink-600' : c.type === 'disappear' ? 'border-rose-400/60 bg-ink-600' : 'border-bezel bg-ink-600'}`}
             style={{ left: c.start * pps, width: Math.max(26, c.duration * pps), height: LANE_H - 8 }}
             onPointerDown={(e) => onDown(e, c.id, c.start)}
             onPointerMove={onMove}
@@ -467,8 +518,14 @@ function Lane({
             <span className="truncate font-mono text-[9px] opacity-90">
               {fmt(c.start)}s · {fmt(c.duration)}s{c.sound ? ` · ♪ ${SOUND_LABEL[c.sound]}` : ''}
             </span>
+            {spotlight && (
+              // Asa derecha: arrastrar cambia la duración del enfoque (una sola entrada de historial por gesto).
+              <div className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize bg-amber-300/40 hover:bg-amber-300/80" title="Arrastra para cambiar la duración"
+                onPointerDown={(e) => onDown(e, c.id, c.duration, 'resize')} onPointerMove={onMove} onPointerUp={onUp} />
+            )}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

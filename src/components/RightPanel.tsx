@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
-import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Minimize2, EyeOff, Trash2, Shapes, X, Bookmark, Pencil } from 'lucide-react';
+import { Palette, AlignCenter, AlignLeft, AlignRight, ChevronDown, Copy, Italic, PenTool, Radio, RotateCw, Sparkles, MoveRight, Maximize, Minimize2, EyeOff, Trash2, Shapes, X, Bookmark, Pencil, Plus } from 'lucide-react';
 import { actions, defaultClipParams, selectedObjectIds, store, useStore, type AlignMode } from '../store';
 import { ColorChangeFields, patchParams } from './Timeline';
 import {
   ARC_LIMITS, DEFAULT_ARC, DEFAULT_TEXT_STYLE, FONT_CATALOG, isPathTool, GRID_BG_COLOR, SCENE_BG_LIMITS, resolveSceneBackground, sceneBackgroundGeometry, PLANE_STYLE_3B1B, SCALE_MAX, SCALE_MIN, SCALE_STEP, SOUND_IDS, SOUND_LABEL, STAGE_SIZES, fontInfo, fontStack, glyphIdOf,
-  SAVED_GROUP_NAME_MAX, glyphTransformParams,
-  type Box, type ClipParams, type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SceneBackground, type SceneBackgroundType, type SoundId, type TextAlign, type TextStyle,
+  SAVED_GROUP_NAME_MAX, glyphTransformParams, DEFAULT_FOCUS, FOCUS_LIMITS,
+  type Box, type FocusTarget, type ClipParams, type ClipType, type FillGradient, type FontId, type FontWeight, type LineTip, type NodeStyle, type Obj2D, type PlaneArrowTips, type PlaneGeometry, type PlanePlot, type PlanePoint, type SceneBackground, type SceneBackgroundType, type SoundId, type TextAlign, type TextStyle,
 } from '../types';
 import { engine } from '../engine';
 import { directedGlyphClips, directedTargets, entranceScope, formatGlyphList, parseGlyphList } from '../engine/glyphs';
@@ -1743,12 +1743,131 @@ function GroupTransformPanel() {
   );
 }
 
+const SUB_DIGITS = '₀₁₂₃₄₅₆₇₈₉';
+const SUP_DIGITS = '⁰¹²³⁴⁵⁶⁷⁸⁹';
+
+/**
+ * Rótulo legible de unos glifos (p. ej. `x₁`): un dígito más pequeño que el glifo anterior se escribe como
+ * subíndice (si queda más bajo) o superíndice (si queda más alto).
+ */
+function glyphText(objectId: string, indices: number[]): string {
+  const glyphs = engine.runtime?.getGlyphs(objectId) ?? [];
+  const text = indices.map((index) => {
+    const g = glyphs.find((entry) => entry.index === index);
+    if (!g) return '·';
+    const prev = glyphs.find((entry) => entry.index === index - 1);
+    const digit = /^\d$/.test(g.char) ? Number(g.char) : -1;
+    if (digit >= 0 && prev && g.box.h < prev.box.h * 0.85) {
+      const below = g.box.y + g.box.h / 2 > prev.box.y + prev.box.h / 2;
+      return (below ? SUB_DIGITS : SUP_DIGITS)[digit];
+    }
+    return g.char || '·';
+  }).join('');
+  return text.length > 12 ? `${text.slice(0, 11)}…` : text;
+}
+
+/**
+ * «Enfoque / Spotlight» (estilo 3Blue1Brown): se suman a una lista glifos de distintas ecuaciones (p. ej. x₁ de P₁ y
+ * x₂ de P₂) y/u objetos completos; el clip hace brillar esos objetivos mientras el resto de la escena se atenúa.
+ */
+function FocusPanel() {
+  const selection = useStore((s) => s.ui.selection);
+  const multi = useStore((s) => s.ui.multiSelection);
+  const termEdit = useStore((s) => s.ui.termEdit);
+  const glyphSel = useStore((s) => s.ui.glyphSel);
+  const focusSelection = useStore((s) => s.ui.focusSelection);
+  const objects = useStore((s) => s.project.objects);
+  const time = useStore((s) => s.ui.time);
+  useStore((s) => s.ui.treeVersion);
+  const [duration, setDuration] = useState(3);
+  const [dim, setDim] = useState<number>(DEFAULT_FOCUS.dimOpacity);
+  const [useColor, setUseColor] = useState(DEFAULT_FOCUS.useHighlightColor);
+  const [color, setColor] = useState(DEFAULT_FOCUS.highlightColor.toLowerCase());
+  const [pulse, setPulse] = useState<number>(DEFAULT_FOCUS.pulseScale);
+  // Se recalcula con cada cambio de selección (las suscripciones de arriba fuerzan el render).
+  void selection; void multi; void termEdit; void glyphSel;
+  const current = actions.currentFocusTargets();
+  if (!current.length && !focusSelection.length) return null;
+
+  const start = Math.round(time * 100) / 100;
+  const nameOf = (id: string) => objects.find((object) => object.id === id)?.name ?? id;
+  const adding = current.reduce((sum, entry) => sum + (entry.glyphIndices?.length ?? 1), 0);
+  const chipLabel = (entry: FocusTarget) =>
+    entry.glyphIndices?.length ? `${nameOf(entry.objectId)} · ${glyphText(entry.objectId, entry.glyphIndices)}` : nameOf(entry.objectId);
+  const chipTitle = (entry: FocusTarget) =>
+    entry.glyphIndices?.length ? `${nameOf(entry.objectId)} · glifos ${formatGlyphList(entry.glyphIndices)}` : `${nameOf(entry.objectId)} (objeto completo)`;
+  const create = () => {
+    actions.createFocusClip({ start, duration, dimOpacity: dim, highlightColor: color, useHighlightColor: useColor, pulseScale: pulse });
+  };
+
+  return (
+    <Section title="Enfoque / Spotlight">
+      <p className="text-[11px] leading-snug text-slate-500">
+        Suma glifos de distintas ecuaciones (Modo Edición de Términos) u objetos completos: brillarán en primer plano mientras el resto se atenúa.
+      </p>
+      {current.length > 0 && (
+        <button className={`${btn} w-full justify-start`} onClick={() => actions.addCurrentToFocusSelection()}
+          title={current.map(chipTitle).join(', ')}>
+          <Plus size={14} /> Sumar a Enfoque ({adding} {adding === 1 ? 'elemento' : 'elementos'})
+        </button>
+      )}
+      {focusSelection.length > 0 && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <span className={GROUP_HEADING}>Objetivos ({focusSelection.length})</span>
+            <button type="button" className="text-[10px] text-slate-400 hover:text-rose-300" onClick={() => actions.clearFocusSelection()}>
+              Vaciar
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-1" role="list" aria-label="Objetivos del enfoque">
+            {focusSelection.map((entry, index) => (
+              <span key={`${entry.objectId}:${entry.glyphIndices?.join(',') ?? '*'}`} role="listitem" title={chipTitle(entry)}
+                className="inline-flex max-w-full items-center rounded border border-accent/60 bg-accent-soft text-[11px] text-accent-light">
+                <span className="min-w-0 truncate px-1.5 py-0.5">{chipLabel(entry)}</span>
+                <button type="button" className="px-0.5 py-0.5 text-slate-300 hover:text-rose-300" aria-label={`Quitar ${chipLabel(entry)}`}
+                  onClick={() => actions.removeFromFocusSelection(index)}>
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <Field label="Oscurecer resto">
+        <input type="range" className="w-full min-w-0 accent-accent" aria-label="Opacidad del resto de la escena (dimOpacity)"
+          min={FOCUS_LIMITS.dimOpacity.min * 100} max={FOCUS_LIMITS.dimOpacity.max * 100} step={1} value={Math.round(dim * 100)}
+          onChange={(e) => setDim(parseFloat(e.target.value) / 100)} />
+        <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-slate-400">{Math.round(dim * 100)}%</span>
+      </Field>
+      <Field label="Color de enfoque">
+        <Switch label="Teñir los objetivos con el color de enfoque" checked={useColor} onChange={setUseColor} />
+        <input type="color" className={colorInput} aria-label="Color de enfoque" value={color} disabled={!useColor}
+          onChange={(e) => setColor(e.target.value)} />
+      </Field>
+      <Field label="Realce de tamaño">
+        <input type="range" className="w-full min-w-0 accent-accent" aria-label="Realce de escala de los objetivos (pulseScale)"
+          min={FOCUS_LIMITS.pulseScale.min} max={FOCUS_LIMITS.pulseScale.max} step={0.01} value={pulse}
+          onChange={(e) => setPulse(parseFloat(e.target.value))} />
+        <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-slate-400">{pulse.toFixed(2)}×</span>
+      </Field>
+      <Field label="Duración (s)">
+        <NumberInput className={`${input} w-20`} value={duration} min={0.3} step={0.1} onChange={setDuration} />
+      </Field>
+      <button className={`${btnPrimary} w-full justify-start`} disabled={!focusSelection.length} onClick={create}
+        title={focusSelection.length ? `Crea el clip en el cabezal (${start.toFixed(2)} s): 20 % entrada, 60 % sostenido, 20 % salida` : 'Suma al menos un objetivo'}>
+        <Sparkles size={14} /> Crear Animación Focus
+      </button>
+    </Section>
+  );
+}
+
 export function RightPanel() {
   const hasSelection = useStore((s) => !!s.ui.selection || s.ui.multiSelection.length > 0);
   return (
     <aside className="scroll-thin w-[248px] shrink-0 overflow-y-auto border-l border-bezel bg-ink-800">
       <Inspector />
       <GroupTransformPanel />
+      <FocusPanel />
       {!hasSelection && <SceneBackgroundPanel />}
       <PlaneInspector />
       <Animations />

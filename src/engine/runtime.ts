@@ -1,9 +1,9 @@
-import { STAGE_SIZES, disappearModeOf, groupTransformOf, isEntranceClip, isPathTool, planeSubElementOf, type Box, type Clip, type GroupTransformSpec, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
+import { STAGE_SIZES, disappearModeOf, focusEnvelope, focusSpecOf, groupTransformOf, isEntranceClip, isPathTool, planeSubElementOf, type Box, type Clip, type GroupTransformSpec, type NodeStyle, type Obj2D, type Project, type Vertex } from '../types';
 import { vertexAttributes, vertexGeometry } from './vertices';
 import { arcAsPath, arcCircle, arcEndAngle, arcPoint, gradientId, gradientMarkup, isLinearVector, lineTips, pathLayout, tipLayout } from './vector';
 import { SELECTABLE_SHAPES } from './svgImport';
 import {
-  clipGlyphs, connectorPlan, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphChar, glyphKey, matchGlyphs, mixColor,
+  clipGlyphs, connectorPlan, directedGlyphClips, directedTargets, entranceScope, findGlyphElements, glyphChar, glyphKey, glyphRuns, matchGlyphs, mixColor,
   type DirectedGlyphClip,
 } from './glyphs';
 
@@ -273,6 +273,14 @@ export const smooth = (p: number) => {
 export const easeOut = (p: number) => 1 - Math.pow(1 - p, 3);
 const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 const str = (v: unknown, d: string) => (typeof v === 'string' && v ? v : d);
+/** Color hexadecimal con transparencia (`rgba`), para que un resplandor nazca y se apague sin saltos. */
+const withAlpha = (color: string, alpha: number) => {
+  const m = /^#([\da-f]{3}|[\da-f]{6})$/i.exec(color);
+  if (!m) return color;
+  const hex = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1];
+  const ch = (i: number) => parseInt(hex.slice(i, i + 2), 16);
+  return `rgba(${ch(0)},${ch(2)},${ch(4)},${clamp01(alpha).toFixed(3)})`;
+};
 
 export class SceneRuntime {
   time = 0;
@@ -1849,6 +1857,62 @@ export class SceneRuntime {
         }
         case 'circumscribe':
         case 'focus': {
+          const spot = c.type === 'focus' ? focusSpecOf(c) : null;
+          if (spot) {
+            // Enfoque / Spotlight: 0–20 % el resto de la escena baja a `dimOpacity` y los objetivos pasan al frente
+            // (color de enfoque, resplandor `drop-shadow` sutil y realce de escala); 20–80 % se mantiene; 80–100 %
+            // todo regresa (`smooth`). Antes del inicio y desde `end` no toca nada. Lo dibuja igual la exportación MP4.
+            const e = focusEnvelope(raw);
+            if (e <= 0) break;
+            const dim = 1 - (1 - spot.dimOpacity) * e;
+            const lift = 1 + (spot.pulseScale - 1) * e;
+            const color = spot.useHighlightColor ? spot.highlightColor : null;
+            const glowColor = withAlpha(color ?? '#ffffff', 0.9 * e);
+            const glow = 0.45 * e;
+            const byId = new Map(spot.targets.map((entry) => [entry.objectId, entry]));
+            for (const o of this.project!.objects) {
+              if (!this.nodes.has(o.id)) continue;
+              const target = byId.get(o.id);
+              const fo = target ? this.formulaOf(o.id) : undefined;
+              const rec = fo && this.objs.get(fo.id);
+              const geo = rec && rec.glyphs.length ? this.geoOf(rec) : null;
+              if (target && fo && rec && geo) {
+                // Ecuación: glifos enfocados (o toda la ecuación) brillan; el resto de sus glifos se atenúa.
+                const focused = new Set((target.glyphIndices ?? glyphsOf(fo)).filter((i) => i < rec.glyphs.length));
+                for (const g of rec.glyphs) if (!focused.has(g.index)) glyphState(fo.id, g.index).opacity *= dim;
+                // Cada tramo contiguo (p. ej. x₁) crece alrededor de su propio centro: no se separan entre sí.
+                for (const [a, b] of glyphRuns([...focused])) {
+                  const run = Array.from({ length: b - a + 1 }, (_, k) => a + k).filter((i) => i < geo.length);
+                  if (run.length && lift !== 1) moveGroup(fo, geo, run, lift, 0, { x: 0, y: 0 });
+                }
+                for (const i of focused) {
+                  const g = glyphState(fo.id, i);
+                  if (color) g.mix.push([color, e]);
+                  if (glow > g.glow) {
+                    g.glow = glow;
+                    g.glowColor = glowColor;
+                  }
+                }
+                continue;
+              }
+              const s = get(o.id);
+              if (!target) {
+                s.opacity *= dim;
+                continue;
+              }
+              // Objeto completo (figura, trazado, texto, plano…): realce de escala, color y resplandor.
+              s.scale *= lift;
+              if (color) {
+                s.fillMix.push([color, e]);
+                s.strokeMix.push([color, e, false]);
+              }
+              if (glow > s.glow) {
+                s.glow = glow;
+                s.glowColor = glowColor;
+              }
+            }
+            break;
+          }
           if (!live) break;
           const fo = this.formulaOf(c.targetId);
           frames.push({

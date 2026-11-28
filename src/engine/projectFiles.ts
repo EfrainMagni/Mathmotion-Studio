@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { FONT_IDS, SAVED_GROUP_NAME_MAX, SCENE_BG_LIMITS, parseObjectIds, pruneGroupClips, pruneSavedGroups, type Obj2D, type Project } from '../types';
+import {
+  FOCUS_LIMITS, FOCUS_TARGETS_RE, FONT_IDS, SAVED_GROUP_NAME_MAX, SCENE_BG_LIMITS, parseFocusTargets, parseObjectIds, pruneFocusClips, pruneGroupClips,
+  pruneSavedGroups, type Obj2D, type Project,
+} from '../types';
 import { prepareSvg } from './svgImport';
 import { normalizePlane, planeSvg } from './cartesianPlane';
 
@@ -104,7 +107,15 @@ const parameters = z.record(z.string(), z.union([number, z.string(), z.boolean()
     // Transformación de grupo: listas de ids de objeto raíz separadas por comas.
     (input.sourceObjectIds !== undefined && !objectIdList.safeParse(input.sourceObjectIds).success) ||
     (input.targetObjectIds !== undefined && !objectIdList.safeParse(input.targetObjectIds).success) ||
-    (input.keepSource !== undefined && typeof input.keepSource !== 'boolean')
+    (input.keepSource !== undefined && typeof input.keepSource !== 'boolean') ||
+    // Enfoque / Spotlight: objetivos `"o1:3,4;o2:3,4;o3"` y controles dentro de sus rangos.
+    (input.targets !== undefined && (typeof input.targets !== 'string' || input.targets.length > 20000 || !FOCUS_TARGETS_RE.test(input.targets))) ||
+    (input.dimOpacity !== undefined && (typeof input.dimOpacity !== 'number' ||
+      input.dimOpacity < FOCUS_LIMITS.dimOpacity.min || input.dimOpacity > FOCUS_LIMITS.dimOpacity.max)) ||
+    (input.pulseScale !== undefined && (typeof input.pulseScale !== 'number' ||
+      input.pulseScale < FOCUS_LIMITS.pulseScale.min || input.pulseScale > FOCUS_LIMITS.pulseScale.max)) ||
+    (input.highlightColor !== undefined && !paint.safeParse(input.highlightColor).success) ||
+    (input.useHighlightColor !== undefined && typeof input.useHighlightColor !== 'boolean')
   ) ctx.addIssue({ code: 'custom', message: 'Parámetros de animación no válidos.' });
 });
 const voice = z.object({
@@ -132,7 +143,8 @@ const project = z.object({
     ]),
     start: nonnegative, duration: positive, sound: z.enum(['chalk', 'pop', 'radar', 'sparkle']).nullable(),
     parameters,
-  }).refine((clip) => clip.type !== 'disappear' || clip.parameters.mode === undefined || clip.parameters.mode === 'fade' || clip.parameters.mode === 'shrink',
+  }).refine((clip) => clip.parameters.targets === undefined || clip.type === 'focus', { message: 'Objetivos de enfoque en un clip que no es Focus.' })
+    .refine((clip) => clip.type !== 'disappear' || clip.parameters.mode === undefined || clip.parameters.mode === 'fade' || clip.parameters.mode === 'shrink',
     { message: 'Modo de salida no válido.' })),
   // Grupos guardados con etiqueta (opcional: los archivos antiguos no los tienen).
   savedGroups: z.array(z.object({
@@ -178,7 +190,8 @@ export function parseProject(text: string): Project {
     ...data,
     styles: Object.fromEntries(Object.entries(data.styles).filter(([id]) => !dropped.has(owner(id)))),
     clips: data.clips.filter((clip) =>
-      clip.type !== 'orbit' && (clip.type === 'groupTransform' || !dropped.has(owner(clip.targetId)))
+      clip.type !== 'orbit' && (clip.type === 'groupTransform' || (clip.type === 'focus' && clip.parameters.targets !== undefined)
+        || !dropped.has(owner(clip.targetId)))
       && !dropped.has(String(clip.parameters.to ?? ''))),
   };
   const objects = data.objects.flatMap((object): Obj2D[] => {
@@ -201,13 +214,19 @@ export function parseProject(text: string): Project {
     [...parseObjectIds(clip.parameters.sourceObjectIds), ...parseObjectIds(clip.parameters.targetObjectIds)]
       .some((id) => !targets.has(id) && !dropped.has(id))
   ))) throw new Error('El archivo contiene una transformación de grupo con objetos inexistentes.');
+  // Enfoque / Spotlight: todos sus objetivos deben existir (los objetos 3D descartados se quitan después).
+  if (p.clips.some((clip) => clip.type === 'focus' && clip.parameters.targets !== undefined && (
+    !parseFocusTargets(clip.parameters.targets).length ||
+    parseFocusTargets(clip.parameters.targets).some((entry) => !targets.has(entry.objectId) && !dropped.has(entry.objectId))
+  ))) throw new Error('El archivo contiene un enfoque con objetos inexistentes.');
   // Grupos guardados: ids únicos; se quitan los miembros inexistentes (o 3D descartados) y los grupos vacíos.
   if (p.savedGroups && new Set(p.savedGroups.map((group) => group.id)).size !== p.savedGroups.length) {
     throw new Error('El archivo contiene grupos guardados con identificadores repetidos.');
   }
   const savedGroups = pruneSavedGroups(p.savedGroups, (id) => targets.has(id));
   p.savedGroups = savedGroups?.length ? savedGroups : undefined;
-  p.clips = pruneGroupClips(p.clips as Project['clips'], new Set([...dropped].map(String))) as typeof p.clips;
+  const droppedIds = new Set([...dropped].map(String));
+  p.clips = pruneFocusClips(pruneGroupClips(p.clips as Project['clips'], droppedIds), droppedIds) as typeof p.clips;
   const clipIds = new Set(p.clips.map((clip) => clip.id));
   if (
     targets.size !== objects.length || clipIds.size !== p.clips.length ||

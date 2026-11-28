@@ -1,5 +1,5 @@
 import {
-  SCENE_GRID_LINE_WIDTH, STAGE_SIZES, disappearModeOf, groupTransformOf, isEntranceClip, isPathTool, planeSubElementOf, resolveSceneBackground,
+  SCENE_GRID_LINE_WIDTH, STAGE_SIZES, disappearModeOf, focusSpecOf, groupTransformOf, isEntranceClip, isPathTool, planeSubElementOf, resolveSceneBackground,
   sceneBackgroundGeometry, sceneDuration, type Clip, type NodeStyle, type Obj2D, type Project, type SceneObject,
 } from '../types';
 import { svgWithVertices } from './vertices';
@@ -562,6 +562,98 @@ const TIMELINE_HELPER = `def play_timeline(scene, objects, events, duration):
     scene.play(UpdateFromAlphaFunc(Group(*objects), update, run_time=duration, rate_func=linear))
 `;
 
+const FOCUS_HELPER = `def focus_spotlight(focused, others, dim_opacity, color, pulse, run_time):
+    # Enfoque / Spotlight: 20 % atenúa el resto y resalta los objetivos, 60 % mantiene, 20 % restaura el estado previo.
+    edge = run_time * 0.2
+    for mob in [*focused, *others]:
+        mob.save_state()
+
+    def dimmed(mob):
+        # Multiplica la opacidad actual: lo que aún está oculto sigue oculto.
+        target = mob.copy()
+        for part in target.family_members_with_points():
+            part.set_fill(opacity=part.get_fill_opacity() * dim_opacity, family=False)
+            part.set_stroke(opacity=part.get_stroke_opacity() * dim_opacity, family=False)
+        return target
+
+    def lit(mob):
+        target = mob.copy().scale(pulse)
+        if color is not None:
+            target.set_color(color)
+        return target
+
+    enter = [Transform(mob, dimmed(mob)) for mob in others] + [Transform(mob, lit(mob)) for mob in focused]
+    leave = [Restore(mob) for mob in [*focused, *others]]
+    return Succession(
+        AnimationGroup(*enter, run_time=edge),
+        Wait(run_time=run_time - 2 * edge),
+        AnimationGroup(*leave, run_time=edge),
+    )
+`;
+
+/** Objetos raíz que anima un clip (origen, destino, grupos y objetivos de enfoque). */
+function clipObjectIds(clip: Clip): string[] {
+  const ids = [clip.targetId.split('.')[0]];
+  if (typeof clip.parameters.to === 'string') ids.push(clip.parameters.to);
+  const group = groupTransformOf(clip);
+  if (group) ids.push(...group.sourceObjectIds, ...group.targetObjectIds);
+  const focus = focusSpecOf(clip);
+  if (focus) ids.push(...focus.targets.map((entry) => entry.objectId));
+  return ids;
+}
+
+/**
+ * Enfoque / Spotlight → `focus_spotlight(...)` (Succession: atenuar el resto a `dimOpacity` → mantener →
+ * `Restore`). Cada tramo contiguo de glifos enfocados es un mobject propio para que crezca sobre su centro.
+ * El resto de la escena excluye los objetos que otro clip anima a la vez (`Restore` desharía esa animación).
+ */
+function focusEvent(
+  clip: Clip, project: Project, info: (object: Obj2D) => TexInfo, notes: Set<string>,
+): { code: string; id: string } | null {
+  const spec = focusSpecOf(clip);
+  if (!spec) return null;
+  const end = clip.start + clip.duration;
+  const busy = new Set(project.clips
+    .filter((other) => other !== clip && other.start < end - 1e-9 && other.start + other.duration > clip.start + 1e-9)
+    .flatMap(clipObjectIds));
+  const focused: string[] = [];
+  const others: string[] = [];
+  let skipped = false;
+  for (const object of project.objects) {
+    const target = spec.targets.find((entry) => entry.objectId === object.id);
+    const own = object.kind === 'formula' && !object.vector ? info(object) : null;
+    if (!target) {
+      if (busy.has(object.id)) skipped = true;
+      else others.push(object.id);
+      continue;
+    }
+    const indices = own && target.glyphIndices ? target.glyphIndices.filter((index) => index < own.count) : [];
+    if (!own || !indices.length) {
+      focused.push(object.id);
+      continue;
+    }
+    if (!own.tokens) notes.add('Ecuaciones complejas: los índices de glifos pueden diferir de los de MathTex (verifica con eq[0][i]).');
+    for (const [a, b] of glyphRuns(indices)) {
+      const ref = glyphGroup(object.id, own, Array.from({ length: b - a + 1 }, (_, k) => a + k));
+      if (ref) focused.push(ref);
+    }
+    const rest = Array.from({ length: own.count }, (_, index) => index).filter((index) => !indices.includes(index));
+    const restRef = rest.length ? glyphGroup(object.id, own, rest) : null;
+    if (restRef) {
+      if (busy.has(object.id)) skipped = true;
+      else others.push(restRef);
+    }
+  }
+  if (!focused.length) return null;
+  if (skipped) notes.add('Enfoque / Spotlight: los objetos animados por otro clip durante el enfoque no se atenúan en Manim.');
+  notes.add('Enfoque / Spotlight: se exporta como Succession (atenuar resto → mantener → Restore); el resplandor drop-shadow no tiene equivalente en Manim.');
+  const color = spec.useHighlightColor ? quoted(cssColor(spec.highlightColor) ?? '#ffff00') : 'None';
+  return {
+    id: spec.targets[0].objectId,
+    code: `focus_spotlight([${focused.join(', ')}], [${others.join(', ')}], ${n(spec.dimOpacity)}, ${color}, ${n(spec.pulseScale)}, ${n(clip.duration)})`,
+  };
+}
+
 export function generateManim(project: Project): { script: string; notes: string[] } {
   const { w, h } = STAGE_SIZES[project.format];
   const svg = project.objects.some((object) => !object.vector && !object.plane && (object.kind === 'svg' || !object.tex));
@@ -580,6 +672,7 @@ export function generateManim(project: Project): { script: string; notes: string
   const directedOf = new Map(directed.map((entry) => [entry.clip, entry]));
   const targeted = directedTargets(directed);
   const isEntrance = isEntranceClip;
+  let spotlight = false;
   for (const clip of [...project.clips].sort((a, b) => a.start - b.start)) {
     const object = byId.get(clip.targetId.split('.')[0]);
     if (!object) continue;
@@ -617,6 +710,17 @@ export function generateManim(project: Project): { script: string; notes: string
       events.push(spec.keepSource
         ? { start, time: clip.duration, id: sources[0], code: `TransformFromCopy(${groups}, ${run})`, entrance: false, overlay: true, keep: true, reveal: targets }
         : { start, time: clip.duration, id: sources[0], code: `ReplacementTransform(${groups}, ${run})`, entrance: false, overlay: false, reveal: targets });
+      continue;
+    }
+    if (focusSpecOf(clip)) {
+      // Enfoque / Spotlight: varios objetos y glifos a la vez; corre en paralelo al resto de la línea de tiempo.
+      const built = focusEvent(clip, project, infoOf, notes);
+      if (!built) {
+        notes.add('Se omitieron enfoques sin objetivos válidos.');
+        continue;
+      }
+      spotlight = true;
+      events.push({ start: clip.start, time: clip.duration, id: built.id, code: built.code, entrance: false, overlay: false, reveal: [] });
       continue;
     }
     const dg = directedOf.get(clip);
@@ -744,7 +848,7 @@ export function generateManim(project: Project): { script: string; notes: string
       `config.pixel_width = ${w}`, `config.pixel_height = ${h}`,
       `config.frame_width = ${n(FRAME_HEIGHT * w / h)}`, `config.frame_height = ${FRAME_HEIGHT}`,
       `config.background_color = ${quoted(cssColor(background.bgColor) ?? '#141414')}`, '',
-      ...(svg ? [SVG_HELPER] : []), ...(events.length ? [TIMELINE_HELPER] : []),
+      ...(svg ? [SVG_HELPER] : []), ...(events.length ? [TIMELINE_HELPER] : []), ...(spotlight ? [FOCUS_HELPER] : []),
       `class EscenaMathMotion(Scene):`,
       '    def construct(self):', ...body.map((line) => line ? '        ' + line : ''), '',
     ].join('\n'),

@@ -413,7 +413,12 @@ function deliver(blob: Blob, ext: 'mp4' | 'webm') {
   actions.notify('info', `Grabación lista: ${name}`);
 }
 
-/** Dibuja el estado actual del runtime (fondo + escena) en `ctx`, esperando a que la imagen SVG esté decodificada. */
+/**
+ * Dibuja el estado actual del runtime (fondo + escena) en `ctx`, esperando a que la imagen SVG esté decodificada.
+ * La instantánea incrusta la opacidad de cada contenedor y glifo, sus `translate`/`scale` y el `filter: drop-shadow`,
+ * así efectos como Enfoque / Spotlight (resto atenuado a `dimOpacity`, objetivos con color, brillo y realce de escala)
+ * salen en el MP4 idénticos a la vista previa: ambos se calculan con el mismo `renderAt(t)`.
+ */
 async function drawScene(
   runtime: Runtime, ctx: CanvasRenderingContext2D, W: number, H: number, withFonts: (svg: string) => string,
 ) {
